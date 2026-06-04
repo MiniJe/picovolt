@@ -1,0 +1,12 @@
+# Rust build artifacts
+/target
+
+# Library crate: lockfile is not committed
+Cargo.lock
+
+# Editor backups
+**/*.rs.bk
+
+# PicoVolt runtime artifacts
+.pv/
+*.pvdb

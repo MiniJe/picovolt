@@ -1,0 +1,26 @@
+[package]
+name = "picovolt"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+description = "PicoVolt (PVDB) — a polymorphic embedded data engine."
+license = "Apache-2.0"
+repository = "https://github.com/OWNER/picovolt"
+keywords = ["database", "embedded", "storage-engine", "mvcc", "columnar"]
+categories = ["database-implementations"]
+publish = false
+
+[dependencies]
+thiserror = "1.0"
+blake3 = "1"
+memmap2 = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wasmi = "0.31"
+
+[dev-dependencies]
+wat = "1"
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "allow"

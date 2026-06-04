@@ -1,0 +1,7 @@
+# Normalize line endings: store text as LF in the repo, regardless of platform.
+* text=auto eol=lf
+
+# Explicitly binary artifacts.
+*.pvdb binary
+*.pvd binary
+*.png binary
