@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>PicoVolt — wasm demo</title>
+    <style>
+      body { font: 14px/1.5 system-ui, sans-serif; margin: 2rem; max-width: 50rem; }
+      pre { background: #f4f4f4; padding: 1rem; border-radius: 6px; overflow: auto; }
+      h1 { font-size: 1.3rem; }
+    </style>
+  </head>
+  <body>
+    <h1>PicoVolt running in your browser (WebAssembly)</h1>
+    <p>
+      Build first:
+      <code>wasm-pack build --target web --release --out-dir js/pkg -- --features wasm</code>,
+      then serve this folder (e.g. <code>python -m http.server</code>) and open it.
+    </p>
+    <pre id="out">loading…</pre>
+
+    <script type="module">
+      import init, { Db } from "./pkg/picovolt.js";
+
+      const out = document.getElementById("out");
+      const log = (label, value) =>
+        (out.textContent += `${label}: ${JSON.stringify(value)}\n`);
+
+      await init();
+      out.textContent = "";
+
+      const db = new Db();
+      db.query("CREATE TABLE notes (id, body, tag)");
+      db.query("INSERT INTO notes VALUES (1, 'hello world', 'info')");
+      db.query("INSERT INTO notes VALUES (2, 'todo: ship it', 'todo')");
+      db.query("INSERT INTO notes VALUES (3, 'another info', 'info')");
+      db.query("CREATE INDEX ON notes (tag)");
+
+      log("all notes", db.query("SELECT * FROM notes"));
+      log("tag = info", db.query("SELECT * FROM notes WHERE tag = 'info'"));
+      log("update", db.query("UPDATE notes SET tag = 'done' WHERE id = 2"));
+      log("limit 1", db.query("SELECT * FROM notes LIMIT 1"));
+      log("exported .pvdb bytes", db.export().length);
+    </script>
+  </body>
+</html>

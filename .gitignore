@@ -16,3 +16,8 @@ Cargo.lock
 /fuzz/corpus
 /fuzz/artifacts
 /fuzz/Cargo.lock
+
+# wasm-pack / npm output
+/pkg
+/js/pkg
+node_modules/

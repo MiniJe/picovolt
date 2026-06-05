@@ -287,14 +287,80 @@ impl Monolith {
 }
 
 // ---------------------------------------------------------------------------
+// In-memory backend (no filesystem) — `Database::open_memory` and wasm targets
+// ---------------------------------------------------------------------------
+
+/// A page store held entirely in RAM (no filesystem / mmap). Useful for tests,
+/// ephemeral databases, and `wasm32` targets (browser/Node) where there is no
+/// filesystem available at runtime.
+#[derive(Default)]
+pub struct MemStore {
+    pages: RefCell<Vec<PageBuf>>,
+}
+
+impl MemStore {
+    /// An empty in-memory store.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of pages held.
+    pub fn page_count(&self) -> u64 {
+        self.pages.borrow().len() as u64
+    }
+
+    /// Allocate a fresh zeroed page, returning its id.
+    pub fn alloc_page(&self) -> u64 {
+        let mut pages = self.pages.borrow_mut();
+        let id = pages.len() as u64;
+        pages.push(Box::new([0u8; PAGE_SIZE]));
+        id
+    }
+
+    /// Overwrite an allocated page.
+    pub fn write_page(&self, id: u64, page: &[u8; PAGE_SIZE]) -> Result<()> {
+        let mut pages = self.pages.borrow_mut();
+        let slot = pages
+            .get_mut(id as usize)
+            .ok_or(PvError::PageFault { page_id: id })?;
+        **slot = *page;
+        Ok(())
+    }
+
+    /// Write consecutive pages starting at `start_id`.
+    pub fn write_pages_from(&self, start_id: u64, pages: &[&PageBuf]) -> Result<()> {
+        for (i, page) in pages.iter().enumerate() {
+            self.write_page(start_id + i as u64, page)?;
+        }
+        Ok(())
+    }
+
+    /// Read a page.
+    pub fn read_page(&self, id: u64) -> Result<PageBuf> {
+        self.pages
+            .borrow()
+            .get(id as usize)
+            .cloned()
+            .ok_or(PvError::PageFault { page_id: id })
+    }
+
+    /// Snapshot every page (for baking an in-memory database to bytes).
+    pub fn read_all_pages(&self) -> Result<Vec<PageBuf>> {
+        Ok(self.pages.borrow().clone())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Backend router
 // ---------------------------------------------------------------------------
 
-/// Uniform read access over either backend, used by the engine while loading.
+/// Uniform access over the three backends, used by the buffer pool and engine.
 pub enum Backend {
-    /// Mutable development workspace.
+    /// Mutable development workspace (filesystem).
     Dev(DevStore),
-    /// Read-only production monolith.
+    /// Mutable in-memory store (no filesystem).
+    Mem(MemStore),
+    /// Read-only production monolith (mmap).
     Prod(Monolith),
 }
 
@@ -303,6 +369,7 @@ impl Backend {
     pub fn page_count(&self) -> u64 {
         match self {
             Backend::Dev(d) => d.page_count(),
+            Backend::Mem(m) => m.page_count(),
             Backend::Prod(m) => m.page_count(),
         }
     }
@@ -311,13 +378,58 @@ impl Backend {
     pub fn read_page(&self, id: u64) -> Result<PageBuf> {
         match self {
             Backend::Dev(d) => d.read_page(id),
+            Backend::Mem(m) => m.read_page(id),
             Backend::Prod(m) => m.read_page(id),
         }
     }
 
-    /// Whether the backend accepts writes (true only for development mode).
+    /// Whether the backend accepts writes (dev and in-memory, not production).
     pub fn is_writable(&self) -> bool {
-        matches!(self, Backend::Dev(_))
+        matches!(self, Backend::Dev(_) | Backend::Mem(_))
+    }
+
+    /// Allocate a new page id (writable backends only).
+    pub fn alloc_page(&mut self) -> Result<u64> {
+        match self {
+            Backend::Dev(d) => Ok(d.alloc_page()),
+            Backend::Mem(m) => Ok(m.alloc_page()),
+            Backend::Prod(_) => Err(PvError::ReadOnly),
+        }
+    }
+
+    /// Write a single page (writable backends only).
+    pub fn write_page(&self, id: u64, page: &[u8; PAGE_SIZE]) -> Result<()> {
+        match self {
+            Backend::Dev(d) => d.write_page(id, page),
+            Backend::Mem(m) => m.write_page(id, page),
+            Backend::Prod(_) => Err(PvError::ReadOnly),
+        }
+    }
+
+    /// Bulk-write consecutive pages (writable backends only).
+    pub fn write_pages_from(&self, start_id: u64, pages: &[&PageBuf]) -> Result<()> {
+        match self {
+            Backend::Dev(d) => d.write_pages_from(start_id, pages),
+            Backend::Mem(m) => m.write_pages_from(start_id, pages),
+            Backend::Prod(_) => Err(PvError::ReadOnly),
+        }
+    }
+
+    /// `fsync` durable backends (no-op for in-memory / read-only).
+    pub fn sync_data(&self) -> Result<()> {
+        match self {
+            Backend::Dev(d) => d.sync_data(),
+            _ => Ok(()),
+        }
+    }
+
+    /// Read every page in id order.
+    pub fn read_all_pages(&self) -> Result<Vec<PageBuf>> {
+        match self {
+            Backend::Dev(d) => d.read_all_pages(),
+            Backend::Mem(m) => m.read_all_pages(),
+            Backend::Prod(m) => (0..m.page_count()).map(|id| m.read_page(id)).collect(),
+        }
     }
 }
 
@@ -325,16 +437,17 @@ impl Backend {
 // Bake: directory -> monolith compilation (spec §2.B, pv_bake)
 // ---------------------------------------------------------------------------
 
-/// Compile a page set, CAS blob pool, and manifest into a `.pvdb` monolith.
+/// Compile a page set, CAS blob pool, and manifest into the `.pvdb` monolith
+/// **byte image** (no filesystem). Used directly for in-memory/wasm export and
+/// by [`bake_monolith`] for the file path.
 ///
 /// Layout: `header(20) | pages | cas_pool | manifest`, with `cas_offset` and
 /// `manifest_offset` recorded in the header.
-pub fn bake_monolith(
-    out_path: impl AsRef<Path>,
+pub fn bake_monolith_bytes(
     pages: &[PageBuf],
     cas_pool: &[u8],
     manifest_json: &[u8],
-) -> Result<()> {
+) -> Result<Vec<u8>> {
     let overflow = || PvError::Corruption("monolith size overflows address space".into());
     let cas_offset = pages
         .len()
@@ -344,15 +457,31 @@ pub fn bake_monolith(
     let manifest_offset = cas_offset
         .checked_add(cas_pool.len())
         .ok_or_else(overflow)?;
+    let total = manifest_offset
+        .checked_add(manifest_json.len())
+        .ok_or_else(overflow)?;
     let header = FileHeader::new(manifest_offset as u64, cas_offset as u64);
 
-    let mut out = File::create(out_path)?;
-    out.write_all(&header.encode())?;
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(&header.encode());
     for page in pages {
-        out.write_all(&page[..])?;
+        out.extend_from_slice(&page[..]);
     }
-    out.write_all(cas_pool)?;
-    out.write_all(manifest_json)?;
+    out.extend_from_slice(cas_pool);
+    out.extend_from_slice(manifest_json);
+    Ok(out)
+}
+
+/// Compile a page set, CAS blob pool, and manifest into a `.pvdb` file.
+pub fn bake_monolith(
+    out_path: impl AsRef<Path>,
+    pages: &[PageBuf],
+    cas_pool: &[u8],
+    manifest_json: &[u8],
+) -> Result<()> {
+    let bytes = bake_monolith_bytes(pages, cas_pool, manifest_json)?;
+    let mut out = File::create(out_path)?;
+    out.write_all(&bytes)?;
     out.flush()?;
     Ok(())
 }

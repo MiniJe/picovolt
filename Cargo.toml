@@ -6,9 +6,19 @@ rust-version = "1.74"
 description = "PicoVolt (PVDB) — a polymorphic embedded data engine."
 license = "Apache-2.0"
 repository = "https://github.com/OWNER/picovolt"
+readme = "README.md"
 keywords = ["database", "embedded", "storage-engine", "mvcc", "columnar"]
 categories = ["database-implementations"]
-publish = false
+# Keep the published Rust package lean — repo-only tooling/demos.
+exclude = ["/fuzz", "/.github", "/js"]
+
+# `cdylib` is needed for the wasm/npm build (wasm-pack); `rlib` for normal use.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Enable the JavaScript/npm bindings (build for wasm32 with wasm-pack).
+wasm = ["dep:wasm-bindgen", "dep:serde-wasm-bindgen", "dep:console_error_panic_hook"]
 
 [dependencies]
 thiserror = "1.0"
@@ -17,6 +27,11 @@ memmap2 = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 wasmi = "0.50"
+
+# Optional — only compiled with `--features wasm`.
+wasm-bindgen = { version = "0.2", optional = true }
+serde-wasm-bindgen = { version = "0.6", optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
 
 [dev-dependencies]
 wat = "1"

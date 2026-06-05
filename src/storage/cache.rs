@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use crate::core::errors::{PvError, Result};
+use crate::core::errors::Result;
 use crate::core::types::{PageId, PAGE_SIZE};
 use crate::storage::page::RowPage;
 use crate::storage::vle::{Backend, PageBuf};
@@ -67,12 +67,9 @@ impl PageCache {
         &self.backend
     }
 
-    /// Allocate a fresh page id (development mode only).
+    /// Allocate a fresh page id (writable backends only).
     pub fn alloc_page(&mut self) -> Result<PageId> {
-        match &mut self.backend {
-            Backend::Dev(d) => Ok(d.alloc_page()),
-            Backend::Prod(_) => Err(PvError::ReadOnly),
-        }
+        self.backend.alloc_page()
     }
 
     fn tick(&mut self) -> u64 {
@@ -108,9 +105,7 @@ impl PageCache {
             let Some(id) = victim else { break };
             let entry = self.entries.remove(&id).expect("victim exists");
             if entry.dirty {
-                if let Backend::Dev(d) = &self.backend {
-                    d.write_page(id, &entry.page)?;
-                }
+                self.backend.write_page(id, &entry.page)?;
             }
         }
         Ok(())
@@ -163,19 +158,16 @@ impl PageCache {
         Ok(out)
     }
 
-    /// `fsync` the development backend's active chunk to stable storage.
+    /// `fsync` durable backends to stable storage (no-op for in-memory).
     pub fn sync(&self) -> Result<()> {
-        if let Backend::Dev(d) = &self.backend {
-            d.sync_data()?;
-        }
-        Ok(())
+        self.backend.sync_data()
     }
 
     /// Write all dirty pages back to the backend (bulk per contiguous run).
     pub fn flush(&mut self) -> Result<()> {
-        let Backend::Dev(dev) = &self.backend else {
+        if !self.backend.is_writable() {
             return Ok(());
-        };
+        }
         let mut ids: Vec<PageId> = self
             .entries
             .iter()
@@ -191,7 +183,7 @@ impl PageCache {
                 j += 1;
             }
             let run: Vec<&PageBuf> = ids[i..=j].iter().map(|id| &self.entries[id].page).collect();
-            dev.write_pages_from(ids[i], &run)?;
+            self.backend.write_pages_from(ids[i], &run)?;
             i = j + 1;
         }
 

@@ -36,7 +36,7 @@ use crate::storage::cas::CasStore;
 use crate::storage::index::SecondaryIndex;
 use crate::storage::page::{RowPage, RowPageRef, SLOT_SIZE};
 use crate::storage::record::{decode_record, encode_record};
-use crate::storage::vle::{bake_monolith, Backend, DevStore, Monolith};
+use crate::storage::vle::{bake_monolith_bytes, Backend, DevStore, MemStore, Monolith};
 
 /// Manifest file name within a development workspace.
 pub const MANIFEST_FILE: &str = "pv_manifest.json";
@@ -208,17 +208,45 @@ impl Database {
         })
     }
 
-    /// Compile the current workspace into a `.pvdb` monolith at `out_path`.
-    pub fn bake(&mut self, out_path: impl AsRef<Path>) -> Result<()> {
+    /// Open a fresh in-memory database (no filesystem or mmap).
+    ///
+    /// Ideal for tests, ephemeral data, and `wasm32` targets (browser / Node)
+    /// where there is no filesystem. Data lives only in RAM — export it with
+    /// [`bake_to_bytes`](Self::bake_to_bytes) to persist.
+    pub fn open_memory() -> Self {
+        Self {
+            cache: RefCell::new(PageCache::new(
+                Backend::Mem(MemStore::new()),
+                DEFAULT_CACHE_PAGES,
+            )),
+            cas: CasStore::new_memory(),
+            txm: TxManager::new(),
+            tables: BTreeMap::new(),
+            compliance: ComplianceMonitor::new(),
+            root: None,
+            autocommit: false,
+            durability: Durability::Fast,
+            manifest_file: RefCell::new(None),
+        }
+    }
+
+    /// Compile the current database into a `.pvdb` monolith **byte image** (no
+    /// filesystem). Works for any backend; the natural way to export an
+    /// in-memory database.
+    pub fn bake_to_bytes(&mut self) -> Result<Vec<u8>> {
         self.flush()?;
-        let pages = match self.cache.borrow().backend() {
-            Backend::Dev(dev) => dev.read_all_pages()?,
-            Backend::Prod(_) => return Err(PvError::ReadOnly),
-        };
+        let pages = self.cache.borrow().backend().read_all_pages()?;
         let (cas_pool, _dir) = self.cas.pack()?;
         let manifest = self.build_manifest(true)?;
         let json = serde_json::to_vec(&manifest)?;
-        bake_monolith(out_path, &pages, &cas_pool, &json)
+        bake_monolith_bytes(&pages, &cas_pool, &json)
+    }
+
+    /// Compile the current database into a `.pvdb` monolith at `out_path`.
+    pub fn bake(&mut self, out_path: impl AsRef<Path>) -> Result<()> {
+        let bytes = self.bake_to_bytes()?;
+        fs::write(out_path, bytes)?;
+        Ok(())
     }
 
     /// Execute a single SQL statement.
@@ -642,14 +670,11 @@ impl Database {
     }
 
     fn flush(&mut self) -> Result<()> {
-        let root = match &self.root {
-            Some(r) => r.clone(),
-            None => return Ok(()),
-        };
         if !self.cache.borrow().is_writable() {
-            return Ok(());
+            return Ok(()); // production / read-only: nothing to flush
         }
-        let sync = self.durability == Durability::Sync;
+        // fsync only makes sense for a filesystem-backed (dev) database.
+        let durable = self.durability == Durability::Sync && self.root.is_some();
         {
             let mut cache = self.cache.borrow_mut();
             for table in self.tables.values() {
@@ -660,13 +685,18 @@ impl Database {
             cache.flush()?;
             // Crash-safety: data pages are fsync'd BEFORE the manifest commits,
             // so the manifest never references unflushed pages.
-            if sync {
+            if durable {
                 cache.sync()?;
             }
         }
+        // The manifest only exists for filesystem-backed databases; an in-memory
+        // database (no `root`) keeps its catalog in RAM.
+        let Some(root) = self.root.clone() else {
+            return Ok(());
+        };
         let manifest = self.build_manifest(false)?;
         let json = serde_json::to_vec_pretty(&manifest)?;
-        if sync {
+        if self.durability == Durability::Sync {
             self.write_manifest_atomic(&root, &json)
         } else {
             self.write_manifest_fast(&root, &json)
@@ -1177,5 +1207,39 @@ mod tests {
         // DROP TABLE removes it.
         db.query("DROP TABLE t").unwrap();
         assert!(db.query("SELECT * FROM t").is_err());
+    }
+
+    #[test]
+    fn in_memory_database_works_and_exports() {
+        let mut db = Database::open_memory();
+        assert!(db.is_writable());
+        db.query("CREATE TABLE t (id, name)").unwrap();
+        db.query("INSERT INTO t VALUES (1, 'alice')").unwrap();
+        db.query("INSERT INTO t VALUES (2, 'bob')").unwrap();
+        db.query("CREATE INDEX ON t (name)").unwrap();
+        assert_eq!(
+            db.query("SELECT * FROM t").unwrap().rows().unwrap().len(),
+            2
+        );
+        assert_eq!(
+            db.query("SELECT * FROM t WHERE name = 'alice'")
+                .unwrap()
+                .rows()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(db.row_count("t", None).unwrap(), 2);
+
+        // Export the in-memory database to a .pvdb byte image and reopen it.
+        let bytes = db.bake_to_bytes().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("export.pvdb");
+        std::fs::write(&path, &bytes).unwrap();
+        let mut prod = Database::open_prod(&path).unwrap();
+        assert_eq!(
+            prod.query("SELECT * FROM t").unwrap().rows().unwrap().len(),
+            2
+        );
     }
 }

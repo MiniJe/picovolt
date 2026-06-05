@@ -117,10 +117,21 @@ Measured results and an honest writeup live in [BENCHMARKS.md](BENCHMARKS.md).
 Short version: PicoVolt is a page-backed engine with O(1) durable appends
 (autocommit ~33k rows/s, *linear*), larger-than-RAM reads via a bounded buffer
 pool (a 667-page dataset serves from a 16-page pool), secondary indexes
-(`WHERE col = value` ~11,000× faster than a scan), MVCC time-travel, and a fast
-compile-and-publish path (CAS dedup, columnar compression, single-file mmap
-artifacts). It is not yet crash-safe (no `fsync`) and has no range indexes or
-concurrency.
+(`WHERE col = value` ~11,000× faster than a scan), MVCC time-travel, opt-in
+crash-safe durability (`Durability::Sync`), and a fast compile-and-publish path
+(CAS dedup, columnar compression, single-file mmap artifacts). Remaining limits:
+no range/ordered indexes and no concurrency.
+
+## Install & distribution
+
+| Target | How |
+|--------|-----|
+| **Rust** (crates.io) | `cargo add picovolt` (once published) |
+| **JavaScript / npm** (WebAssembly, browser + Node) | `wasm-pack build --target web --release --out-dir js/pkg -- --features wasm` — see [js/README.md](js/README.md) |
+| **In-memory** (native, no filesystem) | `Database::open_memory()`, export with `bake_to_bytes()` |
+
+PicoVolt runs in the browser via an in-memory backend; the [`js/`](js) directory
+has a browser (`index.html`) and Node (`node-demo.cjs`) demo.
 
 ## License
 

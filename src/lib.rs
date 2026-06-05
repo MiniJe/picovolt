@@ -57,6 +57,10 @@ pub mod storage;
 
 mod db;
 
+/// JavaScript / npm bindings (enabled by the `wasm` feature).
+#[cfg(feature = "wasm")]
+pub mod wasm_api;
+
 #[doc(inline)]
 pub use crate::core::errors::{ComplianceError, PvError, Result};
 #[doc(inline)]
