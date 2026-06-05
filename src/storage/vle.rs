@@ -92,6 +92,34 @@ impl DevStore {
         Ok(())
     }
 
+    /// Write pages `0..pages.len()` contiguously, opening each chunk file **once**
+    /// and issuing one bulk write per chunk. This is dramatically faster than
+    /// per-page [`write_page`] calls when persisting a whole workspace.
+    pub fn write_pages(&self, pages: &[PageBuf]) -> Result<()> {
+        let total = pages.len() as u64;
+        let mut id = 0u64;
+        while id < total {
+            let chunk_ix = id / PAGES_PER_CHUNK;
+            let chunk_start = chunk_ix * PAGES_PER_CHUNK;
+            let chunk_end = ((chunk_ix + 1) * PAGES_PER_CHUNK).min(total);
+            let path = self.chunk_path(chunk_ix);
+            let mut file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)?;
+            file.seek(SeekFrom::Start((id - chunk_start) * PAGE_SIZE as u64))?;
+            let mut batch = Vec::with_capacity((chunk_end - id) as usize * PAGE_SIZE);
+            for page in &pages[id as usize..chunk_end as usize] {
+                batch.extend_from_slice(&page[..]);
+            }
+            file.write_all(&batch)?;
+            id = chunk_end;
+        }
+        Ok(())
+    }
+
     /// Read a full page out of its chunk file.
     pub fn read_page(&self, id: u64) -> Result<PageBuf> {
         if id >= self.page_count {
@@ -106,9 +134,25 @@ impl DevStore {
         Ok(buf)
     }
 
-    /// Read every allocated page, in id order.
+    /// Read every allocated page, in id order, opening each chunk file once.
     pub fn read_all_pages(&self) -> Result<Vec<PageBuf>> {
-        (0..self.page_count).map(|id| self.read_page(id)).collect()
+        let mut out = Vec::with_capacity(self.page_count as usize);
+        let mut id = 0u64;
+        while id < self.page_count {
+            let chunk_ix = id / PAGES_PER_CHUNK;
+            let chunk_start = chunk_ix * PAGES_PER_CHUNK;
+            let chunk_end = ((chunk_ix + 1) * PAGES_PER_CHUNK).min(self.page_count);
+            let path = self.chunk_path(chunk_ix);
+            let mut file = File::open(&path)?;
+            file.seek(SeekFrom::Start((id - chunk_start) * PAGE_SIZE as u64))?;
+            for _ in id..chunk_end {
+                let mut buf: PageBuf = Box::new([0u8; PAGE_SIZE]);
+                file.read_exact(&mut buf[..])?;
+                out.push(buf);
+            }
+            id = chunk_end;
+        }
+        Ok(out)
     }
 }
 

@@ -35,7 +35,7 @@ use crate::engine::wasm::WasmRuntime;
 use crate::storage::cas::CasStore;
 use crate::storage::page::{RowPage, SLOT_SIZE};
 use crate::storage::record::{decode_record, encode_record};
-use crate::storage::vle::{bake_monolith, Backend, DevStore, Monolith};
+use crate::storage::vle::{bake_monolith, Backend, DevStore, Monolith, PageBuf};
 
 /// Manifest file name within a development workspace.
 pub const MANIFEST_FILE: &str = "pv_manifest.json";
@@ -492,11 +492,13 @@ fn rebuild_and_write_pages(
     cas: &mut CasStore,
     tables: &TableMap,
 ) -> Result<PageMap> {
-    let mut next_id = 0u64;
+    // Serialize all tables into an in-memory page set, then persist it with a
+    // single bulk write per chunk file (see `DevStore::write_pages`).
+    let mut pages: Vec<PageBuf> = Vec::new();
     let mut table_pages = BTreeMap::new();
     for (name, table) in tables {
         let mut ids = Vec::new();
-        let mut current = RowPage::new(next_id);
+        let mut current = RowPage::new(pages.len() as u64);
         let mut used = false;
         for vrow in &table.rows {
             let record = encode_record(&vrow.envelope, &vrow.values, cas)?;
@@ -509,10 +511,9 @@ fn rebuild_and_write_pages(
             match current.insert(&record) {
                 Ok(_) => used = true,
                 Err(PvError::PageFull { .. }) => {
-                    dev.write_page(next_id, current.as_bytes())?;
-                    ids.push(next_id);
-                    next_id += 1;
-                    current = RowPage::new(next_id);
+                    ids.push(pages.len() as u64);
+                    pages.push(current.into_bytes());
+                    current = RowPage::new(pages.len() as u64);
                     current.insert(&record)?;
                     used = true;
                 }
@@ -520,13 +521,13 @@ fn rebuild_and_write_pages(
             }
         }
         if used {
-            dev.write_page(next_id, current.as_bytes())?;
-            ids.push(next_id);
-            next_id += 1;
+            ids.push(pages.len() as u64);
+            pages.push(current.into_bytes());
         }
         table_pages.insert(name.clone(), ids);
     }
-    dev.set_page_count(next_id);
+    dev.write_pages(&pages)?;
+    dev.set_page_count(pages.len() as u64);
     Ok(table_pages)
 }
 

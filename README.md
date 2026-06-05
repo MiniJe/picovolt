@@ -83,6 +83,21 @@ cargo build
 cargo test
 ```
 
+## Examples & benchmarks
+
+```sh
+cargo run --release --example notes    # a small notes app: CRUD, edit history,
+                                        # time-travel, CAS dedup, publish (bake)
+cargo run --release --example bench     # evaluation harness across modes/workloads
+```
+
+Measured results and an honest strengths/limitations writeup live in
+[BENCHMARKS.md](BENCHMARKS.md). Short version: the in-memory engine and the
+*compile-and-publish* path (CAS dedup, columnar compression, single-file mmap
+artifacts, time-travel) are fast and effective for datasets that fit in RAM;
+per-insert autocommit is quadratic (batch + flush instead), and there are no
+secondary indexes or larger-than-RAM support yet.
+
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE). Third-party
