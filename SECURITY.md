@@ -20,9 +20,13 @@ A security review of the parsing paths fixed, with regression tests:
   than panicking out of bounds.
 - **The `pv-wasm` decoder caps** declared memory pages and all LEB128 vector
   counts, preventing OOM from a crafted module.
+- **Bit-pack width is validated at runtime** (`bits ∈ 1..=8`) — a panic found by
+  the fuzz-lite test on a malformed dictionary.
 
-`cargo audit` reports no vulnerable dependencies (one informational
-unmaintained-crate notice: `paste`, transitive via `wasmi`).
+The decoders are **fuzzed**: a deterministic [`tests/fuzz_smoke.rs`](tests/fuzz_smoke.rs)
+runs in CI on every platform, and a coverage-guided [`fuzz/`](fuzz) cargo-fuzz
+crate (`cargo +nightly fuzz run decode_monolith | decode_wasm | decode_columnar`)
+runs on Linux. `cargo audit` reports **no advisories** and runs in CI.
 
 ## Threat model notes
 
@@ -34,9 +38,10 @@ Still treat these as untrusted unless you produced them yourself:
 - **WASM extension modules** — sandboxed, but don't run untrusted code with
   access to your secrets without further isolation review.
 
-Remaining sharp edges: parsers are bounds-checked but **not fuzzed**; the default
-durability mode is OS-cache (not power-loss-safe) — use `Durability::Sync` for
-crash-safe flushes; there is no authentication/encryption of data at rest.
+Remaining sharp edges: the default durability mode is OS-cache (not
+power-loss-safe) — use `Durability::Sync` for crash-safe flushes; there is no
+authentication/encryption of data at rest; fuzzing has run but not for long
+soak times.
 
 ## Reporting a vulnerability
 

@@ -10,6 +10,7 @@
 //!   into the contiguous monolith layout.
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -34,12 +35,14 @@ pub type PageBuf = Box<[u8; PAGE_SIZE]>;
 ///
 /// Keeps the write handle for the most-recently-written chunk open, so a stream
 /// of appends (autocommit) does not reopen the file per page. Reads use separate
-/// handles; Rust opens files with shared read/write modes, so this is safe, and
-/// durability is unchanged (neither path issues an explicit `fsync`).
+/// handles; Rust opens files with shared read/write modes, so this is safe.
+/// [`sync_data`](Self::sync_data) `fsync`s every chunk written since the last
+/// sync (tracked in `dirty_chunks`).
 pub struct DevStore {
     root: PathBuf,
     page_count: u64,
     write_handle: RefCell<Option<(u64, File)>>,
+    dirty_chunks: RefCell<BTreeSet<u64>>,
 }
 
 impl DevStore {
@@ -51,6 +54,7 @@ impl DevStore {
             root,
             page_count: 0,
             write_handle: RefCell::new(None),
+            dirty_chunks: RefCell::new(BTreeSet::new()),
         })
     }
 
@@ -62,6 +66,7 @@ impl DevStore {
             root,
             page_count,
             write_handle: RefCell::new(None),
+            dirty_chunks: RefCell::new(BTreeSet::new()),
         })
     }
 
@@ -96,6 +101,7 @@ impl DevStore {
         chunk_ix: u64,
         f: impl FnOnce(&mut File) -> Result<R>,
     ) -> Result<R> {
+        self.dirty_chunks.borrow_mut().insert(chunk_ix);
         let mut slot = self.write_handle.borrow_mut();
         let needs_open = slot.as_ref().map(|(ix, _)| *ix) != Some(chunk_ix);
         if needs_open {
@@ -148,15 +154,29 @@ impl DevStore {
         Ok(())
     }
 
-    /// `fsync` the active chunk write handle to stable storage.
+    /// `fsync` every chunk written since the last sync to stable storage.
     ///
-    /// Note: only the currently-open chunk is fsync'd. For the common case of a
-    /// workspace within one 64 MiB chunk this is full crash-safety; spanning
-    /// multiple chunks would need per-chunk fsync (future work).
+    /// `fsync` flushes a file's OS-cached writes regardless of which handle
+    /// initiated them, so chunks no longer held by the cached write handle are
+    /// synced by briefly reopening them. This gives full crash-safety across a
+    /// workspace spanning multiple 64 MiB chunks.
     pub fn sync_data(&self) -> Result<()> {
-        if let Some((_, file)) = self.write_handle.borrow().as_ref() {
-            file.sync_all()?;
+        let dirty: Vec<u64> = self.dirty_chunks.borrow().iter().copied().collect();
+        for chunk_ix in dirty {
+            let cached = self.write_handle.borrow().as_ref().map(|(ix, _)| *ix) == Some(chunk_ix);
+            if cached {
+                if let Some((_, file)) = self.write_handle.borrow().as_ref() {
+                    file.sync_all()?;
+                }
+            } else {
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(self.chunk_path(chunk_ix))?
+                    .sync_all()?;
+            }
         }
+        self.dirty_chunks.borrow_mut().clear();
         Ok(())
     }
 
@@ -395,5 +415,18 @@ mod tests {
             Monolith::open(&path),
             Err(PvError::SignatureMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn sync_data_fsyncs_all_dirty_chunks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dev = DevStore::create(tmp.path()).unwrap();
+        let page = [7u8; PAGE_SIZE];
+        dev.write_page(0, &page).unwrap(); // chunk 0
+        dev.write_page(PAGES_PER_CHUNK, &page).unwrap(); // chunk 1 (different file)
+                                                         // Must fsync both chunks (the cached one and the reopened one) without error.
+        dev.sync_data().unwrap();
+        assert!(tmp.path().join("chunks").join("chunk_00000.pvd").exists());
+        assert!(tmp.path().join("chunks").join("chunk_00001.pvd").exists());
     }
 }

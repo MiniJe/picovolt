@@ -152,7 +152,14 @@ pub fn pack_codes(codes: &[u8], bits: u8) -> Vec<u8> {
 
 /// Inverse of [`pack_codes`]; recovers exactly `count` codes.
 pub fn unpack_codes(packed: &[u8], bits: u8, count: usize) -> Result<Vec<u8>> {
-    debug_assert!((1..=8).contains(&bits));
+    // SECURITY: `bits` comes from a decoded (possibly malicious) dictionary, so
+    // validate it at runtime — a `debug_assert` would panic in debug builds and
+    // `1u16 << bits` would shift-overflow in release for `bits >= 16`.
+    if !(1..=8).contains(&bits) {
+        return Err(PvError::Corruption(format!(
+            "bit-pack: invalid bit width {bits} (must be 1..=8)"
+        )));
+    }
     // Each code consumes at least one bit, so the input bounds the code count.
     let mut out = Vec::with_capacity(count.min(packed.len().saturating_mul(8)));
     let mask = ((1u16 << bits) - 1) as u8;

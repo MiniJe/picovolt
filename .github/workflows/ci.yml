@@ -39,3 +39,26 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
+
+  audit:
+    name: cargo-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit
+
+  fuzz-build:
+    name: fuzz-build (nightly)
+    runs-on: ubuntu-latest
+    # cargo-fuzz sets its own RUSTFLAGS; don't inherit `-D warnings`.
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-fuzz
+      - name: Build fuzz targets (compile check)
+        run: cargo fuzz build --sanitizer none

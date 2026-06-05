@@ -84,7 +84,9 @@ Windows.
 - **Hardened against untrusted input.** Opening a `.pvdb`/workspace or running a
   WASM module validates manifest hashes (no path traversal), CAS offsets and page
   chains (no OOB / infinite-loop on a crafted file), and caps WASM resource counts.
-  See [SECURITY.md](SECURITY.md); `cargo audit` reports no vulnerable dependencies.
+  The decoders are **fuzzed** (cross-platform fuzz-lite test + a [`fuzz/`](fuzz)
+  cargo-fuzz crate) and `cargo audit` reports **no advisories** — both run in CI.
+  See [SECURITY.md](SECURITY.md).
 - **Columnar `u48` reserved field**: not a native Rust type; the 24-byte header
   reserves the full 13 trailing bytes (the spec's 8+1+2+6 only sums to 17). The
   cold-columnar conversion is implemented and tested but invoked on demand rather

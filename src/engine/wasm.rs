@@ -89,9 +89,7 @@ impl WasmModule {
         let mut store = Store::new(&self.engine, ());
         let linker = <Linker<()>>::new(&self.engine);
         let instance = linker
-            .instantiate(&mut store, &self.module)
-            .map_err(wasm_err)?
-            .start(&mut store)
+            .instantiate_and_start(&mut store, &self.module)
             .map_err(wasm_err)?;
         let memory = instance
             .get_memory(&store, "memory")
@@ -113,9 +111,7 @@ impl WasmModule {
         let mut store = Store::new(&self.engine, ());
         let linker = <Linker<()>>::new(&self.engine);
         let instance = linker
-            .instantiate(&mut store, &self.module)
-            .map_err(wasm_err)?
-            .start(&mut store)
+            .instantiate_and_start(&mut store, &self.module)
             .map_err(wasm_err)?;
         let memory = instance
             .get_memory(&store, "memory")

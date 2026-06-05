@@ -10,3 +10,9 @@ Cargo.lock
 # PicoVolt runtime artifacts
 .pv/
 *.pvdb
+
+# cargo-fuzz artifacts
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+/fuzz/Cargo.lock
