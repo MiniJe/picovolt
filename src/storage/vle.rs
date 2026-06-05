@@ -148,6 +148,18 @@ impl DevStore {
         Ok(())
     }
 
+    /// `fsync` the active chunk write handle to stable storage.
+    ///
+    /// Note: only the currently-open chunk is fsync'd. For the common case of a
+    /// workspace within one 64 MiB chunk this is full crash-safety; spanning
+    /// multiple chunks would need per-chunk fsync (future work).
+    pub fn sync_data(&self) -> Result<()> {
+        if let Some((_, file)) = self.write_handle.borrow().as_ref() {
+            file.sync_all()?;
+        }
+        Ok(())
+    }
+
     /// Read a full page out of its chunk file.
     pub fn read_page(&self, id: u64) -> Result<PageBuf> {
         if id >= self.page_count {

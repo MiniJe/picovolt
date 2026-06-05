@@ -64,7 +64,9 @@ pub use crate::core::types::*;
 #[doc(inline)]
 pub use crate::core::value::{Row, Value};
 #[doc(inline)]
-pub use crate::db::{pv_bake, pv_open_dev, pv_open_prod, Database, QueryResult, MANIFEST_FILE};
+pub use crate::db::{
+    pv_bake, pv_open_dev, pv_open_prod, Database, Durability, QueryResult, MANIFEST_FILE,
+};
 #[doc(inline)]
 pub use crate::engine::compliance::{ComplianceMonitor, RuntimeMetrics};
 #[doc(inline)]

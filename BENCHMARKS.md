@@ -53,9 +53,10 @@ Becoming a real storage engine cost some peak in-memory speed — a fair trade:
 - **In-memory append 7.8M → 1.9M rows/s**, **scan 5.7M → 3.5M rows/s**: inserts now
   serialize into real pages and scans decode records from the buffer pool, rather
   than pushing to / cloning from an in-RAM `Vec`.
-- **Durability is OS-cache, not `fsync`.** Neither the old nor new code forces
-  pages to stable storage; a power-loss crash can lose recent writes. Real
-  crash-safety (WAL or `fsync`) is future work.
+- **Durability is selectable.** The default `Fast` mode is OS-cache (a power-loss
+  crash can lose recent writes); `Durability::Sync` `fsync`s data and commits the
+  manifest atomically per flush (crash-safe, much slower). A full WAL is still
+  future work.
 - **Indexes are equality-only and in-memory**, rebuilt by a streaming scan on
   open. Range/ordered lookups and persisted B-trees are future work.
 - **`SELECT *` still materializes the full result set** (by definition). The

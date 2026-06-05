@@ -2,25 +2,41 @@
 
 ## Status
 
-PicoVolt is **experimental software** and has **not** been security-hardened or
-audited. Do not use it to store sensitive data in production.
+PicoVolt is **experimental software**. The untrusted-input parsing paths have
+been hardened (see below) and reviewed, but the code has **not** been fuzzed or
+independently certified. Don't store data you can't lose.
+
+## Hardening done
+
+A security review of the parsing paths fixed, with regression tests:
+
+- **CAS hashes from the manifest are validated** as 64 hex chars before being
+  used as file names (closes path traversal / arbitrary file read), and blob
+  contents are integrity-checked against their claimed BLAKE3 digest.
+- **CAS directory offsets are bounds-checked** against the mmap length.
+- **Page-chain traversal is capped** at the total page count, so a cyclic
+  `next_page` link errors instead of looping forever.
+- **Page slot/record reads are bounds-checked** — a crafted page errors rather
+  than panicking out of bounds.
+- **The `pv-wasm` decoder caps** declared memory pages and all LEB128 vector
+  counts, preventing OOM from a crafted module.
+
+`cargo audit` reports no vulnerable dependencies (one informational
+unmaintained-crate notice: `paste`, transitive via `wasmi`).
 
 ## Threat model notes
 
-The engine parses untrusted-by-design binary input and runs guest code. Treat
-the following as untrusted unless you produced them yourself:
+Still treat these as untrusted unless you produced them yourself:
 
-- **`.pvdb` monolith files.** Opening one memory-maps it and parses an internal
-  binary format and a JSON manifest. A maliciously crafted file could trigger a
-  panic. Do not open `.pvdb` files from untrusted sources.
-- **WASM extension modules.** The `wasmi` backend is a sandboxed interpreter and
-  the built-in `pv-wasm` interpreter bounds-checks memory, but neither should be
-  used to run untrusted code that has access to your secrets without further
-  isolation review.
+- **`.pvdb` monolith files** — opening one memory-maps it and parses an internal
+  binary format + JSON manifest. The mmap itself is `unsafe`: if the file is
+  mutated by another process while mapped, behavior is undefined.
+- **WASM extension modules** — sandboxed, but don't run untrusted code with
+  access to your secrets without further isolation review.
 
-Known sharp edges: decoders aim to return `PvError` rather than panic, but they
-have not been fuzzed; the development-mode persistence rewrites pages on every
-mutation and is not crash-atomic.
+Remaining sharp edges: parsers are bounds-checked but **not fuzzed**; the default
+durability mode is OS-cache (not power-loss-safe) — use `Durability::Sync` for
+crash-safe flushes; there is no authentication/encryption of data at rest.
 
 ## Reporting a vulnerability
 

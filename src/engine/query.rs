@@ -32,7 +32,7 @@ pub enum Statement {
         /// Column to index.
         column: String,
     },
-    /// `SELECT * FROM name [WHERE col = value] [BEFORE tx]`
+    /// `SELECT * FROM name [WHERE col = value] [BEFORE tx] [LIMIT n]`
     Select {
         /// Source table.
         table: String,
@@ -40,6 +40,17 @@ pub enum Statement {
         before: Option<u64>,
         /// Optional `column = value` equality filter.
         filter: Option<(String, Value)>,
+        /// Optional cap on the number of rows returned.
+        limit: Option<usize>,
+    },
+    /// `UPDATE name SET col = value WHERE col2 = value2`
+    Update {
+        /// Target table.
+        table: String,
+        /// Column to assign and its new value.
+        set: (String, Value),
+        /// Equality predicate selecting rows to update.
+        filter: (String, Value),
     },
     /// `DELETE FROM name WHERE col = value`
     Delete {
@@ -49,6 +60,11 @@ pub enum Statement {
         column: String,
         /// Predicate value (equality).
         value: Value,
+    },
+    /// `DROP TABLE name`
+    DropTable {
+        /// Table to drop.
+        table: String,
     },
 }
 
@@ -229,7 +245,9 @@ pub fn parse(sql: &str) -> Result<Statement> {
         Tok::Word(w) if w.eq_ignore_ascii_case("create") => parse_create(&mut cur)?,
         Tok::Word(w) if w.eq_ignore_ascii_case("insert") => parse_insert(&mut cur)?,
         Tok::Word(w) if w.eq_ignore_ascii_case("select") => parse_select(&mut cur)?,
+        Tok::Word(w) if w.eq_ignore_ascii_case("update") => parse_update(&mut cur)?,
         Tok::Word(w) if w.eq_ignore_ascii_case("delete") => parse_delete(&mut cur)?,
+        Tok::Word(w) if w.eq_ignore_ascii_case("drop") => parse_drop(&mut cur)?,
         other => return Err(PvError::Query(format!("unsupported statement: {other:?}"))),
     };
     cur.finish()?;
@@ -319,11 +337,49 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
         None
     };
 
+    let limit = if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("limit")) {
+        cur.next()?; // consume LIMIT
+        match cur.next()? {
+            Tok::Int(i) if i >= 0 => Some(i as usize),
+            other => {
+                return Err(PvError::Query(format!(
+                    "LIMIT expects a non-negative integer, found {other:?}"
+                )))
+            }
+        }
+    } else {
+        None
+    };
+
     Ok(Statement::Select {
         table,
         before,
         filter,
+        limit,
     })
+}
+
+fn parse_update(cur: &mut Cursor) -> Result<Statement> {
+    let table = cur.ident()?;
+    cur.keyword("set")?;
+    let set_column = cur.ident()?;
+    cur.expect(Tok::Eq)?;
+    let set_value = cur.value()?;
+    cur.keyword("where")?;
+    let where_column = cur.ident()?;
+    cur.expect(Tok::Eq)?;
+    let where_value = cur.value()?;
+    Ok(Statement::Update {
+        table,
+        set: (set_column, set_value),
+        filter: (where_column, where_value),
+    })
+}
+
+fn parse_drop(cur: &mut Cursor) -> Result<Statement> {
+    cur.keyword("table")?;
+    let table = cur.ident()?;
+    Ok(Statement::DropTable { table })
 }
 
 fn parse_delete(cur: &mut Cursor) -> Result<Statement> {
@@ -374,6 +430,7 @@ mod tests {
                 table: "users".into(),
                 before: None,
                 filter: None,
+                limit: None,
             }
         );
         assert_eq!(
@@ -382,26 +439,47 @@ mod tests {
                 table: "users".into(),
                 before: Some(7),
                 filter: None,
+                limit: None,
             }
         );
     }
 
     #[test]
-    fn parses_select_with_where_and_before() {
+    fn parses_select_with_where_before_and_limit() {
         assert_eq!(
             parse("SELECT * FROM users WHERE status = 'active'").unwrap(),
             Statement::Select {
                 table: "users".into(),
                 before: None,
                 filter: Some(("status".into(), Value::Text("active".into()))),
+                limit: None,
             }
         );
         assert_eq!(
-            parse("SELECT * FROM users WHERE id = 5 BEFORE 9").unwrap(),
+            parse("SELECT * FROM users WHERE id = 5 BEFORE 9 LIMIT 10").unwrap(),
             Statement::Select {
                 table: "users".into(),
                 before: Some(9),
                 filter: Some(("id".into(), Value::Int(5))),
+                limit: Some(10),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_update_and_drop() {
+        assert_eq!(
+            parse("UPDATE users SET status = 'gone' WHERE id = 3").unwrap(),
+            Statement::Update {
+                table: "users".into(),
+                set: ("status".into(), Value::Text("gone".into())),
+                filter: ("id".into(), Value::Int(3)),
+            }
+        );
+        assert_eq!(
+            parse("DROP TABLE users").unwrap(),
+            Statement::DropTable {
+                table: "users".into()
             }
         );
     }
@@ -431,8 +509,9 @@ mod tests {
 
     #[test]
     fn rejects_garbage_and_unsupported() {
-        assert!(parse("DROP TABLE users").is_err());
+        assert!(parse("TRUNCATE users").is_err());
         assert!(parse("SELECT * FROM").is_err());
         assert!(parse("INSERT INTO t VALUES (1,").is_err());
+        assert!(parse("UPDATE t SET a = 1").is_err()); // missing WHERE
     }
 }

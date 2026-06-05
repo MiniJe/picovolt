@@ -117,6 +117,18 @@ impl QueryResult {
 // Database
 // ---------------------------------------------------------------------------
 
+/// Durability policy for flushes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Durability {
+    /// Fast (default): writes land in the OS page cache; durable on clean exit
+    /// but a power-loss crash can lose recent writes. No `fsync`.
+    #[default]
+    Fast,
+    /// Crash-safe: each flush `fsync`s the data pages and commits the manifest
+    /// atomically (write-temp + `fsync` + rename). Much slower per flush.
+    Sync,
+}
+
 /// A PicoVolt database handle.
 pub struct Database {
     cache: RefCell<PageCache>,
@@ -126,6 +138,7 @@ pub struct Database {
     compliance: ComplianceMonitor,
     root: Option<PathBuf>,
     autocommit: bool,
+    durability: Durability,
     /// Cached write handle for the manifest, so autocommit doesn't reopen it.
     manifest_file: RefCell<Option<File>>,
 }
@@ -151,6 +164,7 @@ impl Database {
                 compliance: ComplianceMonitor::new(),
                 root: Some(root),
                 autocommit: true,
+                durability: Durability::Fast,
                 manifest_file: RefCell::new(None),
             })
         } else {
@@ -163,6 +177,7 @@ impl Database {
                 compliance: ComplianceMonitor::new(),
                 root: Some(root),
                 autocommit: true,
+                durability: Durability::Fast,
                 manifest_file: RefCell::new(None),
             })
         }
@@ -188,6 +203,7 @@ impl Database {
             compliance: ComplianceMonitor::new(),
             root: None,
             autocommit: false,
+            durability: Durability::Fast,
             manifest_file: RefCell::new(None),
         })
     }
@@ -224,12 +240,20 @@ impl Database {
                 table,
                 before,
                 filter,
+                limit,
             } => {
-                let (columns, rows) = match filter {
+                let (columns, mut rows) = match filter {
                     Some((column, value)) => self.select_where(&table, &column, &value, before)?,
                     None => self.select(&table, before)?,
                 };
+                if let Some(n) = limit {
+                    rows.truncate(n);
+                }
                 Ok(QueryResult::Rows { columns, rows })
+            }
+            Statement::Update { table, set, filter } => {
+                let n = self.update(&table, &set.0, &set.1, &filter.0, &filter.1)?;
+                Ok(QueryResult::Mutated(n))
             }
             Statement::Delete {
                 table,
@@ -238,6 +262,10 @@ impl Database {
             } => {
                 let n = self.delete(&table, &column, &value)?;
                 Ok(QueryResult::Mutated(n))
+            }
+            Statement::DropTable { table } => {
+                self.drop_table(&table)?;
+                Ok(QueryResult::Done)
             }
         }
     }
@@ -432,6 +460,96 @@ impl Database {
         Ok((columns, rows))
     }
 
+    /// Update rows where `where_column == where_value`, assigning `set_value` to
+    /// `set_column`. Append-only (MVCC): matching versions are tombstoned and new
+    /// versions carrying the change are inserted. Returns the number updated.
+    pub fn update(
+        &mut self,
+        table_name: &str,
+        set_column: &str,
+        set_value: &Value,
+        where_column: &str,
+        where_value: &Value,
+    ) -> Result<usize> {
+        self.ensure_writable()?;
+
+        // Collect matching visible rows (address + a copy of their values).
+        let (set_ix, matches) = {
+            let table = self
+                .tables
+                .get(table_name)
+                .ok_or_else(|| PvError::TableNotFound(table_name.into()))?;
+            let set_ix = column_index(table, set_column)?;
+            let where_ix = column_index(table, where_column)?;
+            let snapshot = self.txm.snapshot();
+            let mut hits: Vec<(RecordAddr, Row)> = Vec::new();
+            let mut cache = self.cache.borrow_mut();
+            for_each_candidate(
+                &mut cache,
+                table,
+                &self.cas,
+                where_column,
+                where_value,
+                |addr, env, row| {
+                    if snapshot.sees(env) && &row[where_ix] == where_value {
+                        hits.push((addr, row.clone()));
+                    }
+                    Ok(())
+                },
+            )?;
+            (set_ix, hits)
+        };
+
+        let count = matches.len();
+        if count == 0 {
+            return Ok(0);
+        }
+
+        // Tombstone the old versions, then insert updated copies.
+        let del_tx = self.txm.begin_write();
+        {
+            let table = self.tables.get_mut(table_name).expect("existence checked");
+            let mut cache = self.cache.borrow_mut();
+            for (addr, _) in &matches {
+                patch_delete_at(&mut cache, table, *addr, del_tx)?;
+            }
+        }
+        for (_, mut row) in matches {
+            row[set_ix] = set_value.clone();
+            self.insert(table_name, row)?;
+        }
+        self.maybe_flush()?;
+        Ok(count)
+    }
+
+    /// Drop a table from the catalog. (Its pages are orphaned until a future
+    /// vacuum reclaims them.)
+    pub fn drop_table(&mut self, name: &str) -> Result<()> {
+        self.ensure_writable()?;
+        if self.tables.remove(name).is_none() {
+            return Err(PvError::TableNotFound(name.into()));
+        }
+        self.maybe_flush()
+    }
+
+    /// Count rows visible at the given snapshot, without materializing them.
+    pub fn row_count(&self, table_name: &str, before: Option<u64>) -> Result<usize> {
+        let table = self
+            .tables
+            .get(table_name)
+            .ok_or_else(|| PvError::TableNotFound(table_name.into()))?;
+        let snapshot = Snapshot::as_of(before.unwrap_or_else(|| self.txm.current()));
+        let mut count = 0usize;
+        let mut cache = self.cache.borrow_mut();
+        scan(&mut cache, table, &self.cas, |_, env, _| {
+            if snapshot.sees(env) {
+                count += 1;
+            }
+            Ok(())
+        })?;
+        Ok(count)
+    }
+
     // --- compliance & extensions -------------------------------------------
 
     /// Run the licensing compliance hook against the supplied metrics.
@@ -480,6 +598,16 @@ impl Database {
         self.autocommit = on;
     }
 
+    /// Set the durability policy applied on each flush. See [`Durability`].
+    pub fn set_durability(&mut self, durability: Durability) {
+        self.durability = durability;
+    }
+
+    /// The current durability policy.
+    pub fn durability(&self) -> Durability {
+        self.durability
+    }
+
     /// Resize the buffer pool (in pages). Smaller bounds memory; larger caches more.
     pub fn set_cache_capacity(&self, pages: usize) -> Result<()> {
         self.cache.borrow_mut().set_capacity(pages)
@@ -521,6 +649,7 @@ impl Database {
         if !self.cache.borrow().is_writable() {
             return Ok(());
         }
+        let sync = self.durability == Durability::Sync;
         {
             let mut cache = self.cache.borrow_mut();
             for table in self.tables.values() {
@@ -529,9 +658,23 @@ impl Database {
                 }
             }
             cache.flush()?;
+            // Crash-safety: data pages are fsync'd BEFORE the manifest commits,
+            // so the manifest never references unflushed pages.
+            if sync {
+                cache.sync()?;
+            }
         }
         let manifest = self.build_manifest(false)?;
         let json = serde_json::to_vec_pretty(&manifest)?;
+        if sync {
+            self.write_manifest_atomic(&root, &json)
+        } else {
+            self.write_manifest_fast(&root, &json)
+        }
+    }
+
+    /// Overwrite the manifest in place through a cached handle (fast, not atomic).
+    fn write_manifest_fast(&self, root: &Path, json: &[u8]) -> Result<()> {
         let mut slot = self.manifest_file.borrow_mut();
         if slot.is_none() {
             *slot = Some(
@@ -545,8 +688,24 @@ impl Database {
         }
         let file = slot.as_mut().expect("manifest handle present");
         file.seek(SeekFrom::Start(0))?;
-        file.write_all(&json)?;
+        file.write_all(json)?;
         file.set_len(json.len() as u64)?;
+        Ok(())
+    }
+
+    /// Commit the manifest atomically: write a temp file, `fsync` it, then rename
+    /// over the live manifest. After a crash either the old or new manifest is
+    /// present in full — never a torn write.
+    fn write_manifest_atomic(&self, root: &Path, json: &[u8]) -> Result<()> {
+        // The renamed-away inode would orphan a cached handle; drop it.
+        *self.manifest_file.borrow_mut() = None;
+        let tmp = root.join("pv_manifest.json.tmp");
+        {
+            let mut file = File::create(&tmp)?;
+            file.write_all(json)?;
+            file.sync_all()?;
+        }
+        fs::rename(&tmp, root.join(MANIFEST_FILE))?;
         Ok(())
     }
 
@@ -961,5 +1120,62 @@ mod tests {
         };
         let result = scan(&mut cache, &table, &cas, |_, _, _| Ok(()));
         assert!(result.is_err(), "cyclic chain must error, not hang");
+    }
+
+    #[test]
+    fn sync_durability_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        {
+            let mut db = Database::open_dev(&ws).unwrap();
+            db.set_durability(Durability::Sync);
+            db.query("CREATE TABLE t (id, name)").unwrap();
+            db.query("INSERT INTO t VALUES (1, 'alice')").unwrap();
+            db.query("INSERT INTO t VALUES (2, 'bob')").unwrap();
+        }
+        let mut db = Database::open_dev(&ws).unwrap();
+        assert_eq!(
+            db.query("SELECT * FROM t").unwrap().rows().unwrap().len(),
+            2
+        );
+        // The atomic-commit temp file must not linger.
+        assert!(!ws.join("pv_manifest.json.tmp").exists());
+    }
+
+    #[test]
+    fn update_limit_drop_and_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut db = Database::open_dev(tmp.path().join("ws")).unwrap();
+        db.query("CREATE TABLE t (id, status)").unwrap();
+        for i in 1..=5i64 {
+            db.query(&format!("INSERT INTO t VALUES ({i}, 'open')"))
+                .unwrap();
+        }
+        assert_eq!(db.row_count("t", None).unwrap(), 5);
+
+        // UPDATE replaces one row's value (tombstone + reinsert), count unchanged.
+        assert_eq!(
+            db.query("UPDATE t SET status = 'closed' WHERE id = 3")
+                .unwrap(),
+            QueryResult::Mutated(1)
+        );
+        assert_eq!(db.row_count("t", None).unwrap(), 5);
+        let closed = db.query("SELECT * FROM t WHERE status = 'closed'").unwrap();
+        assert_eq!(closed.rows().unwrap().len(), 1);
+        assert_eq!(closed.rows().unwrap()[0][0], Value::Int(3));
+
+        // LIMIT caps the result.
+        assert_eq!(
+            db.query("SELECT * FROM t LIMIT 2")
+                .unwrap()
+                .rows()
+                .unwrap()
+                .len(),
+            2
+        );
+
+        // DROP TABLE removes it.
+        db.query("DROP TABLE t").unwrap();
+        assert!(db.query("SELECT * FROM t").is_err());
     }
 }

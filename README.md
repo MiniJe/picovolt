@@ -53,7 +53,7 @@ Windows.
 | [`engine/mvcc.rs`](src/engine/mvcc.rs) | transaction clock + snapshot visibility |
 | [`engine/wasm.rs`](src/engine/wasm.rs) | sandboxed `wasmi` extension runtime + the `WasmExec` backend trait |
 | [`engine/interp.rs`](src/engine/interp.rs) | `pv-wasm`: a from-scratch WASM interpreter (integer subset) |
-| [`engine/query.rs`](src/engine/query.rs) | small SQL front-end (`SELECT … BEFORE tx`, etc.) |
+| [`engine/query.rs`](src/engine/query.rs) | small SQL front-end (CREATE/INSERT/UPDATE/DELETE/DROP, `SELECT … WHERE … BEFORE … LIMIT`) |
 | [`engine/compliance.rs`](src/engine/compliance.rs) | optional, app-driven usage-policy hook (not a license requirement) |
 | [`db.rs`](src/db.rs) | `Database` surface tying it all together |
 
@@ -76,7 +76,15 @@ Windows.
   whole-table rewrite. Reads stream through a bounded buffer pool
   ([`storage/cache.rs`](src/storage/cache.rs)) so datasets need not fit in RAM, and
   opt-in equality indexes ([`storage/index.rs`](src/storage/index.rs)) turn
-  `WHERE col = value` into a lookup. Durability is OS-cache (no `fsync` yet).
+  `WHERE col = value` into a lookup.
+- **Durability is selectable.** `Database::set_durability(Durability::Sync)` makes
+  each flush `fsync` the data and commit the manifest atomically (write-temp →
+  `fsync` → rename); the default `Fast` mode is OS-cache only (fast, durable on
+  clean exit, not power-loss-safe).
+- **Hardened against untrusted input.** Opening a `.pvdb`/workspace or running a
+  WASM module validates manifest hashes (no path traversal), CAS offsets and page
+  chains (no OOB / infinite-loop on a crafted file), and caps WASM resource counts.
+  See [SECURITY.md](SECURITY.md); `cargo audit` reports no vulnerable dependencies.
 - **Columnar `u48` reserved field**: not a native Rust type; the 24-byte header
   reserves the full 13 trailing bytes (the spec's 8+1+2+6 only sums to 17). The
   cold-columnar conversion is implemented and tested but invoked on demand rather
@@ -94,8 +102,14 @@ cargo test
 ```sh
 cargo run --release --example notes    # a small notes app: CRUD, edit history,
                                         # time-travel, CAS dedup, publish (bake)
+cargo run --release --example repl      # interactive SQL shell (pvsql)
 cargo run --release --example bench     # evaluation harness across modes/workloads
 ```
+
+SQL supported: `CREATE TABLE`, `CREATE INDEX ON t (col)`, `INSERT`, `UPDATE … SET …
+WHERE`, `DELETE … WHERE`, `DROP TABLE`, and `SELECT * FROM t [WHERE col = v]
+[BEFORE tx] [LIMIT n]`. Durability is selectable via `Database::set_durability`
+(`Fast` OS-cache default, or crash-safe `Sync` with fsync + atomic manifest).
 
 Measured results and an honest writeup live in [BENCHMARKS.md](BENCHMARKS.md).
 Short version: PicoVolt is a page-backed engine with O(1) durable appends

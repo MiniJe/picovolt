@@ -163,6 +163,14 @@ impl PageCache {
         Ok(out)
     }
 
+    /// `fsync` the development backend's active chunk to stable storage.
+    pub fn sync(&self) -> Result<()> {
+        if let Backend::Dev(d) = &self.backend {
+            d.sync_data()?;
+        }
+        Ok(())
+    }
+
     /// Write all dirty pages back to the backend (bulk per contiguous run).
     pub fn flush(&mut self) -> Result<()> {
         let Backend::Dev(dev) = &self.backend else {
