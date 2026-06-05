@@ -8,7 +8,7 @@
 //! §4 compression primitives.
 
 use crate::core::errors::{PvError, Result};
-use crate::core::types::{ColumnarPageHeader, RowPageHeader, PAGE_HEADER_SIZE, PAGE_SIZE};
+use crate::core::types::{ColumnarPageHeader, RowPageHeader, NO_PAGE, PAGE_HEADER_SIZE, PAGE_SIZE};
 use crate::core::value::{Row, Value};
 use crate::storage::compress::{delta_z_decode, delta_z_encode, DictionaryColumn};
 
@@ -125,6 +125,81 @@ impl RowPage {
 
     /// Iterate `(slot_index, record_bytes)` for every slot.
     pub fn iter(&self) -> impl Iterator<Item = (u16, &[u8])> {
+        (0..self.slot_count()).map(move |i| (i, self.record(i).expect("valid slot index")))
+    }
+
+    /// The next page in this table's chain, or `None` if this is the tail.
+    pub fn next_page(&self) -> Option<u64> {
+        match self.header().next_page {
+            NO_PAGE => None,
+            id => Some(id),
+        }
+    }
+
+    /// Set (or clear) the next-page link.
+    pub fn set_next_page(&mut self, next: Option<u64>) {
+        let mut header = self.header();
+        header.next_page = next.unwrap_or(NO_PAGE);
+        self.set_header(&header);
+    }
+}
+
+/// A read-only, **borrowing** view over a row-page buffer — lets the buffer pool
+/// hand out pages for scanning without copying the 4096 bytes.
+pub struct RowPageRef<'a> {
+    buf: &'a [u8],
+}
+
+impl<'a> RowPageRef<'a> {
+    /// Wrap a buffer, validating it is a row page.
+    pub fn new(buf: &'a [u8]) -> Result<Self> {
+        RowPageHeader::decode(buf)?;
+        Ok(Self { buf })
+    }
+
+    /// Decode the header.
+    pub fn header(&self) -> RowPageHeader {
+        RowPageHeader::decode(self.buf).expect("row page header validated on construction")
+    }
+
+    /// Number of occupied slots.
+    pub fn slot_count(&self) -> u16 {
+        self.header().slot_count
+    }
+
+    /// The next page in the chain, or `None` at the tail.
+    pub fn next_page(&self) -> Option<u64> {
+        match self.header().next_page {
+            NO_PAGE => None,
+            id => Some(id),
+        }
+    }
+
+    fn slot(&self, index: u16) -> Result<(usize, usize)> {
+        if index >= self.slot_count() {
+            return Err(PvError::OutOfBounds {
+                offset: index as usize,
+                size: self.slot_count() as usize,
+            });
+        }
+        let slot_pos = PAGE_HEADER_SIZE + index as usize * SLOT_SIZE;
+        let offset =
+            u16::from_le_bytes(self.buf[slot_pos..slot_pos + 2].try_into().unwrap()) as usize;
+        let len =
+            u16::from_le_bytes(self.buf[slot_pos + 2..slot_pos + 4].try_into().unwrap()) as usize;
+        Ok((offset, len))
+    }
+
+    /// Borrow the record payload in slot `index`.
+    pub fn record(&self, index: u16) -> Result<&'a [u8]> {
+        let (offset, len) = self.slot(index)?;
+        self.buf
+            .get(offset..offset + len)
+            .ok_or_else(|| PvError::Corruption("row record out of page bounds".into()))
+    }
+
+    /// Iterate `(slot_index, record_bytes)` for every slot.
+    pub fn iter(&self) -> impl Iterator<Item = (u16, &'a [u8])> + '_ {
         (0..self.slot_count()).map(move |i| (i, self.record(i).expect("valid slot index")))
     }
 }

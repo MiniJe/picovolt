@@ -9,6 +9,7 @@
 //! * [`bake_monolith`] — compiles a dev workspace's pages + CAS pool + manifest
 //!   into the contiguous monolith layout.
 
+use std::cell::RefCell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -30,9 +31,15 @@ pub type PageBuf = Box<[u8; PAGE_SIZE]>;
 // ---------------------------------------------------------------------------
 
 /// Mutable page store backed by `chunks/chunk_NNNNN.pvd` files under a workspace.
+///
+/// Keeps the write handle for the most-recently-written chunk open, so a stream
+/// of appends (autocommit) does not reopen the file per page. Reads use separate
+/// handles; Rust opens files with shared read/write modes, so this is safe, and
+/// durability is unchanged (neither path issues an explicit `fsync`).
 pub struct DevStore {
     root: PathBuf,
     page_count: u64,
+    write_handle: RefCell<Option<(u64, File)>>,
 }
 
 impl DevStore {
@@ -43,6 +50,7 @@ impl DevStore {
         Ok(Self {
             root,
             page_count: 0,
+            write_handle: RefCell::new(None),
         })
     }
 
@@ -50,7 +58,11 @@ impl DevStore {
     pub fn open(root: impl Into<PathBuf>, page_count: u64) -> Result<Self> {
         let root = root.into();
         fs::create_dir_all(root.join("chunks"))?;
-        Ok(Self { root, page_count })
+        Ok(Self {
+            root,
+            page_count,
+            write_handle: RefCell::new(None),
+        })
     }
 
     /// Number of pages allocated so far.
@@ -77,45 +89,61 @@ impl DevStore {
         id
     }
 
-    /// Write a full page to its chunk file, extending the file if necessary.
-    pub fn write_page(&self, id: u64, page: &[u8; PAGE_SIZE]) -> Result<()> {
-        let within = (id % PAGES_PER_CHUNK) * PAGE_SIZE as u64;
-        let path = self.chunk_path(id / PAGES_PER_CHUNK);
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false) // pages are written at offsets; keep existing content
-            .open(&path)?;
-        file.seek(SeekFrom::Start(within))?;
-        file.write_all(page)?;
-        Ok(())
-    }
-
-    /// Write pages `0..pages.len()` contiguously, opening each chunk file **once**
-    /// and issuing one bulk write per chunk. This is dramatically faster than
-    /// per-page [`write_page`] calls when persisting a whole workspace.
-    pub fn write_pages(&self, pages: &[PageBuf]) -> Result<()> {
-        let total = pages.len() as u64;
-        let mut id = 0u64;
-        while id < total {
-            let chunk_ix = id / PAGES_PER_CHUNK;
-            let chunk_start = chunk_ix * PAGES_PER_CHUNK;
-            let chunk_end = ((chunk_ix + 1) * PAGES_PER_CHUNK).min(total);
-            let path = self.chunk_path(chunk_ix);
-            let mut file = OpenOptions::new()
+    /// Run `f` against the (cached) write handle for `chunk_ix`, opening and
+    /// caching it if a different chunk's handle is currently held.
+    fn with_chunk_write<R>(
+        &self,
+        chunk_ix: u64,
+        f: impl FnOnce(&mut File) -> Result<R>,
+    ) -> Result<R> {
+        let mut slot = self.write_handle.borrow_mut();
+        let needs_open = slot.as_ref().map(|(ix, _)| *ix) != Some(chunk_ix);
+        if needs_open {
+            let file = OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create(true)
-                .truncate(false)
-                .open(&path)?;
-            file.seek(SeekFrom::Start((id - chunk_start) * PAGE_SIZE as u64))?;
-            let mut batch = Vec::with_capacity((chunk_end - id) as usize * PAGE_SIZE);
-            for page in &pages[id as usize..chunk_end as usize] {
+                .truncate(false) // pages are written at offsets; keep existing content
+                .open(self.chunk_path(chunk_ix))?;
+            *slot = Some((chunk_ix, file));
+        }
+        let (_, file) = slot.as_mut().expect("handle present");
+        f(file)
+    }
+
+    /// Write a full page to its chunk file, extending the file if necessary.
+    pub fn write_page(&self, id: u64, page: &[u8; PAGE_SIZE]) -> Result<()> {
+        let within = (id % PAGES_PER_CHUNK) * PAGE_SIZE as u64;
+        self.with_chunk_write(id / PAGES_PER_CHUNK, |file| {
+            file.seek(SeekFrom::Start(within))?;
+            file.write_all(page)?;
+            Ok(())
+        })
+    }
+
+    /// Write `pages` at consecutive ids starting from `start_id`, opening each
+    /// chunk file **once** and issuing one bulk write per chunk. Dramatically
+    /// faster than per-page [`write_page`] calls.
+    pub fn write_pages_from(&self, start_id: u64, pages: &[&PageBuf]) -> Result<()> {
+        let end = start_id + pages.len() as u64;
+        let mut id = start_id;
+        let mut idx = 0usize;
+        while id < end {
+            let chunk_ix = id / PAGES_PER_CHUNK;
+            let chunk_start = chunk_ix * PAGES_PER_CHUNK;
+            let chunk_page_end = ((chunk_ix + 1) * PAGES_PER_CHUNK).min(end);
+            let count = (chunk_page_end - id) as usize;
+            let mut batch = Vec::with_capacity(count * PAGE_SIZE);
+            for page in &pages[idx..idx + count] {
                 batch.extend_from_slice(&page[..]);
             }
-            file.write_all(&batch)?;
-            id = chunk_end;
+            self.with_chunk_write(chunk_ix, |file| {
+                file.seek(SeekFrom::Start((id - chunk_start) * PAGE_SIZE as u64))?;
+                file.write_all(&batch)?;
+                Ok(())
+            })?;
+            idx += count;
+            id = chunk_page_end;
         }
         Ok(())
     }

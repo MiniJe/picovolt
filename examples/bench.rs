@@ -28,6 +28,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     dev_vs_prod()?;
     columnar_compression()?;
     sql_vs_api()?;
+    larger_than_ram()?;
+    indexed_lookup()?;
 
     println!("\nAll scenarios complete.");
     Ok(())
@@ -73,23 +75,28 @@ fn insert_modes() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    {
+    // Autocommit is now durable-per-insert *and* linear: 4x the rows should take
+    // ~4x the time (it used to be ~16x, quadratic).
+    let mut prev: Option<(usize, f64)> = None;
+    for n in [2_000usize, 8_000] {
         let tmp = tempfile::tempdir()?;
         let mut db = Database::open_dev(tmp.path())?; // autocommit on by default
         db.query("CREATE TABLE t (a, b)")?;
-        let n = 1_000;
         let (_, secs) = timed(|| {
             for i in 0..n as i64 {
                 db.insert("t", vec![Value::Int(i), Value::Int(i * 2)])
                     .unwrap();
             }
         });
-        rate_row(
-            "autocommit (flush every insert)",
-            n,
-            secs,
-            Some("O(n) full rewrite per insert".into()),
-        );
+        let note = prev.map(|(pn, ps)| {
+            format!(
+                "{:.1}x time for {:.0}x rows (linear)",
+                secs / ps,
+                n as f64 / pn as f64
+            )
+        });
+        rate_row("autocommit (durable per insert)", n, secs, note);
+        prev = Some((n, secs));
     }
     Ok(())
 }
@@ -303,6 +310,89 @@ fn sql_vs_api() -> Result<(), Box<dyn Error>> {
             Some("includes tokenize + parse".into()),
         );
     }
+    Ok(())
+}
+
+// 7. Serve a dataset much larger than the buffer pool.
+fn larger_than_ram() -> Result<(), Box<dyn Error>> {
+    section("7. Larger-than-RAM: serving with a tiny buffer pool");
+    let tmp = tempfile::tempdir()?;
+    let ws = tmp.path().join("ws");
+    let baked = tmp.path().join("db.pvdb");
+    let n = 50_000usize;
+    {
+        let mut db = Database::open_dev(&ws)?;
+        db.set_autocommit(false);
+        db.query("CREATE TABLE t (id, payload)")?;
+        for i in 0..n as i64 {
+            db.insert("t", vec![Value::Int(i), Value::from(format!("row-{i:08}"))])?;
+        }
+        db.flush_now()?;
+        db.bake(&baked)?;
+    }
+
+    let prod = Database::open_prod(&baked)?;
+    prod.set_cache_capacity(16)?; // 16 pages = 64 KiB
+    let (_, secs) = timed(|| {
+        black_box(prod.select("t", None).unwrap().1.len());
+    });
+    let bytes = std::fs::metadata(&baked)?.len();
+    println!(
+        "  dataset on disk:          {}  (~{} pages)",
+        human(bytes),
+        bytes / 4096
+    );
+    println!("  buffer pool cap:          16 pages (64 KiB)");
+    println!(
+        "  full scan of {} rows:  {:.1} ms",
+        thousands(n as u64),
+        secs * 1000.0
+    );
+    println!(
+        "  pages resident after:     {}  (bounded — dataset never fully resident)",
+        prod.cache_resident()
+    );
+    Ok(())
+}
+
+// 8. Equality lookup: secondary index vs full scan.
+fn indexed_lookup() -> Result<(), Box<dyn Error>> {
+    section("8. Indexed lookup vs full scan (50,000 rows, 1 match)");
+    let tmp = tempfile::tempdir()?;
+    let mut db = Database::open_dev(tmp.path())?;
+    db.set_autocommit(false);
+    db.query("CREATE TABLE t (id, tag)")?;
+    let n = 50_000;
+    for i in 0..n as i64 {
+        let tag = if i == 40_000 { "needle" } else { "hay" };
+        db.insert("t", vec![Value::Int(i), Value::from(tag)])?;
+    }
+    db.flush_now()?;
+
+    let needle = Value::from("needle");
+    let iters = 50;
+    let (_, scan_secs) = timed(|| {
+        for _ in 0..iters {
+            black_box(db.select_where("t", "tag", &needle, None).unwrap().1.len());
+        }
+    });
+
+    db.query("CREATE INDEX ON t (tag)")?;
+    let (_, idx_secs) = timed(|| {
+        for _ in 0..iters {
+            black_box(db.select_where("t", "tag", &needle, None).unwrap().1.len());
+        }
+    });
+
+    println!(
+        "  full scan:                {:.3} ms/query",
+        scan_secs / iters as f64 * 1000.0
+    );
+    println!(
+        "  indexed lookup:           {:.4} ms/query   ({:.0}x faster)",
+        idx_secs / iters as f64 * 1000.0,
+        scan_secs / idx_secs.max(1e-9)
+    );
     Ok(())
 }
 

@@ -69,6 +69,25 @@ pub type PhysAddr = u64;
 /// [`RecordEnvelope::tx_deleted`] to mark a record as still active.
 pub const TX_NULL: TxId = 0;
 
+/// Sentinel page id meaning "no page" (end of an append-only page chain).
+pub const NO_PAGE: PageId = u64::MAX;
+
+/// A stable physical record address: the page id packed with the slot index
+/// (`page_id << 16 | slot`). Records never move once written, so this is durable.
+pub type RecordAddr = u64;
+
+/// Pack a `(page_id, slot)` pair into a [`RecordAddr`].
+#[inline]
+pub const fn pack_addr(page_id: PageId, slot: u16) -> RecordAddr {
+    (page_id << 16) | slot as u64
+}
+
+/// Unpack a [`RecordAddr`] into its `(page_id, slot)` parts.
+#[inline]
+pub const fn unpack_addr(addr: RecordAddr) -> (PageId, u16) {
+    (addr >> 16, (addr & 0xFFFF) as u16)
+}
+
 // ---------------------------------------------------------------------------
 // Page type discriminant
 // ---------------------------------------------------------------------------
@@ -211,7 +230,8 @@ pub const fn is_record_visible(envelope: &RecordEnvelope, target_tx: TxId) -> bo
 /// | 8      | 1    | page type discriminant `0x01` |
 /// | 9      | 2    | `slot_count` (u16)          |
 /// | 11     | 2    | `free_space_ptr` (u16)      |
-/// | 13     | 11   | reserved (zeroed)           |
+/// | 13     | 8    | `next_page` (u64)           |
+/// | 21     | 3    | reserved (zeroed)           |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RowPageHeader {
     /// Identifier of this page.
@@ -220,6 +240,10 @@ pub struct RowPageHeader {
     pub slot_count: u16,
     /// Boundary between free space and the upward-growing record storage array.
     pub free_space_ptr: u16,
+    /// Next page in this table's append-only chain, or [`NO_PAGE`] if this is the
+    /// tail. Lets the manifest store only a table's head page id (O(tables))
+    /// rather than its full page list (O(pages)).
+    pub next_page: PageId,
 }
 
 impl RowPageHeader {
@@ -234,6 +258,7 @@ impl RowPageHeader {
             page_id,
             slot_count: 0,
             free_space_ptr: PAGE_SIZE as u16,
+            next_page: NO_PAGE,
         }
     }
 
@@ -244,7 +269,8 @@ impl RowPageHeader {
         buf[8] = Self::PAGE_TYPE.as_byte();
         buf[9..11].copy_from_slice(&self.slot_count.to_le_bytes());
         buf[11..13].copy_from_slice(&self.free_space_ptr.to_le_bytes());
-        // bytes 13..24 remain reserved / zero
+        buf[13..21].copy_from_slice(&self.next_page.to_le_bytes());
+        // bytes 21..24 remain reserved / zero
         buf
     }
 
@@ -256,6 +282,7 @@ impl RowPageHeader {
             page_id: read_u64_le(buf, 0),
             slot_count: read_u16_le(buf, 9),
             free_space_ptr: read_u16_le(buf, 11),
+            next_page: read_u64_le(buf, 13),
         })
     }
 }
@@ -498,19 +525,28 @@ mod tests {
             page_id: 0x0102_0304_0506_0708,
             slot_count: 3,
             free_space_ptr: 3850,
+            next_page: 99,
         };
         let bytes = h.encode();
         assert_eq!(bytes.len(), PAGE_HEADER_SIZE);
         assert_eq!(bytes[8], PageType::Row.as_byte());
         assert_eq!(RowPageHeader::decode(&bytes).unwrap(), h);
-        // Reserved tail is zeroed.
-        assert!(bytes[13..].iter().all(|&b| b == 0));
+        // Reserved tail (after the next-page link) is zeroed.
+        assert!(bytes[21..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn pack_addr_round_trips() {
+        for (pid, slot) in [(0u64, 0u16), (1, 5), (123_456, 42), (1 << 40, 0xFFFF)] {
+            assert_eq!(unpack_addr(pack_addr(pid, slot)), (pid, slot));
+        }
     }
 
     #[test]
     fn new_row_header_starts_empty_with_full_free_space() {
         let h = RowPageHeader::new(1);
         assert_eq!(h.slot_count, 0);
+        assert_eq!(h.next_page, NO_PAGE);
         assert_eq!(h.free_space_ptr as usize, PAGE_SIZE);
     }
 

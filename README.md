@@ -43,9 +43,11 @@ Windows.
 | [`core/types.rs`](src/core/types.rs) | constants, ids, `PageType`, `RecordEnvelope`, page & file headers (explicit little-endian codecs) |
 | [`core/errors.rs`](src/core/errors.rs) | unified `PvError` + `ComplianceError` |
 | [`core/value.rs`](src/core/value.rs) | dynamically-typed `Value` / `Row` |
-| [`storage/page.rs`](src/storage/page.rs) | slotted row page (O(1) append) + columnar transposition |
+| [`storage/page.rs`](src/storage/page.rs) | slotted row page (O(1) append) + chain links + columnar transposition |
+| [`storage/cache.rs`](src/storage/cache.rs) | bounded LRU buffer pool (enables larger-than-RAM reads) |
 | [`storage/cas.rs`](src/storage/cas.rs) | BLAKE3 content-addressable dedup (memory / dev-files / mmap) |
 | [`storage/compress.rs`](src/storage/compress.rs) | Delta-Z, LEB128 varints, dictionary bit-packing |
+| [`storage/index.rs`](src/storage/index.rs) | in-memory equality secondary index (value → record addresses) |
 | [`storage/record.rs`](src/storage/record.rs) | row ⇄ record-body serialization with CAS interception |
 | [`storage/vle.rs`](src/storage/vle.rs) | dev directory store, prod mmap monolith, `bake` |
 | [`engine/mvcc.rs`](src/engine/mvcc.rs) | transaction clock + snapshot visibility |
@@ -68,13 +70,17 @@ Windows.
   `wasmi` to keep it honest. (Floats, tables, globals, imports, SIMD, and
   `br_table` are deliberately out of scope for `pv-wasm` and rejected rather than
   mis-run.)
+- **Page-backed engine.** Tables are append-only chains of row pages (each header
+  links to the next). Inserts append to a *tail page* and write only that page
+  plus an O(tables) manifest, so autocommit is O(1)/insert (linear), not the old
+  whole-table rewrite. Reads stream through a bounded buffer pool
+  ([`storage/cache.rs`](src/storage/cache.rs)) so datasets need not fit in RAM, and
+  opt-in equality indexes ([`storage/index.rs`](src/storage/index.rs)) turn
+  `WHERE col = value` into a lookup. Durability is OS-cache (no `fsync` yet).
 - **Columnar `u48` reserved field**: not a native Rust type; the 24-byte header
-  reserves the full 13 trailing bytes (the spec's 8+1+2+6 only sums to 17).
-- **Persistence**: development mode re-serializes tables to pages on each mutation
-  (`autocommit`) for simplicity — a documented write-amplification trade-off, not
-  the incremental persistence a production engine would use. The cold-columnar
-  conversion is implemented and tested but invoked on demand rather than by a
-  background timer.
+  reserves the full 13 trailing bytes (the spec's 8+1+2+6 only sums to 17). The
+  cold-columnar conversion is implemented and tested but invoked on demand rather
+  than by a background timer.
 
 ## Build
 
@@ -91,12 +97,14 @@ cargo run --release --example notes    # a small notes app: CRUD, edit history,
 cargo run --release --example bench     # evaluation harness across modes/workloads
 ```
 
-Measured results and an honest strengths/limitations writeup live in
-[BENCHMARKS.md](BENCHMARKS.md). Short version: the in-memory engine and the
-*compile-and-publish* path (CAS dedup, columnar compression, single-file mmap
-artifacts, time-travel) are fast and effective for datasets that fit in RAM;
-per-insert autocommit is quadratic (batch + flush instead), and there are no
-secondary indexes or larger-than-RAM support yet.
+Measured results and an honest writeup live in [BENCHMARKS.md](BENCHMARKS.md).
+Short version: PicoVolt is a page-backed engine with O(1) durable appends
+(autocommit ~33k rows/s, *linear*), larger-than-RAM reads via a bounded buffer
+pool (a 667-page dataset serves from a 16-page pool), secondary indexes
+(`WHERE col = value` ~11,000× faster than a scan), MVCC time-travel, and a fast
+compile-and-publish path (CAS dedup, columnar compression, single-file mmap
+artifacts). It is not yet crash-safe (no `fsync`) and has no range indexes or
+concurrency.
 
 ## License
 

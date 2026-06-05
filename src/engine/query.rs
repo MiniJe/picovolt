@@ -25,12 +25,21 @@ pub enum Statement {
         /// Row values, positional.
         values: Vec<Value>,
     },
-    /// `SELECT * FROM name [BEFORE tx]`
+    /// `CREATE INDEX ON name (col)`
+    CreateIndex {
+        /// Table to index.
+        table: String,
+        /// Column to index.
+        column: String,
+    },
+    /// `SELECT * FROM name [WHERE col = value] [BEFORE tx]`
     Select {
         /// Source table.
         table: String,
         /// Optional time-travel snapshot id.
         before: Option<u64>,
+        /// Optional `column = value` equality filter.
+        filter: Option<(String, Value)>,
     },
     /// `DELETE FROM name WHERE col = value`
     Delete {
@@ -228,23 +237,37 @@ pub fn parse(sql: &str) -> Result<Statement> {
 }
 
 fn parse_create(cur: &mut Cursor) -> Result<Statement> {
-    cur.keyword("table")?;
-    let name = cur.ident()?;
-    cur.expect(Tok::LParen)?;
-    let mut columns = Vec::new();
-    loop {
-        columns.push(cur.ident()?);
-        match cur.next()? {
-            Tok::Comma => continue,
-            Tok::RParen => break,
-            other => {
-                return Err(PvError::Query(format!(
-                    "expected ',' or ')', found {other:?}"
-                )))
+    match cur.next()? {
+        Tok::Word(w) if w.eq_ignore_ascii_case("table") => {
+            let name = cur.ident()?;
+            cur.expect(Tok::LParen)?;
+            let mut columns = Vec::new();
+            loop {
+                columns.push(cur.ident()?);
+                match cur.next()? {
+                    Tok::Comma => continue,
+                    Tok::RParen => break,
+                    other => {
+                        return Err(PvError::Query(format!(
+                            "expected ',' or ')', found {other:?}"
+                        )))
+                    }
+                }
             }
+            Ok(Statement::CreateTable { name, columns })
         }
+        Tok::Word(w) if w.eq_ignore_ascii_case("index") => {
+            cur.keyword("on")?;
+            let table = cur.ident()?;
+            cur.expect(Tok::LParen)?;
+            let column = cur.ident()?;
+            cur.expect(Tok::RParen)?;
+            Ok(Statement::CreateIndex { table, column })
+        }
+        other => Err(PvError::Query(format!(
+            "expected TABLE or INDEX after CREATE, found {other:?}"
+        ))),
     }
-    Ok(Statement::CreateTable { name, columns })
 }
 
 fn parse_insert(cur: &mut Cursor) -> Result<Statement> {
@@ -272,21 +295,35 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
     cur.expect(Tok::Star)?;
     cur.keyword("from")?;
     let table = cur.ident()?;
-    let before = match cur.peek() {
-        Some(Tok::Word(w)) if w.eq_ignore_ascii_case("before") => {
-            cur.next()?; // consume BEFORE
-            match cur.next()? {
-                Tok::Int(i) if i >= 0 => Some(i as u64),
-                other => {
-                    return Err(PvError::Query(format!(
-                        "BEFORE expects a non-negative integer, found {other:?}"
-                    )))
-                }
+
+    let mut filter = None;
+    if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("where")) {
+        cur.next()?; // consume WHERE
+        let column = cur.ident()?;
+        cur.expect(Tok::Eq)?;
+        let value = cur.value()?;
+        filter = Some((column, value));
+    }
+
+    let before = if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("before")) {
+        cur.next()?; // consume BEFORE
+        match cur.next()? {
+            Tok::Int(i) if i >= 0 => Some(i as u64),
+            other => {
+                return Err(PvError::Query(format!(
+                    "BEFORE expects a non-negative integer, found {other:?}"
+                )))
             }
         }
-        _ => None,
+    } else {
+        None
     };
-    Ok(Statement::Select { table, before })
+
+    Ok(Statement::Select {
+        table,
+        before,
+        filter,
+    })
 }
 
 fn parse_delete(cur: &mut Cursor) -> Result<Statement> {
@@ -336,6 +373,7 @@ mod tests {
             Statement::Select {
                 table: "users".into(),
                 before: None,
+                filter: None,
             }
         );
         assert_eq!(
@@ -343,6 +381,38 @@ mod tests {
             Statement::Select {
                 table: "users".into(),
                 before: Some(7),
+                filter: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_select_with_where_and_before() {
+        assert_eq!(
+            parse("SELECT * FROM users WHERE status = 'active'").unwrap(),
+            Statement::Select {
+                table: "users".into(),
+                before: None,
+                filter: Some(("status".into(), Value::Text("active".into()))),
+            }
+        );
+        assert_eq!(
+            parse("SELECT * FROM users WHERE id = 5 BEFORE 9").unwrap(),
+            Statement::Select {
+                table: "users".into(),
+                before: Some(9),
+                filter: Some(("id".into(), Value::Int(5))),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_create_index() {
+        assert_eq!(
+            parse("CREATE INDEX ON users (status)").unwrap(),
+            Statement::CreateIndex {
+                table: "users".into(),
+                column: "status".into(),
             }
         );
     }
