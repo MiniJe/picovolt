@@ -144,9 +144,20 @@ impl CasStore {
         let root = root.into();
         let mut store = Self::new_dev(root.clone());
         for hex_hash in hashes {
+            // SECURITY: validate the hash is exactly 64 hex chars BEFORE using it
+            // to build a path. An unvalidated manifest string could otherwise
+            // contain `..` / path separators (arbitrary file read) or be too
+            // short for `blob_path`'s `[..2]` slice (panic).
+            let expected = parse_hex32(hex_hash)?;
             let path = blob_path(&root, hex_hash);
             let data = fs::read(&path)?;
-            // Re-intern (verifies the hash and rebuilds the index).
+            // Verify the file content actually hashes to the claimed digest, so a
+            // tampered workspace cannot substitute blob contents.
+            if blake3::hash(&data).as_bytes() != &expected {
+                return Err(PvError::Corruption(format!(
+                    "CAS blob {hex_hash} failed integrity check"
+                )));
+            }
             store.put(&data)?;
         }
         Ok(store)
@@ -167,10 +178,23 @@ impl CasStore {
                 "CAS directory / hash catalog length mismatch".into(),
             ));
         }
+        let map_len = mmap.len();
         let mut store = Self::new_memory();
         for (id, (&(rel_off, len), hex_hash)) in dir.iter().zip(hashes).enumerate() {
             let hash = parse_hex32(hex_hash)?;
-            let offset = base + rel_off as usize;
+            // SECURITY: validate every (offset, len) lies within the mapping with
+            // checked arithmetic, so `get()`'s slice can never panic out of bounds.
+            let offset = base
+                .checked_add(rel_off as usize)
+                .ok_or_else(|| PvError::Corruption("CAS offset overflow".into()))?;
+            let end = offset
+                .checked_add(len as usize)
+                .ok_or_else(|| PvError::Corruption("CAS extent overflow".into()))?;
+            if end > map_len {
+                return Err(PvError::Corruption(format!(
+                    "CAS blob {id} extends past end of file ({end} > {map_len})"
+                )));
+            }
             store.entries.push(CasEntry {
                 hash,
                 blob: Blob::Mapped {
@@ -212,18 +236,31 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn parse_hex32(s: &str) -> Result<[u8; 32]> {
-    if s.len() != 64 {
+    // Operate on bytes (not `&s[..]` slicing) so a 64-byte string containing a
+    // multibyte UTF-8 char can't panic on a non-char-boundary. Only ASCII hex
+    // bytes are accepted, which also guarantees the string is a safe file name
+    // (no path separators / `..`) when later used by `blob_path`.
+    let bytes = s.as_bytes();
+    if bytes.len() != 64 {
         return Err(PvError::Corruption(format!(
             "bad CAS hash length: {}",
-            s.len()
+            bytes.len()
         )));
     }
     let mut out = [0u8; 32];
     for (i, byte) in out.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)
-            .map_err(|_| PvError::Corruption("non-hex CAS digest".into()))?;
+        *byte = (hex_nibble(bytes[i * 2])? << 4) | hex_nibble(bytes[i * 2 + 1])?;
     }
     Ok(out)
+}
+
+fn hex_nibble(c: u8) -> Result<u8> {
+    match c {
+        b'0'..=b'9' => Ok(c - b'0'),
+        b'a'..=b'f' => Ok(c - b'a' + 10),
+        b'A'..=b'F' => Ok(c - b'A' + 10),
+        _ => Err(PvError::Corruption("non-hex CAS digest".into())),
+    }
 }
 
 const _: () = assert!(CAS_POINTER_SIZE == std::mem::size_of::<CasId>());
@@ -275,5 +312,35 @@ mod tests {
             reopened.get(id).unwrap(),
             b"persisted blob payload exceeding sixteen"
         );
+    }
+
+    #[test]
+    fn load_dev_rejects_malicious_hash_strings() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Path traversal attempt must be rejected, never turned into a path read.
+        assert!(CasStore::load_dev(tmp.path(), &["../../../../etc/passwd".into()]).is_err());
+        // Too-short / non-ASCII strings must error, not panic on slicing.
+        assert!(CasStore::load_dev(tmp.path(), &["a".into()]).is_err());
+        assert!(CasStore::load_dev(tmp.path(), &["€".repeat(22)]).is_err());
+        // 64 ASCII chars that aren't all hex must be rejected too.
+        assert!(CasStore::load_dev(tmp.path(), &["g".repeat(64)]).is_err());
+    }
+
+    #[test]
+    fn from_mapped_rejects_out_of_bounds_directory() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("pool");
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&[0u8; 64])
+            .unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        // SAFETY: read-only mapping used only for slicing in this test.
+        let mmap = Arc::new(unsafe { Mmap::map(&file).unwrap() });
+        let valid_hash = "00".repeat(32); // 64 hex chars
+                                          // A blob claiming to extend past the 64-byte mapping must be rejected.
+        let result = CasStore::from_mapped(mmap, 0, &[(0, 1_000)], &[valid_hash]);
+        assert!(matches!(result, Err(PvError::Corruption(_))));
     }
 }

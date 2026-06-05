@@ -674,12 +674,23 @@ fn scan(
     cas: &CasStore,
     mut visit: impl FnMut(RecordAddr, &RecordEnvelope, &Row) -> Result<()>,
 ) -> Result<()> {
+    // SECURITY: bound the traversal so a crafted cyclic `next_page` chain (e.g. a
+    // page that links to itself) cannot loop forever. A valid chain visits each
+    // page at most once, so it can never exceed the total page count.
+    let max_hops = cache.backend().page_count().saturating_add(1);
+    let mut hops = 0u64;
     let mut next = table.first_page;
     while let Some(pid) = next {
+        hops += 1;
+        if hops > max_hops {
+            return Err(PvError::Corruption(
+                "page chain longer than total page count (cycle?)".into(),
+            ));
+        }
         if Some(pid) == table.tail_id {
             if let Some(tail) = &table.tail {
-                for (slot, rec) in tail.iter() {
-                    let (env, row) = decode_record(rec, cas)?;
+                for slot in 0..tail.slot_count() {
+                    let (env, row) = decode_record(tail.record(slot)?, cas)?;
                     visit(pack_addr(pid, slot), &env, &row)?;
                 }
                 next = tail.next_page();
@@ -688,8 +699,8 @@ fn scan(
         }
         next = cache.with_page(pid, |buf| {
             let page = RowPageRef::new(buf)?;
-            for (slot, rec) in page.iter() {
-                let (env, row) = decode_record(rec, cas)?;
+            for slot in 0..page.slot_count() {
+                let (env, row) = decode_record(page.record(slot)?, cas)?;
                 visit(pack_addr(pid, slot), &env, &row)?;
             }
             Ok(page.next_page())
@@ -923,5 +934,32 @@ mod tests {
             db.assert_compliance(&over),
             Err(PvError::Compliance(_))
         ));
+    }
+
+    #[test]
+    fn cyclic_page_chain_errors_rather_than_hangs() {
+        // SECURITY: a crafted page whose next-link points to itself must not loop
+        // forever — the scan caps traversal at the total page count.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut dev = DevStore::create(tmp.path()).unwrap();
+        let pid = dev.alloc_page(); // 0; page_count -> 1
+        let mut cas = CasStore::new_memory();
+        let record = encode_record(&RecordEnvelope::new(1, 0), &[], &mut cas).unwrap();
+        let mut page = RowPage::new(pid);
+        page.insert(&record).unwrap();
+        page.set_next_page(Some(pid)); // self-cycle
+        dev.write_page(pid, page.as_bytes()).unwrap();
+
+        let mut cache = PageCache::new(Backend::Dev(dev), 8);
+        let table = Table {
+            columns: vec!["x".into()],
+            first_page: Some(pid),
+            tail_id: None,
+            tail: None,
+            row_versions: 0,
+            indexes: BTreeMap::new(),
+        };
+        let result = scan(&mut cache, &table, &cas, |_, _, _| Ok(()));
+        assert!(result.is_err(), "cyclic chain must error, not hang");
     }
 }

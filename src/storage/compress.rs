@@ -95,7 +95,9 @@ pub fn delta_z_encode(values: &[i64]) -> Vec<u8> {
 pub fn delta_z_decode(buf: &[u8]) -> Result<Vec<i64>> {
     let mut pos = 0usize;
     let count = read_uvarint(buf, &mut pos)? as usize;
-    let mut out = Vec::with_capacity(count);
+    // Each value past the base is at least a 1-byte varint, so cap the
+    // pre-allocation by the input length to avoid OOM from a crafted count.
+    let mut out = Vec::with_capacity(count.min(buf.len()));
     if count == 0 {
         return Ok(out);
     }
@@ -151,7 +153,8 @@ pub fn pack_codes(codes: &[u8], bits: u8) -> Vec<u8> {
 /// Inverse of [`pack_codes`]; recovers exactly `count` codes.
 pub fn unpack_codes(packed: &[u8], bits: u8, count: usize) -> Result<Vec<u8>> {
     debug_assert!((1..=8).contains(&bits));
-    let mut out = Vec::with_capacity(count);
+    // Each code consumes at least one bit, so the input bounds the code count.
+    let mut out = Vec::with_capacity(count.min(packed.len().saturating_mul(8)));
     let mask = ((1u16 << bits) - 1) as u8;
     let mut acc: u16 = 0;
     let mut filled: u8 = 0;

@@ -210,6 +210,7 @@ impl Monolith {
         if header.cas_offset < FILE_HEADER_SIZE as u64
             || header.manifest_offset < header.cas_offset
             || header.manifest_offset as usize > mmap.len()
+            || (header.cas_offset as usize - FILE_HEADER_SIZE) % PAGE_SIZE != 0
         {
             return Err(PvError::Corruption(
                 "monolith offsets are inconsistent".into(),
@@ -302,9 +303,15 @@ pub fn bake_monolith(
     cas_pool: &[u8],
     manifest_json: &[u8],
 ) -> Result<()> {
-    let page_block_len = pages.len() * PAGE_SIZE;
-    let cas_offset = FILE_HEADER_SIZE + page_block_len;
-    let manifest_offset = cas_offset + cas_pool.len();
+    let overflow = || PvError::Corruption("monolith size overflows address space".into());
+    let cas_offset = pages
+        .len()
+        .checked_mul(PAGE_SIZE)
+        .and_then(|n| n.checked_add(FILE_HEADER_SIZE))
+        .ok_or_else(overflow)?;
+    let manifest_offset = cas_offset
+        .checked_add(cas_pool.len())
+        .ok_or_else(overflow)?;
     let header = FileHeader::new(manifest_offset as u64, cas_offset as u64);
 
     let mut out = File::create(out_path)?;

@@ -23,6 +23,12 @@ use crate::engine::wasm::WasmExec;
 
 const PAGE_BYTES: usize = 65_536;
 const MAX_CALL_DEPTH: usize = 256;
+/// Cap on a guest module's declared linear-memory pages (256 MiB) — bounds the
+/// allocation in [`Instance`] against a malicious `min` in the memory section.
+const MAX_MEMORY_PAGES: u32 = 4096;
+/// Cap on any LEB128-encoded vector length in the decoder — bounds allocation
+/// and loop counts against malicious section headers.
+const MAX_VEC_LEN: usize = 1 << 20;
 
 fn trap(msg: impl Into<String>) -> PvError {
     PvError::Wasm(msg.into())
@@ -257,6 +263,18 @@ impl<'a> Reader<'a> {
         Ok(self.uleb()? as u32)
     }
 
+    /// Read a LEB128 vector length, rejecting values above [`MAX_VEC_LEN`] so a
+    /// malicious count cannot drive an unbounded loop or allocation.
+    fn count(&mut self) -> Result<usize> {
+        let n = self.uleb()?;
+        if n > MAX_VEC_LEN as u64 {
+            return Err(trap(format!(
+                "vector length {n} exceeds limit {MAX_VEC_LEN}"
+            )));
+        }
+        Ok(n as usize)
+    }
+
     fn sleb(&mut self) -> Result<i64> {
         let mut result: i64 = 0;
         let mut shift = 0u32;
@@ -356,7 +374,7 @@ fn decode_module(bytes: &[u8]) -> Result<PvModule> {
                 }
             }
             3 => {
-                let n = s.uleb()?;
+                let n = s.count()?;
                 for _ in 0..n {
                     func_type_idx.push(s.u32()?);
                 }
@@ -400,14 +418,14 @@ fn decode_module(bytes: &[u8]) -> Result<PvModule> {
 }
 
 fn decode_type_section(s: &mut Reader, types: &mut Vec<FuncType>) -> Result<()> {
-    let n = s.uleb()?;
+    let n = s.count()?;
     for _ in 0..n {
         if s.byte()? != 0x60 {
             return Err(trap("expected function type (0x60)"));
         }
-        let np = s.uleb()?;
+        let np = s.count()?;
         let params = (0..np).map(|_| valtype(s)).collect::<Result<Vec<_>>>()?;
-        let nr = s.uleb()?;
+        let nr = s.count()?;
         let results = (0..nr).map(|_| valtype(s)).collect::<Result<Vec<_>>>()?;
         types.push(FuncType { params, results });
     }
@@ -415,7 +433,7 @@ fn decode_type_section(s: &mut Reader, types: &mut Vec<FuncType>) -> Result<()> 
 }
 
 fn decode_memory_section(s: &mut Reader) -> Result<u32> {
-    let n = s.uleb()?;
+    let n = s.count()?;
     let mut pages = 0u32;
     for i in 0..n {
         let flags = s.byte()?;
@@ -424,14 +442,21 @@ fn decode_memory_section(s: &mut Reader) -> Result<u32> {
             let _max = s.u32()?;
         }
         if i == 0 {
-            pages = min; // only the first memory is used by the integer subset
+            // SECURITY: cap declared memory so `Instance` can't be made to request
+            // a multi-terabyte allocation by a crafted `min`.
+            if min > MAX_MEMORY_PAGES {
+                return Err(trap(format!(
+                    "declared memory {min} pages exceeds limit {MAX_MEMORY_PAGES}"
+                )));
+            }
+            pages = min;
         }
     }
     Ok(pages)
 }
 
 fn decode_export_section(s: &mut Reader, exports: &mut Vec<ExportEntry>) -> Result<()> {
-    let n = s.uleb()?;
+    let n = s.count()?;
     for _ in 0..n {
         let name = s.name()?;
         let kind = s.byte()?;
@@ -442,7 +467,7 @@ fn decode_export_section(s: &mut Reader, exports: &mut Vec<ExportEntry>) -> Resu
 }
 
 fn decode_code_section(s: &mut Reader, codes: &mut Vec<(Vec<ValType>, Vec<Instr>)>) -> Result<()> {
-    let n = s.uleb()?;
+    let n = s.count()?;
     for _ in 0..n {
         let body_size = s.uleb()? as usize;
         let body = s.take(body_size)?;
@@ -455,11 +480,16 @@ fn decode_code_section(s: &mut Reader, codes: &mut Vec<(Vec<ValType>, Vec<Instr>
 }
 
 fn decode_locals(r: &mut Reader) -> Result<Vec<ValType>> {
-    let groups = r.uleb()?;
+    let groups = r.count()?;
     let mut locals = Vec::new();
     for _ in 0..groups {
-        let count = r.uleb()?;
+        let count = r.count()?;
         let ty = valtype(r)?;
+        // SECURITY: a local group's count consumes no per-element bytes, so cap
+        // the running total to bound allocation against a giant declared count.
+        if locals.len() + count > MAX_VEC_LEN {
+            return Err(trap("too many locals"));
+        }
         for _ in 0..count {
             locals.push(ty);
         }
@@ -1266,5 +1296,18 @@ mod tests {
             .map(|b| Interpreter::new().load(&b))
             .unwrap()
             .is_err());
+    }
+
+    #[test]
+    fn rejects_oversized_memory_declaration() {
+        // SECURITY: a module declaring far more pages than the cap must be
+        // rejected at decode time, not allocate gigabytes in `instantiate`.
+        let wat = r#"(module (memory (export "memory") 50000)
+            (func (export "f") (param i32 i32) (result i32) (i32.const 0)))"#;
+        let bytes = wat::parse_str(wat).unwrap();
+        assert!(matches!(
+            Interpreter::new().load(&bytes),
+            Err(PvError::Wasm(_))
+        ));
     }
 }

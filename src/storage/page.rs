@@ -15,6 +15,25 @@ use crate::storage::compress::{delta_z_decode, delta_z_encode, DictionaryColumn}
 /// Bytes per slot-array entry: `offset(u16) + len(u16)`.
 pub const SLOT_SIZE: usize = 4;
 
+/// Read slot `index`'s `(offset, len)` from a page buffer with full bounds
+/// checks, so a crafted page (bad `slot_count` or a slot pointing past the
+/// buffer) yields an error rather than an out-of-bounds panic.
+fn read_slot(buf: &[u8], index: u16, slot_count: u16) -> Result<(usize, usize)> {
+    if index >= slot_count {
+        return Err(PvError::OutOfBounds {
+            offset: index as usize,
+            size: slot_count as usize,
+        });
+    }
+    let slot_pos = PAGE_HEADER_SIZE + index as usize * SLOT_SIZE;
+    let entry = buf
+        .get(slot_pos..slot_pos + SLOT_SIZE)
+        .ok_or_else(|| PvError::Corruption("slot array out of page bounds".into()))?;
+    let offset = u16::from_le_bytes(entry[0..2].try_into().unwrap()) as usize;
+    let len = u16::from_le_bytes(entry[2..4].try_into().unwrap()) as usize;
+    Ok((offset, len))
+}
+
 /// A mutable, fixed-size slotted row page.
 pub struct RowPage {
     buf: Box<[u8; PAGE_SIZE]>,
@@ -95,24 +114,15 @@ impl RowPage {
     }
 
     fn slot(&self, index: u16) -> Result<(usize, usize)> {
-        if index >= self.slot_count() {
-            return Err(PvError::OutOfBounds {
-                offset: index as usize,
-                size: self.slot_count() as usize,
-            });
-        }
-        let slot_pos = PAGE_HEADER_SIZE + index as usize * SLOT_SIZE;
-        let offset =
-            u16::from_le_bytes(self.buf[slot_pos..slot_pos + 2].try_into().unwrap()) as usize;
-        let len =
-            u16::from_le_bytes(self.buf[slot_pos + 2..slot_pos + 4].try_into().unwrap()) as usize;
-        Ok((offset, len))
+        read_slot(&self.buf[..], index, self.slot_count())
     }
 
     /// Borrow the record payload stored in slot `index`.
     pub fn record(&self, index: u16) -> Result<&[u8]> {
         let (offset, len) = self.slot(index)?;
-        Ok(&self.buf[offset..offset + len])
+        self.buf
+            .get(offset..offset + len)
+            .ok_or_else(|| PvError::Corruption("row record out of page bounds".into()))
     }
 
     /// Overwrite the `tx_deleted` field (bytes 8..16) of the envelope in slot
@@ -176,18 +186,7 @@ impl<'a> RowPageRef<'a> {
     }
 
     fn slot(&self, index: u16) -> Result<(usize, usize)> {
-        if index >= self.slot_count() {
-            return Err(PvError::OutOfBounds {
-                offset: index as usize,
-                size: self.slot_count() as usize,
-            });
-        }
-        let slot_pos = PAGE_HEADER_SIZE + index as usize * SLOT_SIZE;
-        let offset =
-            u16::from_le_bytes(self.buf[slot_pos..slot_pos + 2].try_into().unwrap()) as usize;
-        let len =
-            u16::from_le_bytes(self.buf[slot_pos + 2..slot_pos + 4].try_into().unwrap()) as usize;
-        Ok((offset, len))
+        read_slot(self.buf, index, self.slot_count())
     }
 
     /// Borrow the record payload in slot `index`.
@@ -369,7 +368,9 @@ fn encode_raw_column(values: &[&Value]) -> Vec<u8> {
 fn decode_raw_column(payload: &[u8]) -> Result<Vec<Value>> {
     let mut pos = 0usize;
     let count = read_u32(payload, &mut pos)? as usize;
-    let mut out = Vec::with_capacity(count);
+    // Each entry is at least one tag byte, so cap the pre-allocation by the
+    // remaining payload to avoid an OOM from a crafted count.
+    let mut out = Vec::with_capacity(count.min(payload.len()));
     for _ in 0..count {
         let tag = *payload
             .get(pos)
