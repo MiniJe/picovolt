@@ -98,8 +98,8 @@ impl WasmModule {
         let func = instance
             .get_typed_func::<(i32, i32), i32>(&store, func_name)
             .map_err(wasm_err)?;
-        func.call(&mut store, (0, input.len() as i32))
-            .map_err(wasm_err)
+        let len = i32::try_from(input.len()).map_err(wasm_err)?;
+        func.call(&mut store, (0, len)).map_err(wasm_err)
     }
 
     /// Like [`call_scalar`], but the guest is expected to mutate the input region
@@ -120,9 +120,8 @@ impl WasmModule {
         let func = instance
             .get_typed_func::<(i32, i32), i32>(&store, func_name)
             .map_err(wasm_err)?;
-        let out_len = func
-            .call(&mut store, (0, input.len() as i32))
-            .map_err(wasm_err)? as usize;
+        let len = i32::try_from(input.len()).map_err(wasm_err)?;
+        let out_len = func.call(&mut store, (0, len)).map_err(wasm_err)? as usize;
         let mut out = vec![0u8; out_len];
         memory.read(&store, 0, &mut out).map_err(wasm_err)?;
         Ok(out)

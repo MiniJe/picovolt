@@ -30,16 +30,16 @@ impl Db {
         }
     }
 
-    /// Run one SQL statement. Returns a plain JS object:
-    /// `{ columns, rows }` for `SELECT`, `{ mutated: n }` for
-    /// `INSERT`/`UPDATE`/`DELETE`, or `{ done: true }` otherwise. Throws the
-    /// error message (a string) on failure.
-    pub fn query(&mut self, sql: &str) -> Result<JsValue, JsValue> {
+    /// Run one SQL statement. Returns a **JSON string** (call `JSON.parse` in JS):
+    /// `{"columns":[...],"rows":[[...]]}` for `SELECT`, `{"mutated":n}` for
+    /// `INSERT`/`UPDATE`/`DELETE`, or `{"done":true}` otherwise. Throws the error
+    /// message (a string) on failure.
+    pub fn query(&mut self, sql: &str) -> Result<String, JsValue> {
         let result = self
             .inner
             .query(sql)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        serde_wasm_bindgen::to_value(&result_to_json(&result))
+        serde_json::to_string(&result_to_json(&result))
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 

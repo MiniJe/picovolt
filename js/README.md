@@ -35,7 +35,8 @@ db.query("INSERT INTO users VALUES (1, 'alice', 'free')");
 db.query("INSERT INTO users VALUES (2, 'bob', 'pro')");
 db.query("CREATE INDEX ON users (tier)");
 
-const res = db.query("SELECT * FROM users WHERE tier = 'free'");
+// query() returns a JSON string — parse it:
+const res = JSON.parse(db.query("SELECT * FROM users WHERE tier = 'free'"));
 console.log(res); // { columns: ["id","name","tier"], rows: [[1,"alice","free"]] }
 
 const bytes = db.export(); // Uint8Array — a .pvdb image
@@ -49,7 +50,7 @@ in the browser, or run `node node-demo.cjs` after building for `--target nodejs`
 | Method | Returns |
 |--------|---------|
 | `new Db()` | a fresh in-memory database |
-| `db.query(sql)` | `{ columns, rows }` (SELECT), `{ mutated: n }` (INSERT/UPDATE/DELETE), or `{ done: true }`; throws the error message on failure |
+| `db.query(sql)` | a **JSON string** (`JSON.parse` it): `{ columns, rows }` (SELECT), `{ mutated: n }` (INSERT/UPDATE/DELETE), or `{ done: true }`; throws the error message on failure |
 | `db.export()` | the database as a `.pvdb` `Uint8Array` |
 
 Supported SQL: `CREATE TABLE`, `CREATE INDEX ON t (col)`, `INSERT`,

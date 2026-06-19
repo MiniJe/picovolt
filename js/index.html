@@ -24,6 +24,8 @@
       const out = document.getElementById("out");
       const log = (label, value) =>
         (out.textContent += `${label}: ${JSON.stringify(value)}\n`);
+      // query() returns a JSON string — parse it.
+      const q = (sql) => JSON.parse(db.query(sql));
 
       await init();
       out.textContent = "";
@@ -35,10 +37,10 @@
       db.query("INSERT INTO notes VALUES (3, 'another info', 'info')");
       db.query("CREATE INDEX ON notes (tag)");
 
-      log("all notes", db.query("SELECT * FROM notes"));
-      log("tag = info", db.query("SELECT * FROM notes WHERE tag = 'info'"));
-      log("update", db.query("UPDATE notes SET tag = 'done' WHERE id = 2"));
-      log("limit 1", db.query("SELECT * FROM notes LIMIT 1"));
+      log("all notes", q("SELECT * FROM notes"));
+      log("tag = info", q("SELECT * FROM notes WHERE tag = 'info'"));
+      log("update", q("UPDATE notes SET tag = 'done' WHERE id = 2"));
+      log("limit 1", q("SELECT * FROM notes LIMIT 1"));
       log("exported .pvdb bytes", db.export().length);
     </script>
   </body>

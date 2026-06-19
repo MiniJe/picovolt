@@ -135,7 +135,9 @@ impl RowPage {
 
     /// Iterate `(slot_index, record_bytes)` for every slot.
     pub fn iter(&self) -> impl Iterator<Item = (u16, &[u8])> {
-        (0..self.slot_count()).map(move |i| (i, self.record(i).expect("valid slot index")))
+        // `map_while` (not `.expect()`): a malformed page stops the iterator
+        // rather than panicking, so these helpers can never become a panic vector.
+        (0..self.slot_count()).map_while(move |i| self.record(i).ok().map(|r| (i, r)))
     }
 
     /// The next page in this table's chain, or `None` if this is the tail.
@@ -199,7 +201,9 @@ impl<'a> RowPageRef<'a> {
 
     /// Iterate `(slot_index, record_bytes)` for every slot.
     pub fn iter(&self) -> impl Iterator<Item = (u16, &'a [u8])> + '_ {
-        (0..self.slot_count()).map(move |i| (i, self.record(i).expect("valid slot index")))
+        // `map_while` (not `.expect()`): a malformed page stops the iterator
+        // rather than panicking, so these helpers can never become a panic vector.
+        (0..self.slot_count()).map_while(move |i| self.record(i).ok().map(|r| (i, r)))
     }
 }
 
