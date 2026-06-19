@@ -24,7 +24,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::errors::{PvError, Result};
 use crate::core::types::{
-    pack_addr, unpack_addr, PageId, RecordAddr, RecordEnvelope, TxId, PAGE_HEADER_SIZE, PAGE_SIZE,
+    pack_addr, unpack_addr, FileHeader, PageId, RecordAddr, RecordEnvelope, TxId, FILE_HEADER_SIZE,
+    PAGE_HEADER_SIZE, PAGE_SIZE,
 };
 use crate::core::value::{Row, Value};
 use crate::engine::compliance::{ComplianceMonitor, RuntimeMetrics};
@@ -228,6 +229,71 @@ impl Database {
             durability: Durability::Fast,
             manifest_file: RefCell::new(None),
         }
+    }
+
+    /// Load a baked `.pvdb` **byte image** into a fresh, **writable** in-memory
+    /// database — the inverse of [`bake_to_bytes`](Self::bake_to_bytes).
+    ///
+    /// Unlike [`open_prod`](Self::open_prod) (read-only, mmap'd), this copies the
+    /// pages into RAM so editing can continue, and it preserves the full MVCC
+    /// history (so `... BEFORE tx` time-travel survives a round trip). The input
+    /// is untrusted: all offsets, the CAS directory, and the page chains are
+    /// bounds-checked, so a malformed image yields an error, never a panic.
+    pub fn import_bytes(bytes: &[u8]) -> Result<Self> {
+        let header = FileHeader::decode(bytes)?; // validates the magic signature
+        let cas_offset = header.cas_offset as usize;
+        let manifest_offset = header.manifest_offset as usize;
+        if cas_offset < FILE_HEADER_SIZE
+            || manifest_offset < cas_offset
+            || manifest_offset > bytes.len()
+            || (cas_offset - FILE_HEADER_SIZE) % PAGE_SIZE != 0
+        {
+            return Err(PvError::Corruption("import: inconsistent offsets".into()));
+        }
+        let manifest: Manifest = serde_json::from_slice(&bytes[manifest_offset..])?;
+
+        // Copy the page-data block into an in-memory store.
+        let mem = MemStore::new();
+        let page_count = (cas_offset - FILE_HEADER_SIZE) / PAGE_SIZE;
+        for i in 0..page_count {
+            let start = FILE_HEADER_SIZE + i * PAGE_SIZE;
+            let page: &[u8; PAGE_SIZE] = bytes[start..start + PAGE_SIZE]
+                .try_into()
+                .expect("slice is exactly PAGE_SIZE");
+            let id = mem.alloc_page();
+            mem.write_page(id, page)?;
+        }
+
+        // Rebuild the CAS pool in memory, validating every blob extent.
+        if manifest.cas_dir.len() != manifest.cas_hashes.len() {
+            return Err(PvError::Corruption(
+                "import: CAS dir/hash length mismatch".into(),
+            ));
+        }
+        let pool = &bytes[cas_offset..manifest_offset];
+        let mut cas = CasStore::new_memory();
+        for &(off, len) in &manifest.cas_dir {
+            let off = off as usize;
+            let end = off
+                .checked_add(len as usize)
+                .filter(|&e| e <= pool.len())
+                .ok_or_else(|| PvError::Corruption("import: CAS blob out of bounds".into()))?;
+            cas.put(&pool[off..end])?;
+        }
+
+        let mut cache = PageCache::new(Backend::Mem(mem), DEFAULT_CACHE_PAGES);
+        let tables = build_tables(&mut cache, &cas, &manifest, true)?;
+        Ok(Self {
+            cache: RefCell::new(cache),
+            cas,
+            txm: TxManager::with_clock(manifest.clock),
+            tables,
+            compliance: ComplianceMonitor::new(),
+            root: None,
+            autocommit: false,
+            durability: Durability::Fast,
+            manifest_file: RefCell::new(None),
+        })
     }
 
     /// Compile the current database into a `.pvdb` monolith **byte image** (no
@@ -1241,5 +1307,42 @@ mod tests {
             prod.query("SELECT * FROM t").unwrap().rows().unwrap().len(),
             2
         );
+    }
+
+    #[test]
+    fn import_bytes_round_trips_with_history_and_stays_writable() {
+        let mut db = Database::open_memory();
+        db.query("CREATE TABLE t (id, status)").unwrap();
+        db.query("INSERT INTO t VALUES (1, 'open')").unwrap();
+        db.query("INSERT INTO t VALUES (2, 'open')").unwrap();
+        let before = db.current_tx();
+        db.query("UPDATE t SET status = 'closed' WHERE id = 1")
+            .unwrap();
+        let bytes = db.bake_to_bytes().unwrap();
+
+        // Re-import into a fresh, writable in-memory database.
+        let mut db2 = Database::import_bytes(&bytes).unwrap();
+        assert!(db2.is_writable());
+        assert_eq!(
+            db2.query("SELECT * FROM t").unwrap().rows().unwrap().len(),
+            2
+        );
+
+        // MVCC history survives the round trip: id=1 was 'open' before the update.
+        let past = db2
+            .query(&format!("SELECT * FROM t WHERE id = 1 BEFORE {before}"))
+            .unwrap();
+        assert_eq!(past.rows().unwrap()[0][1], Value::Text("open".into()));
+
+        // Editing continues after import.
+        db2.query("INSERT INTO t VALUES (3, 'open')").unwrap();
+        assert_eq!(
+            db2.query("SELECT * FROM t").unwrap().rows().unwrap().len(),
+            3
+        );
+
+        // Malformed images error rather than panic.
+        assert!(Database::import_bytes(&[0u8; 10]).is_err());
+        assert!(Database::import_bytes(&bytes[..bytes.len() / 2]).is_err());
     }
 }

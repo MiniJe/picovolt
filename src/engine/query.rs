@@ -115,12 +115,20 @@ fn tokenize(sql: &str) -> Result<Vec<Tok>> {
                 chars.next(); // opening quote
                 let mut s = String::new();
                 let mut closed = false;
-                for ch in chars.by_ref() {
-                    if ch == '\'' {
-                        closed = true;
-                        break;
+                loop {
+                    match chars.next() {
+                        // A doubled quote `''` is an escaped literal `'` (SQL style).
+                        Some('\'') if chars.peek() == Some(&'\'') => {
+                            chars.next();
+                            s.push('\'');
+                        }
+                        Some('\'') => {
+                            closed = true;
+                            break;
+                        }
+                        Some(ch) => s.push(ch),
+                        None => break,
                     }
-                    s.push(ch);
                 }
                 if !closed {
                     return Err(PvError::Query("unterminated string literal".into()));
@@ -505,6 +513,20 @@ mod tests {
                 value: Value::Int(1),
             }
         );
+    }
+
+    #[test]
+    fn handles_escaped_quotes_in_strings() {
+        // `''` inside a string literal is an escaped single quote.
+        assert_eq!(
+            parse("INSERT INTO t VALUES ('it''s done')").unwrap(),
+            Statement::Insert {
+                table: "t".into(),
+                values: vec![Value::Text("it's done".into())],
+            }
+        );
+        // An unterminated literal is still an error.
+        assert!(parse("INSERT INTO t VALUES ('oops)").is_err());
     }
 
     #[test]

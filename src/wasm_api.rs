@@ -49,6 +49,23 @@ impl Db {
             .bake_to_bytes()
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
+
+    /// Load a database from a `.pvdb` byte image (e.g. one produced by
+    /// [`export`](Db::export)). Writable, with full time-travel history intact.
+    #[wasm_bindgen(js_name = fromBytes)]
+    pub fn from_bytes(bytes: &[u8]) -> Result<Db, JsValue> {
+        console_error_panic_hook::set_once();
+        Database::import_bytes(bytes)
+            .map(|inner| Db { inner })
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// The most recently committed transaction id — the upper bound for a
+    /// `... BEFORE tx` time-travel query.
+    #[wasm_bindgen(js_name = currentTx)]
+    pub fn current_tx(&self) -> u32 {
+        self.inner.current_tx() as u32
+    }
 }
 
 fn result_to_json(result: &QueryResult) -> serde_json::Value {
