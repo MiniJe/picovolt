@@ -1,7 +1,7 @@
 name: Release
 
 # Fires only on an annotated version tag (e.g. v0.1.0). A normal push to main
-# never publishes. See RELEASING.md for the full process.
+# never publishes. The tag must match the version in Cargo.toml.
 on:
   push:
     tags:
@@ -52,7 +52,7 @@ jobs:
       - name: Audit
         run: cargo audit
 
-  # 2. Publish to crates.io — skipped automatically if the token secret is absent.
+  # 2. Publish to crates.io, skipped automatically if the token secret is absent.
   publish-crate:
     name: publish (crates.io)
     needs: verify
@@ -66,13 +66,13 @@ jobs:
           TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           if [ -z "$TOKEN" ]; then
-            echo "CARGO_REGISTRY_TOKEN not set — skipping crates.io publish."
+            echo "CARGO_REGISTRY_TOKEN not set; skipping crates.io publish."
             exit 0
           fi
           # No --locked: Cargo.lock is intentionally not committed (library).
           cargo publish --token "$TOKEN"
 
-  # 3. Build the wasm package and publish to npm — skipped if NPM_TOKEN is absent.
+  # 3. Build the wasm package and publish to npm, skipped if NPM_TOKEN is absent.
   publish-npm:
     name: publish (npm)
     needs: verify
@@ -98,7 +98,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "NPM_TOKEN not set — skipping npm publish."
+            echo "NPM_TOKEN not set; skipping npm publish."
             exit 0
           fi
           npm publish --access public

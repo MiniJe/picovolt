@@ -5,4 +5,4 @@ contact_links:
     about: For usage questions and open-ended discussion, start a Discussion.
   - name: Security vulnerability
     url: https://github.com/MiniJe/picovolt/security/advisories/new
-    about: Report security issues privately — please don't open a public issue.
+    about: Report security issues privately. Please do not open a public issue.

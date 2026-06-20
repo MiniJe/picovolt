@@ -1,95 +1,72 @@
 # Roadmap
 
-Where PicoVolt is going. This is a direction, not a contract — priorities shift
-with what people actually hit. Dates are deliberately omitted; items are grouped
-by horizon and mapped to the release tiers in [RELEASING.md](RELEASING.md).
+This describes the direction of the project, not a commitment. Priorities shift
+with what users need, and dates are deliberately omitted. Items are grouped by
+horizon. Changes that have landed are recorded in [CHANGELOG.md](CHANGELOG.md).
 
-PicoVolt is experimental and pre-1.0. The open core stays Apache-2.0 **forever**;
-the commercial edition (below) is additive — new modules in a separate crate, not
-a future enclosure of what's already open.
+PicoVolt is experimental and pre-1.0, so the public API and on-disk format may
+still change between minor versions.
 
-## Shipped (0.1.0)
+## Shipped in 0.1.0
 
-The engine is built out: VLE dev/prod/in-memory backends, page-backed storage
-with O(1) appends, a bounded buffer pool, MVCC time-travel, CAS dedup, columnar
-compression, equality indexes, selectable durability, the WASM extension sandbox,
-a small SQL front-end, and the wasm/npm bindings. See [CHANGELOG.md](CHANGELOG.md).
+The core engine: VLE development, production, and in-memory backends; page-backed
+storage with O(1) appends; a bounded buffer pool; MVCC time-travel; CAS dedup;
+columnar compression; secondary indexes; selectable durability; the WebAssembly
+extension sandbox; an SQL front-end; and the WebAssembly and npm bindings.
 
-## Done since 0.1.0 (unreleased)
+## Recently added (on main)
 
-Landed on `main`, shipping in the next minor release:
-
-- **Richer `WHERE` predicates** — comparison operators (`<`, `<=`, `>`, `>=`,
-  `!=` / `<>`), `AND` / `OR` with parentheses, and `LIKE` (`%` / `_`) for
-  `SELECT` / `UPDATE` / `DELETE`.
-- **Whole-table aggregates** — `COUNT`, `SUM`, `MIN`, `MAX`, over the full or
+- **Richer WHERE predicates:** comparison operators (`<`, `<=`, `>`, `>=`, `!=`,
+  `<>`), `AND` and `OR` with parentheses, and `LIKE` (`%` and `_`) for `SELECT`,
+  `UPDATE`, and `DELETE`.
+- **Whole-table aggregates:** `COUNT`, `SUM`, `MIN`, and `MAX`, over the full or
   `WHERE`-filtered result.
-- **Ordered (range-capable) secondary indexes** — `CREATE INDEX` builds a
-  `BTreeMap`-backed index; range predicates (`col > v`, …) use it for an ordered
-  scan instead of a full scan, alongside the existing point lookups.
+- **Ordered, range-capable secondary indexes:** `CREATE INDEX` builds a
+  `BTreeMap`-backed index. Range predicates such as `col > v` use it for an
+  ordered scan instead of a full scan, alongside the existing point lookups.
 
-## Next — open core (0.2.x and on)
+## Next
 
-Backward-compatible features, each a **Normal** (minor) release.
-
-- **`GROUP BY` + `AVG`.** Grouped aggregation, and `AVG` once there's a value
-  type that can hold a fraction (today `Value` is integer/text/blob only).
-- **Index-accelerated `ORDER BY`.** The ordered index already exists; teach the
-  planner to read it in key order so `ORDER BY indexed_col` skips the sort.
-- **Persisted indexes.** Today indexes are rebuilt by a scan on open; persist
-  them in the `.pvdb` / workspace so large tables open fast.
-- **Background columnar compaction.** Promote the on-demand row→columnar
-  transposition ([`storage/page.rs`](src/storage/page.rs)) to a background worker,
-  as the original design intended.
-- **Streaming query results.** An iterator API so large `SELECT`s don't have to
+- **`GROUP BY` and `AVG`:** grouped aggregation, and `AVG` once there is a value
+  type that can hold a fraction (today `Value` is integer, text, or blob only).
+- **Index-accelerated `ORDER BY`:** the ordered index already exists, so the
+  planner can read it in key order and skip the sort for `ORDER BY indexed_col`.
+- **Persisted indexes:** indexes are currently rebuilt by a scan on open.
+  Persisting them in the `.pvdb` file and workspace would let large tables open
+  quickly.
+- **Background columnar compaction:** promote the on-demand row-to-columnar
+  transposition ([`storage/page.rs`](src/storage/page.rs)) to a background worker.
+- **Streaming query results:** an iterator API so large `SELECT`s do not have to
   materialize every row up front.
-- **Better parse diagnostics.** Error messages that point at the offending token
-  position, not just a description.
+- **Better parse diagnostics:** error messages that point at the offending token
+  position rather than only describing the problem.
 
-## Toward 1.0 — stability
+## Toward 1.0
 
-1.0 is a promise that the public API and the `.pvdb` on-disk format are stable.
-Before cutting it:
+Version 1.0 is the point at which the public API and the `.pvdb` on-disk format
+are considered stable. Before that:
 
 - **Freeze the on-disk format** behind a versioned header with a documented
-  migration path, so future readers can open old files.
-- **Stabilize the extension contract** — the crate-root re-exports documented in
+  migration path, so future readers can open files written by older versions.
+- **Stabilize the extension contract,** the crate-root re-exports documented in
   [docs/EXTENDING.md](docs/EXTENDING.md).
-- **Durability, precisely specified.** Document exactly what `Fast` vs `Sync`
+- **Specify durability precisely:** document exactly what `Fast` and `Sync`
   guarantee, with crash-injection tests behind the claims.
-- **Longer fuzz soak + external review.** The decoders are fuzzed in CI; 1.0 wants
-  sustained fuzzing and an independent security pass (see [SECURITY.md](SECURITY.md)).
+- **Longer fuzzing and external review:** the decoders are fuzzed in CI. Version
+  1.0 calls for sustained fuzzing and an independent security pass (see
+  [SECURITY.md](SECURITY.md)).
 
-## picovolt-pro — commercial edition
+## Out of scope
 
-The plan is an open-core model: a separate, proprietary `picovolt-pro` crate that
-depends on the open core through its public API ([docs/EXTENDING.md](docs/EXTENDING.md))
-and adds the capabilities teams pay for. It exists only once there's real demand —
-it is **not** being built ahead of traction, and nothing here is removed from the
-free core to create it. Candidate modules, roughly in order of usefulness:
+These keep the project focused:
 
-- **Encryption at rest** — page-level encryption for `.pvdb` and dev workspaces.
-- **Replication / change-data-capture** — a commit-stream observer feeding
-  followers or an external sink.
-- **Server mode** — a network layer and wire protocol for client/server use,
-  beyond the embedded library.
-- **Advanced indexing & parallel query** — composite and full-text indexes,
-  multi-threaded scans.
-- **Observability** — metrics, query tracing, and an admin UI.
-- **Managed/hosted option** and priority support with an SLA.
+- It is not aiming to be a drop-in SQL-92 or PostgreSQL-compatible database.
+- No distributed consensus or multi-node clustering.
+- `pv-wasm` stays an integer-subset interpreter. Floats, SIMD, and tables remain
+  the `wasmi` backend's responsibility rather than a reimplementation.
 
-## Out of scope (for now)
+## Suggesting changes
 
-Saying no keeps the core coherent:
-
-- Not aiming to be a drop-in SQL-92 / PostgreSQL-compatible database.
-- No distributed consensus or multi-node clustering in the open core.
-- `pv-wasm` stays an integer-subset interpreter; floats/SIMD/tables remain the
-  `wasmi` backend's job, not a reimplementation.
-
-## Influencing it
-
-The ordering above is a starting point. Open an issue describing the problem you
-have (not just the feature you want) — concrete use cases are what move items up.
-Bugs and the "Next" list are the best places to contribute; see
-[CONTRIBUTING.md](CONTRIBUTING.md).
+The ordering above is a starting point. To influence it, open an issue describing
+the problem you have rather than only the feature you want; concrete use cases are
+what move items up the list. See [CONTRIBUTING.md](CONTRIBUTING.md).

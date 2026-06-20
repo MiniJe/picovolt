@@ -13,7 +13,7 @@ Closes #
 - [ ] `cargo fmt --all` applied
 - [ ] New behavior has tests (for `pv-wasm`, a case in the differential test)
 - [ ] On-disk format changes bump a format version and keep the explicit LE codecs
-- [ ] Commits are signed off (`git commit -s` — see [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md))
+- [ ] Commits are signed off (`git commit -s`, see [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md))
 
 ## Notes for reviewers
 

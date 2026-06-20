@@ -3,13 +3,13 @@ name = "picovolt"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.74"
-description = "PicoVolt (PVDB) — a polymorphic embedded data engine."
+description = "PicoVolt (PVDB): a polymorphic embedded database engine in Rust."
 license = "Apache-2.0"
 repository = "https://github.com/MiniJe/picovolt"
 readme = "README.md"
 keywords = ["database", "embedded", "storage-engine", "mvcc", "columnar"]
 categories = ["database-implementations"]
-# Keep the published Rust package lean — repo-only tooling.
+# Keep the published Rust package lean; these are repo-only tooling.
 exclude = ["/fuzz", "/.github"]
 
 # `cdylib` is needed for the wasm/npm build (wasm-pack); `rlib` for normal use.
@@ -28,7 +28,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 wasmi = "0.50"
 
-# Optional — only compiled with `--features wasm`.
+# Optional, only compiled with `--features wasm`.
 wasm-bindgen = { version = "0.2", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 

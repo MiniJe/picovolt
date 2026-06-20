@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Lead with the **problem**, not just the feature — concrete use cases are
+        Lead with the **problem**, not just the feature. Concrete use cases are
         what move items up the [roadmap](../blob/main/ROADMAP.md).
   - type: textarea
     id: problem
