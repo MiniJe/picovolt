@@ -1,7 +1,7 @@
 # PicoVolt (PVDB)
 
-<!-- Replace OWNER with your GitHub org/user after pushing. -->
-[![CI](https://github.com/OWNER/picovolt/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/picovolt/actions/workflows/ci.yml)
+[![CI](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml/badge.svg)](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](CHANGELOG.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)
 
@@ -25,9 +25,10 @@ appends, then a background worker transposes idle pages into a packed
 
 ## Status
 
-Built out in four phases — **all four are implemented**, with 58 unit/integration
+Built out in four phases — **all four are implemented**, with 80 unit/integration
 tests + doctests passing and a clean `cargo clippy -D warnings` on Linux and
-Windows.
+Windows. Versioning and the release process are documented in
+[RELEASING.md](RELEASING.md); changes are tracked in [CHANGELOG.md](CHANGELOG.md).
 
 | Phase | Scope                                                     | Status |
 |-------|-----------------------------------------------------------|--------|
@@ -53,7 +54,7 @@ Windows.
 | [`engine/mvcc.rs`](src/engine/mvcc.rs) | transaction clock + snapshot visibility |
 | [`engine/wasm.rs`](src/engine/wasm.rs) | sandboxed `wasmi` extension runtime + the `WasmExec` backend trait |
 | [`engine/interp.rs`](src/engine/interp.rs) | `pv-wasm`: a from-scratch WASM interpreter (integer subset) |
-| [`engine/query.rs`](src/engine/query.rs) | small SQL front-end (CREATE/INSERT/UPDATE/DELETE/DROP, `SELECT … WHERE … BEFORE … LIMIT`) |
+| [`engine/query.rs`](src/engine/query.rs) | small SQL front-end (CREATE/INSERT/UPDATE/DELETE/DROP, `SELECT {*\|cols\|COUNT(*)} … WHERE … BEFORE … ORDER BY … LIMIT`) |
 | [`engine/compliance.rs`](src/engine/compliance.rs) | optional, app-driven usage-policy hook (not a license requirement) |
 | [`db.rs`](src/db.rs) | `Database` surface tying it all together |
 
@@ -109,9 +110,11 @@ cargo run --release --example bench     # evaluation harness across modes/worklo
 ```
 
 SQL supported: `CREATE TABLE`, `CREATE INDEX ON t (col)`, `INSERT`, `UPDATE … SET …
-WHERE`, `DELETE … WHERE`, `DROP TABLE`, and `SELECT * FROM t [WHERE col = v]
-[BEFORE tx] [LIMIT n]`. Durability is selectable via `Database::set_durability`
-(`Fast` OS-cache default, or crash-safe `Sync` with fsync + atomic manifest).
+WHERE`, `DELETE … WHERE`, `DROP TABLE`, and
+`SELECT {* | col, … | COUNT(*)} FROM t [WHERE col = v] [BEFORE tx]
+[ORDER BY col [ASC|DESC]] [LIMIT n]`. Durability is selectable via
+`Database::set_durability` (`Fast` OS-cache default, or crash-safe `Sync` with
+fsync + atomic manifest).
 
 Measured results and an honest writeup live in [BENCHMARKS.md](BENCHMARKS.md).
 Short version: PicoVolt is a page-backed engine with O(1) durable appends

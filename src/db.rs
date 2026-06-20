@@ -30,7 +30,7 @@ use crate::core::types::{
 use crate::core::value::{Row, Value};
 use crate::engine::compliance::{ComplianceMonitor, RuntimeMetrics};
 use crate::engine::mvcc::{Snapshot, TxManager};
-use crate::engine::query::{parse, Statement};
+use crate::engine::query::{parse, OrderBy, Projection, Statement};
 use crate::engine::wasm::WasmRuntime;
 use crate::storage::cache::{PageCache, DEFAULT_CACHE_PAGES};
 use crate::storage::cas::CasStore;
@@ -109,6 +109,14 @@ impl QueryResult {
     pub fn rows(&self) -> Option<&[Row]> {
         match self {
             QueryResult::Rows { rows, .. } => Some(rows),
+            _ => None,
+        }
+    }
+
+    /// Borrow the column names, if this is a `SELECT` result.
+    pub fn columns(&self) -> Option<&[String]> {
+        match self {
+            QueryResult::Rows { columns, .. } => Some(columns),
             _ => None,
         }
     }
@@ -332,18 +340,17 @@ impl Database {
             }
             Statement::Select {
                 table,
+                projection,
                 before,
                 filter,
+                order,
                 limit,
             } => {
-                let (columns, mut rows) = match filter {
+                let (columns, rows) = match filter {
                     Some((column, value)) => self.select_where(&table, &column, &value, before)?,
                     None => self.select(&table, before)?,
                 };
-                if let Some(n) = limit {
-                    rows.truncate(n);
-                }
-                Ok(QueryResult::Rows { columns, rows })
+                project_select(columns, rows, projection, order, limit)
             }
             Statement::Update { table, set, filter } => {
                 let n = self.update(&table, &set.0, &set.1, &filter.0, &filter.1)?;
@@ -858,6 +865,90 @@ pub fn pv_bake(workspace: impl AsRef<Path>, out_path: impl AsRef<Path>) -> Resul
 }
 
 // ---------------------------------------------------------------------------
+// Query post-processing: projection, ORDER BY, LIMIT
+// ---------------------------------------------------------------------------
+
+/// Apply `COUNT(*)` / column projection, `ORDER BY`, and `LIMIT` to a result set.
+fn project_select(
+    columns: Vec<String>,
+    mut rows: Vec<Row>,
+    projection: Projection,
+    order: Option<OrderBy>,
+    limit: Option<usize>,
+) -> Result<QueryResult> {
+    if matches!(projection, Projection::Count) {
+        return Ok(QueryResult::Rows {
+            columns: vec!["count".to_string()],
+            rows: vec![vec![Value::Int(rows.len() as i64)]],
+        });
+    }
+
+    // Sort on the full row, before projection can drop the sort column.
+    if let Some(ob) = &order {
+        let ix = columns
+            .iter()
+            .position(|c| c == &ob.column)
+            .ok_or_else(|| PvError::Schema(format!("no column `{}` to order by", ob.column)))?;
+        rows.sort_by(|a, b| {
+            let o = cmp_values(&a[ix], &b[ix]);
+            if ob.descending {
+                o.reverse()
+            } else {
+                o
+            }
+        });
+    }
+
+    let (out_columns, mut out_rows) = match projection {
+        Projection::All => (columns, rows),
+        Projection::Columns(cols) => {
+            let idxs = cols
+                .iter()
+                .map(|c| {
+                    columns
+                        .iter()
+                        .position(|x| x == c)
+                        .ok_or_else(|| PvError::Schema(format!("no column `{c}`")))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let projected = rows
+                .into_iter()
+                .map(|r| idxs.iter().map(|&i| r[i].clone()).collect())
+                .collect();
+            (cols, projected)
+        }
+        Projection::Count => unreachable!("handled above"),
+    };
+
+    if let Some(n) = limit {
+        out_rows.truncate(n);
+    }
+    Ok(QueryResult::Rows {
+        columns: out_columns,
+        rows: out_rows,
+    })
+}
+
+/// Total ordering over values for `ORDER BY` (Null &lt; Int &lt; Text &lt; Blob).
+fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
+    fn rank(v: &Value) -> u8 {
+        match v {
+            Value::Null => 0,
+            Value::Int(_) => 1,
+            Value::Text(_) => 2,
+            Value::Blob(_) => 3,
+        }
+    }
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x.cmp(y),
+        (Value::Text(x), Value::Text(y)) => x.cmp(y),
+        (Value::Blob(x), Value::Blob(y)) => x.cmp(y),
+        (Value::Null, Value::Null) => std::cmp::Ordering::Equal,
+        _ => rank(a).cmp(&rank(b)),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Page-backed helpers (free functions to keep field borrows disjoint)
 // ---------------------------------------------------------------------------
 
@@ -1100,6 +1191,60 @@ mod tests {
             .query(&format!("SELECT * FROM t BEFORE {before_delete}"))
             .unwrap();
         assert_eq!(past.rows().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn projection_order_by_and_count() {
+        let mut db = Database::open_memory();
+        db.query("CREATE TABLE p (id, name)").unwrap();
+        db.query("INSERT INTO p VALUES (3, 'carol')").unwrap();
+        db.query("INSERT INTO p VALUES (1, 'alice')").unwrap();
+        db.query("INSERT INTO p VALUES (2, 'bob')").unwrap();
+
+        // COUNT(*) returns a single count row.
+        let c = db.query("SELECT COUNT(*) FROM p").unwrap();
+        assert_eq!(c.columns().unwrap(), &["count".to_string()]);
+        assert_eq!(c.rows().unwrap(), &[vec![Value::Int(3)]]);
+
+        // ORDER BY ascending (default).
+        let asc = db.query("SELECT id FROM p ORDER BY id").unwrap();
+        assert_eq!(asc.columns().unwrap(), &["id".to_string()]);
+        let ids: Vec<_> = asc.rows().unwrap().iter().map(|r| r[0].clone()).collect();
+        assert_eq!(ids, vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+
+        // ORDER BY DESC + column projection drops `id` from the output but still
+        // sorts by it.
+        let desc = db.query("SELECT name FROM p ORDER BY id DESC").unwrap();
+        assert_eq!(desc.columns().unwrap(), &["name".to_string()]);
+        let names: Vec<_> = desc.rows().unwrap().iter().map(|r| r[0].clone()).collect();
+        assert_eq!(
+            names,
+            vec![
+                Value::Text("carol".into()),
+                Value::Text("bob".into()),
+                Value::Text("alice".into()),
+            ]
+        );
+
+        // Multi-column projection preserves requested order.
+        let proj = db
+            .query("SELECT name, id FROM p ORDER BY name LIMIT 2")
+            .unwrap();
+        assert_eq!(
+            proj.columns().unwrap(),
+            &["name".to_string(), "id".to_string()]
+        );
+        assert_eq!(
+            proj.rows().unwrap(),
+            &[
+                vec![Value::Text("alice".into()), Value::Int(1)],
+                vec![Value::Text("bob".into()), Value::Int(2)],
+            ]
+        );
+
+        // Unknown projection / order column is a clean schema error, not a panic.
+        assert!(db.query("SELECT nope FROM p").is_err());
+        assert!(db.query("SELECT * FROM p ORDER BY nope").is_err());
     }
 
     #[test]

@@ -32,14 +32,18 @@ pub enum Statement {
         /// Column to index.
         column: String,
     },
-    /// `SELECT * FROM name [WHERE col = value] [BEFORE tx] [LIMIT n]`
+    /// `SELECT <proj> FROM name [WHERE col = value] [BEFORE tx] [ORDER BY col [ASC|DESC]] [LIMIT n]`
     Select {
         /// Source table.
         table: String,
+        /// What to return: `*`, a column list, or `COUNT(*)`.
+        projection: Projection,
         /// Optional time-travel snapshot id.
         before: Option<u64>,
         /// Optional `column = value` equality filter.
         filter: Option<(String, Value)>,
+        /// Optional sort.
+        order: Option<OrderBy>,
         /// Optional cap on the number of rows returned.
         limit: Option<usize>,
     },
@@ -66,6 +70,26 @@ pub enum Statement {
         /// Table to drop.
         table: String,
     },
+}
+
+/// What a `SELECT` returns.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Projection {
+    /// `*` — every column.
+    All,
+    /// A specific list of columns.
+    Columns(Vec<String>),
+    /// `COUNT(*)` — a single-row, single-column count.
+    Count,
+}
+
+/// An `ORDER BY column [ASC|DESC]` clause.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OrderBy {
+    /// Column to sort on.
+    pub column: String,
+    /// Descending if `true`, ascending otherwise.
+    pub descending: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -317,8 +341,28 @@ fn parse_insert(cur: &mut Cursor) -> Result<Statement> {
     Ok(Statement::Insert { table, values })
 }
 
+fn parse_projection(cur: &mut Cursor) -> Result<Projection> {
+    if matches!(cur.peek(), Some(Tok::Star)) {
+        cur.next()?;
+        return Ok(Projection::All);
+    }
+    if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("count")) {
+        cur.next()?; // COUNT
+        cur.expect(Tok::LParen)?;
+        cur.expect(Tok::Star)?;
+        cur.expect(Tok::RParen)?;
+        return Ok(Projection::Count);
+    }
+    let mut columns = vec![cur.ident()?];
+    while matches!(cur.peek(), Some(Tok::Comma)) {
+        cur.next()?;
+        columns.push(cur.ident()?);
+    }
+    Ok(Projection::Columns(columns))
+}
+
 fn parse_select(cur: &mut Cursor) -> Result<Statement> {
-    cur.expect(Tok::Star)?;
+    let projection = parse_projection(cur)?;
     cur.keyword("from")?;
     let table = cur.ident()?;
 
@@ -345,6 +389,26 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
         None
     };
 
+    let order = if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("order")) {
+        cur.next()?; // ORDER
+        cur.keyword("by")?;
+        let column = cur.ident()?;
+        let descending = match cur.peek() {
+            Some(Tok::Word(w)) if w.eq_ignore_ascii_case("desc") => {
+                cur.next()?;
+                true
+            }
+            Some(Tok::Word(w)) if w.eq_ignore_ascii_case("asc") => {
+                cur.next()?;
+                false
+            }
+            _ => false,
+        };
+        Some(OrderBy { column, descending })
+    } else {
+        None
+    };
+
     let limit = if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("limit")) {
         cur.next()?; // consume LIMIT
         match cur.next()? {
@@ -361,8 +425,10 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
 
     Ok(Statement::Select {
         table,
+        projection,
         before,
         filter,
+        order,
         limit,
     })
 }
@@ -436,8 +502,10 @@ mod tests {
             parse("SELECT * FROM users").unwrap(),
             Statement::Select {
                 table: "users".into(),
+                projection: Projection::All,
                 before: None,
                 filter: None,
+                order: None,
                 limit: None,
             }
         );
@@ -445,8 +513,10 @@ mod tests {
             parse("SELECT * FROM users BEFORE 7;").unwrap(),
             Statement::Select {
                 table: "users".into(),
+                projection: Projection::All,
                 before: Some(7),
                 filter: None,
+                order: None,
                 limit: None,
             }
         );
@@ -458,8 +528,10 @@ mod tests {
             parse("SELECT * FROM users WHERE status = 'active'").unwrap(),
             Statement::Select {
                 table: "users".into(),
+                projection: Projection::All,
                 before: None,
                 filter: Some(("status".into(), Value::Text("active".into()))),
+                order: None,
                 limit: None,
             }
         );
@@ -467,9 +539,50 @@ mod tests {
             parse("SELECT * FROM users WHERE id = 5 BEFORE 9 LIMIT 10").unwrap(),
             Statement::Select {
                 table: "users".into(),
+                projection: Projection::All,
                 before: Some(9),
                 filter: Some(("id".into(), Value::Int(5))),
+                order: None,
                 limit: Some(10),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_projection_order_and_count() {
+        // Column projection.
+        assert_eq!(
+            parse("SELECT id, name FROM users").unwrap(),
+            Statement::Select {
+                table: "users".into(),
+                projection: Projection::Columns(vec!["id".into(), "name".into()]),
+                before: None,
+                filter: None,
+                order: None,
+                limit: None,
+            }
+        );
+        // COUNT(*).
+        assert!(matches!(
+            parse("SELECT COUNT(*) FROM users").unwrap(),
+            Statement::Select {
+                projection: Projection::Count,
+                ..
+            }
+        ));
+        // ORDER BY ... DESC.
+        assert_eq!(
+            parse("SELECT * FROM users ORDER BY name DESC").unwrap(),
+            Statement::Select {
+                table: "users".into(),
+                projection: Projection::All,
+                before: None,
+                filter: None,
+                order: Some(OrderBy {
+                    column: "name".into(),
+                    descending: true,
+                }),
+                limit: None,
             }
         );
     }

@@ -1,0 +1,136 @@
+name: Release
+
+# Fires only on an annotated version tag (e.g. v0.1.0). A normal push to main
+# never publishes. See RELEASING.md for the full process.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write # needed to create the GitHub Release
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # 1. Re-run the full quality gate and make sure the tag matches Cargo.toml.
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-audit
+
+      - name: Tag matches Cargo.toml version
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          cargo_ver="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
+          echo "tag=$tag  Cargo.toml=v$cargo_ver"
+          if [ "$tag" != "v$cargo_ver" ]; then
+            echo "::error::tag $tag does not match Cargo.toml version v$cargo_ver"
+            exit 1
+          fi
+
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets --features wasm -- -D warnings
+      - name: Test
+        run: cargo test --all-targets
+      - name: Doc tests
+        run: cargo test --doc
+      - name: Build wasm32
+        run: cargo build --lib --target wasm32-unknown-unknown --release --features wasm
+      - name: Audit
+        run: cargo audit
+
+  # 2. Publish to crates.io — skipped automatically if the token secret is absent.
+  publish-crate:
+    name: publish (crates.io)
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo publish
+        env:
+          TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "CARGO_REGISTRY_TOKEN not set — skipping crates.io publish."
+            exit 0
+          fi
+          # No --locked: Cargo.lock is intentionally not committed (library).
+          cargo publish --token "$TOKEN"
+
+  # 3. Build the wasm package and publish to npm — skipped if NPM_TOKEN is absent.
+  publish-npm:
+    name: publish (npm)
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@wasm-pack
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Build npm package
+        run: wasm-pack build --target bundler --release --out-dir pkg -- --features wasm
+      - name: npm publish
+        working-directory: pkg
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "NPM_TOKEN not set — skipping npm publish."
+            exit 0
+          fi
+          npm publish --access public
+
+  # 4. Cut the GitHub Release, with notes pulled from CHANGELOG.md.
+  github-release:
+    name: github release
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract changelog section
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          start="## [${ver}]"
+          # index()-based prefix match: a dynamic regex with \[ is mis-parsed by
+          # gawk as a character class, so avoid regex for the version header.
+          awk -v start="$start" '
+            index($0, start)==1 {flag=1; next}
+            flag && index($0, "## [")==1 {exit}
+            flag && /^\[.*\]:/ {exit}
+            flag {print}
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "No changelog section for $ver; will auto-generate notes."
+          fi
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -s RELEASE_NOTES.md ]; then
+            gh release create "$GITHUB_REF_NAME" \
+              --title "PicoVolt $GITHUB_REF_NAME" \
+              --notes-file RELEASE_NOTES.md
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "PicoVolt $GITHUB_REF_NAME" \
+              --generate-notes
+          fi

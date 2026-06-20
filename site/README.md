@@ -22,4 +22,4 @@ python -m http.server 8000 --directory site
 ```
 
 Deploy `site/` (with the built `pkg/`) to any static host for picovolt.dev.
-Replace the `OWNER` placeholders in the GitHub links before shipping.
+GitHub links point to <https://github.com/MiniJe/picovolt>.
