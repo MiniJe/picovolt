@@ -34,6 +34,9 @@ extension sandbox; an SQL front-end; and the WebAssembly and npm bindings.
   limitation that a future numeric type would remove.
 - **Positioned parse errors:** parse and tokenizer errors report the line and
   column of the offending token and draw a caret under the source.
+- **Streaming reads:** `Database::for_each_row` visits visible rows one at a time
+  instead of materializing the full result, for bounded-memory processing of large
+  tables.
 
 ## Next
 
@@ -45,8 +48,6 @@ extension sandbox; an SQL front-end; and the WebAssembly and npm bindings.
   quickly.
 - **Background columnar compaction:** promote the on-demand row-to-columnar
   transposition ([`storage/page.rs`](src/storage/page.rs)) to a background worker.
-- **Streaming query results:** an iterator API so large `SELECT`s do not have to
-  materialize every row up front.
 
 ## Toward 1.0
 

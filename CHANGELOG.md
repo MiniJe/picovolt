@@ -7,6 +7,10 @@ All notable changes to PicoVolt are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Streaming reads.** `Database::for_each_row` visits a table's visible rows one
+  at a time (with optional time-travel) instead of materializing the full result,
+  so large tables can be processed or exported with bounded memory. A
+  `Database::column_names` accessor returns the schema for interpreting the rows.
 - **Positioned parse errors.** A SQL parse or tokenizer error now reports the line
   and column of the offending token and draws a caret under the source, instead of
   only describing the problem.

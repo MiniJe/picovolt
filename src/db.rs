@@ -560,6 +560,45 @@ impl Database {
         Ok((columns, rows))
     }
 
+    /// The column names of `table`, in order.
+    pub fn column_names(&self, table_name: &str) -> Result<Vec<String>> {
+        self.tables
+            .get(table_name)
+            .map(|t| t.columns.clone())
+            .ok_or_else(|| PvError::TableNotFound(table_name.into()))
+    }
+
+    /// Stream every visible row of `table` (as of `before`, or the latest
+    /// transaction) to `visit`, one row at a time, without materializing the full
+    /// result. Rows arrive in scan order; pair this with [`column_names`] to
+    /// interpret them. Returning `Err` from `visit` stops the scan early and
+    /// propagates the error.
+    ///
+    /// The page cache is borrowed for the duration of the scan, so `visit` must
+    /// not call back into this database (`query`, `select`, `for_each_row`, ...);
+    /// doing so panics. Use this to process or export large results with bounded
+    /// memory.
+    ///
+    /// [`column_names`]: Database::column_names
+    pub fn for_each_row<F>(&self, table_name: &str, before: Option<u64>, mut visit: F) -> Result<()>
+    where
+        F: FnMut(&Row) -> Result<()>,
+    {
+        let table = self
+            .tables
+            .get(table_name)
+            .ok_or_else(|| PvError::TableNotFound(table_name.into()))?;
+        let snapshot = Snapshot::as_of(before.unwrap_or_else(|| self.txm.current()));
+        let mut cache = self.cache.borrow_mut();
+        scan(&mut cache, table, &self.cas, |_addr, env, row| {
+            if snapshot.sees(env) {
+                visit(row)
+            } else {
+                Ok(())
+            }
+        })
+    }
+
     /// Read rows where `column == value`, using a secondary index if one exists.
     /// `before` optionally time-travels.
     pub fn select_where(
@@ -1627,6 +1666,51 @@ mod tests {
             .query(&format!("SELECT * FROM t BEFORE {before_delete}"))
             .unwrap();
         assert_eq!(past.rows().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn for_each_row_streams_visible_rows() {
+        let mut db = Database::open_memory();
+        db.query("CREATE TABLE t (id, name)").unwrap();
+        for i in 1..=5 {
+            db.query(&format!("INSERT INTO t VALUES ({i}, 'r{i}')"))
+                .unwrap();
+        }
+        let before_delete = db.current_tx();
+        db.query("DELETE FROM t WHERE id = 3").unwrap();
+
+        // Streams the visible rows one at a time (id 3 was deleted).
+        let mut ids = Vec::new();
+        db.for_each_row("t", None, |row| {
+            if let Value::Int(i) = row[0] {
+                ids.push(i);
+            }
+            Ok(())
+        })
+        .unwrap();
+        ids.sort();
+        assert_eq!(ids, vec![1, 2, 4, 5]);
+
+        // Time-travel: as of before the delete, all five are visible.
+        let mut count = 0;
+        db.for_each_row("t", Some(before_delete), |_row| {
+            count += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(count, 5);
+
+        // Returning Err stops the scan and propagates.
+        let stopped = db.for_each_row("t", None, |_row| Err(PvError::Query("stop".into())));
+        assert!(stopped.is_err());
+
+        // Schema accessor, and an unknown table errors.
+        assert_eq!(
+            db.column_names("t").unwrap(),
+            vec!["id".to_string(), "name".to_string()]
+        );
+        assert!(db.column_names("nope").is_err());
+        assert!(db.for_each_row("nope", None, |_| Ok(())).is_err());
     }
 
     #[test]
