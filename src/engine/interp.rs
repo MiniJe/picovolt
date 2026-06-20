@@ -1,6 +1,6 @@
 //! `pv-wasm`: a small, from-scratch WebAssembly interpreter.
 //!
-//! This is the spec §6 runtime done "the hard way" — a hand-written binary
+//! This is the spec §6 runtime done "the hard way", a hand-written binary
 //! decoder plus a structured-control stack machine, rather than reusing
 //! [`wasmi`]. It deliberately targets the **integer subset** of WASM MVP: `i32`
 //! and `i64` numeric ops, locals, linear-memory load/stores, the full structured
@@ -10,7 +10,7 @@
 //! mis-executed.
 //!
 //! It exposes the same [`WasmExec`] surface as the `wasmi` backend, so the two
-//! are interchangeable — and the test module differential-checks `pv-wasm`
+//! are interchangeable, and the test module differential-checks `pv-wasm`
 //! against `wasmi` to keep it honest.
 //!
 //! [`wasmi`]: https://docs.rs/wasmi
@@ -23,10 +23,10 @@ use crate::engine::wasm::WasmExec;
 
 const PAGE_BYTES: usize = 65_536;
 const MAX_CALL_DEPTH: usize = 256;
-/// Cap on a guest module's declared linear-memory pages (256 MiB) — bounds the
+/// Cap on a guest module's declared linear-memory pages (256 MiB), bounds the
 /// allocation in [`Instance`] against a malicious `min` in the memory section.
 const MAX_MEMORY_PAGES: u32 = 4096;
-/// Cap on any LEB128-encoded vector length in the decoder — bounds allocation
+/// Cap on any LEB128-encoded vector length in the decoder, bounds allocation
 /// and loop counts against malicious section headers.
 const MAX_VEC_LEN: usize = 1 << 20;
 

@@ -1,6 +1,6 @@
-//! Evaluation harness: exercises PicoVolt across several "environments" —
-//! persistence modes, read workloads, dedup, dev-vs-prod, columnar compression,
-//! and the SQL-vs-API path — and prints measured numbers.
+//! Evaluation harness: exercises PicoVolt across several environments
+//! (persistence modes, read workloads, dedup, dev vs prod, columnar compression,
+//! and the SQL vs API path) and prints measured numbers.
 //!
 //! Run with: `cargo run --release --example bench`
 //!
@@ -349,7 +349,7 @@ fn larger_than_ram() -> Result<(), Box<dyn Error>> {
         secs * 1000.0
     );
     println!(
-        "  pages resident after:     {}  (bounded — dataset never fully resident)",
+        "  pages resident after:     {}  (bounded, dataset never fully resident)",
         prod.cache_resident()
     );
     Ok(())

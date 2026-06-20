@@ -1,7 +1,7 @@
 # PicoVolt (PVDB)
 
 [![CI](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml/badge.svg)](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](CHANGELOG.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)
 
@@ -23,7 +23,7 @@ cache efficiency.
 
 ## Status
 
-The engine is built out across four phases, all implemented, with 90 unit and
+The engine is built out across four phases, all implemented, with 94 unit and
 integration tests plus doctests passing and a clean `cargo clippy -D warnings` on
 Linux and Windows. Changes are tracked in [CHANGELOG.md](CHANGELOG.md).
 
@@ -105,9 +105,10 @@ cargo run --release --example bench    # evaluation harness across modes and wor
 
 SQL supported: `CREATE TABLE`, `CREATE INDEX ON t (col)`, `INSERT`,
 `UPDATE ... SET ... WHERE`, `DELETE ... WHERE`, `DROP TABLE`, and
-`SELECT {* | col, ... | COUNT/SUM/MIN/MAX(...)} FROM t [WHERE <pred>] [BEFORE tx]
-[ORDER BY col [ASC|DESC]] [LIMIT n]`, where `<pred>` combines `col <op> value`
-(`=`, `!=`, `<`, `<=`, `>`, `>=`, `LIKE`) with `AND`, `OR`, and parentheses.
+`SELECT {* | col, ... | COUNT/SUM/MIN/MAX(...)} FROM t [WHERE <pred>]
+[GROUP BY cols] [BEFORE tx] [ORDER BY col [ASC|DESC]] [LIMIT n]`, where `<pred>`
+combines `col <op> value` (`=`, `!=`, `<`, `<=`, `>`, `>=`, `LIKE`) with `AND`,
+`OR`, and parentheses.
 Durability is selectable via `Database::set_durability` (`Fast` OS-cache default,
 or crash-safe `Sync` with fsync and an atomic manifest).
 

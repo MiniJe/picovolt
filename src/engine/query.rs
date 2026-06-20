@@ -4,9 +4,9 @@
 //! compact hand-written tokenizer + recursive-descent parser. It covers
 //! `CREATE TABLE`/`INDEX`, `INSERT`, `DROP TABLE`, `UPDATE`/`DELETE`, and
 //! `SELECT` with column/aggregate projection, `WHERE` predicates (comparison
-//! operators, `AND`/`OR`, `LIKE`), `BEFORE tx` time-travel, `ORDER BY`, and
-//! `LIMIT`. Anything beyond that (joins, subqueries, `GROUP BY`) is intentionally
-//! out of scope and reported as [`PvError::Query`].
+//! operators, `AND`/`OR`, `LIKE`), `GROUP BY`, `BEFORE tx` time-travel,
+//! `ORDER BY`, and `LIMIT`. Anything beyond that (joins, subqueries) is
+//! intentionally out of scope and reported as [`PvError::Query`].
 
 use crate::core::errors::{PvError, Result};
 use crate::core::value::Value;
@@ -35,16 +35,20 @@ pub enum Statement {
         /// Column to index.
         column: String,
     },
-    /// `SELECT <proj> FROM name [WHERE <pred>] [BEFORE tx] [ORDER BY col [ASC|DESC]] [LIMIT n]`
+    /// `SELECT <proj> FROM name [WHERE <pred>] [GROUP BY cols] [BEFORE tx]
+    /// [ORDER BY col [ASC|DESC]] [LIMIT n]`
     Select {
         /// Source table.
         table: String,
-        /// What to return: `*`, a column list, or aggregates.
+        /// What to return: `*`, a column list, or select items (columns and
+        /// aggregates).
         projection: Projection,
         /// Optional time-travel snapshot id.
         before: Option<u64>,
         /// Optional `WHERE` predicate.
         filter: Option<Predicate>,
+        /// Columns to group by; empty for a non-grouped query.
+        group_by: Vec<String>,
         /// Optional sort.
         order: Option<OrderBy>,
         /// Optional cap on the number of rows returned.
@@ -76,19 +80,29 @@ pub enum Statement {
 /// What a `SELECT` returns.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Projection {
-    /// `*` — every column.
+    /// `*`: every column.
     All,
     /// A specific list of columns.
     Columns(Vec<String>),
-    /// One or more aggregate terms (`COUNT(*)`, `SUM(col)`, …) over the whole
-    /// (filtered) result — produces a single row.
-    Aggregates(Vec<Aggregate>),
+    /// A list of select items: columns and/or aggregate terms. With no `GROUP BY`
+    /// and only aggregates, this produces a single row. With `GROUP BY`, it
+    /// produces one row per group, and any bare column must be a grouping column.
+    Items(Vec<SelectItem>),
+}
+
+/// One entry in a `SELECT` list when columns and aggregates are mixed.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SelectItem {
+    /// A bare column reference (must be a grouping column under `GROUP BY`).
+    Column(String),
+    /// An aggregate term such as `SUM(amount)`.
+    Aggregate(Aggregate),
 }
 
 /// An aggregate function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AggFunc {
-    /// Row / non-null count.
+    /// Row or non-null count.
     Count,
     /// Sum of integer values.
     Sum,
@@ -470,23 +484,35 @@ fn parse_projection(cur: &mut Cursor) -> Result<Projection> {
         cur.next()?;
         return Ok(Projection::All);
     }
-    // Aggregate projection: a known function name immediately followed by `(`.
+    let mut items = vec![parse_select_item(cur)?];
+    while matches!(cur.peek(), Some(Tok::Comma)) {
+        cur.next()?;
+        items.push(parse_select_item(cur)?);
+    }
+    // Keep the simpler Columns form when every item is a bare column.
+    if items.iter().all(|i| matches!(i, SelectItem::Column(_))) {
+        let cols = items
+            .into_iter()
+            .map(|i| match i {
+                SelectItem::Column(c) => c,
+                SelectItem::Aggregate(_) => unreachable!("all items checked to be columns"),
+            })
+            .collect();
+        Ok(Projection::Columns(cols))
+    } else {
+        Ok(Projection::Items(items))
+    }
+}
+
+fn parse_select_item(cur: &mut Cursor) -> Result<SelectItem> {
+    // An aggregate is a known function name immediately followed by `(`.
     let is_agg = matches!(cur.peek(), Some(Tok::Word(w)) if agg_func(w).is_some())
         && matches!(cur.peek2(), Some(Tok::LParen));
     if is_agg {
-        let mut aggs = vec![parse_aggregate(cur)?];
-        while matches!(cur.peek(), Some(Tok::Comma)) {
-            cur.next()?;
-            aggs.push(parse_aggregate(cur)?);
-        }
-        return Ok(Projection::Aggregates(aggs));
+        Ok(SelectItem::Aggregate(parse_aggregate(cur)?))
+    } else {
+        Ok(SelectItem::Column(cur.ident()?))
     }
-    let mut columns = vec![cur.ident()?];
-    while matches!(cur.peek(), Some(Tok::Comma)) {
-        cur.next()?;
-        columns.push(cur.ident()?);
-    }
-    Ok(Projection::Columns(columns))
 }
 
 fn parse_aggregate(cur: &mut Cursor) -> Result<Aggregate> {
@@ -569,6 +595,19 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
         None
     };
 
+    let group_by = if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("group")) {
+        cur.next()?; // consume GROUP
+        cur.keyword("by")?;
+        let mut cols = vec![cur.ident()?];
+        while matches!(cur.peek(), Some(Tok::Comma)) {
+            cur.next()?;
+            cols.push(cur.ident()?);
+        }
+        cols
+    } else {
+        Vec::new()
+    };
+
     let before = if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("before")) {
         cur.next()?; // consume BEFORE
         match cur.next()? {
@@ -622,6 +661,7 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
         projection,
         before,
         filter,
+        group_by,
         order,
         limit,
     })
@@ -691,6 +731,7 @@ mod tests {
                 projection: Projection::All,
                 before: None,
                 filter: None,
+                group_by: vec![],
                 order: None,
                 limit: None,
             }
@@ -702,6 +743,7 @@ mod tests {
                 projection: Projection::All,
                 before: Some(7),
                 filter: None,
+                group_by: vec![],
                 order: None,
                 limit: None,
             }
@@ -717,6 +759,7 @@ mod tests {
                 projection: Projection::All,
                 before: None,
                 filter: Some(Predicate::eq("status", Value::Text("active".into()))),
+                group_by: vec![],
                 order: None,
                 limit: None,
             }
@@ -728,6 +771,7 @@ mod tests {
                 projection: Projection::All,
                 before: Some(9),
                 filter: Some(Predicate::eq("id", Value::Int(5))),
+                group_by: vec![],
                 order: None,
                 limit: Some(10),
             }
@@ -744,6 +788,7 @@ mod tests {
                 projection: Projection::Columns(vec!["id".into(), "name".into()]),
                 before: None,
                 filter: None,
+                group_by: vec![],
                 order: None,
                 limit: None,
             }
@@ -753,12 +798,13 @@ mod tests {
             parse("SELECT COUNT(*) FROM users").unwrap(),
             Statement::Select {
                 table: "users".into(),
-                projection: Projection::Aggregates(vec![Aggregate {
+                projection: Projection::Items(vec![SelectItem::Aggregate(Aggregate {
                     func: AggFunc::Count,
                     column: None,
-                }]),
+                })]),
                 before: None,
                 filter: None,
+                group_by: vec![],
                 order: None,
                 limit: None,
             }
@@ -771,6 +817,7 @@ mod tests {
                 projection: Projection::All,
                 before: None,
                 filter: None,
+                group_by: vec![],
                 order: Some(OrderBy {
                     column: "name".into(),
                     descending: true,
@@ -889,28 +936,51 @@ mod tests {
             parse("SELECT SUM(amount), MAX(id), COUNT(id) FROM t").unwrap(),
             Statement::Select {
                 table: "t".into(),
-                projection: Projection::Aggregates(vec![
-                    Aggregate {
+                projection: Projection::Items(vec![
+                    SelectItem::Aggregate(Aggregate {
                         func: AggFunc::Sum,
                         column: Some("amount".into())
-                    },
-                    Aggregate {
+                    }),
+                    SelectItem::Aggregate(Aggregate {
                         func: AggFunc::Max,
                         column: Some("id".into())
-                    },
-                    Aggregate {
+                    }),
+                    SelectItem::Aggregate(Aggregate {
                         func: AggFunc::Count,
                         column: Some("id".into())
-                    },
+                    }),
                 ]),
                 before: None,
                 filter: None,
+                group_by: vec![],
                 order: None,
                 limit: None,
             }
         );
         // SUM(*) is rejected; only COUNT may use `*`.
         assert!(parse("SELECT SUM(*) FROM t").is_err());
+    }
+
+    #[test]
+    fn parses_group_by() {
+        assert_eq!(
+            parse("SELECT tier, COUNT(*) FROM users GROUP BY tier").unwrap(),
+            Statement::Select {
+                table: "users".into(),
+                projection: Projection::Items(vec![
+                    SelectItem::Column("tier".into()),
+                    SelectItem::Aggregate(Aggregate {
+                        func: AggFunc::Count,
+                        column: None,
+                    }),
+                ]),
+                before: None,
+                filter: None,
+                group_by: vec!["tier".into()],
+                order: None,
+                limit: None,
+            }
+        );
         // A column literally named `sum` (no parens) is still a column.
         assert_eq!(
             parse("SELECT sum FROM t").unwrap(),
@@ -919,6 +989,7 @@ mod tests {
                 projection: Projection::Columns(vec!["sum".into()]),
                 before: None,
                 filter: None,
+                group_by: vec![],
                 order: None,
                 limit: None,
             }

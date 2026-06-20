@@ -10,7 +10,7 @@ use picovolt::storage::page::ColumnarPage;
 use picovolt::storage::record::decode_row;
 use picovolt::{Interpreter, Value};
 
-/// A tiny deterministic LCG — no external rand dependency, reproducible runs.
+/// A tiny deterministic LCG, no external rand dependency, reproducible runs.
 struct Lcg(u64);
 
 impl Lcg {
@@ -56,7 +56,7 @@ fn decoders_never_panic_on_garbage_or_mutation() {
     let cas = CasStore::new_memory();
     let mut rng = Lcg(0x0123_4567_89ab_cdef);
 
-    // Valid seeds — bit-flipping these reaches far deeper parser states than
+    // Valid seeds, bit-flipping these reaches far deeper parser states than
     // pure random bytes (which rarely form a valid header).
     let columnar = ColumnarPage::from_rows(
         0,

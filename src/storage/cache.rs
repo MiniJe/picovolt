@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn writes_survive_eviction_with_tiny_cache() {
         let tmp = tempfile::tempdir().unwrap();
-        // Capacity of 2 pages, but we write 10 — eviction must persist them.
+        // Capacity of 2 pages, but we write 10, eviction must persist them.
         let mut cache = dev_cache(tmp.path(), 2);
         for _ in 0..10 {
             let id = cache.alloc_page().unwrap();

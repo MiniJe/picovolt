@@ -3,11 +3,11 @@
 //! Three independent, individually-tested codecs used by the columnar page
 //! layout:
 //!
-//! * **Delta-Z** — delta encoding + ZigZag + LEB128 varints for monotonic-ish
+//! * **Delta-Z**, delta encoding + ZigZag + LEB128 varints for monotonic-ish
 //!   integer sequences (timestamps, auto-increment ids).
-//! * **Dictionary bit-packing** — low-cardinality text columns become a symbol
+//! * **Dictionary bit-packing**, low-cardinality text columns become a symbol
 //!   table plus an array of `ceil(log2(card))`-bit codes.
-//! * **LEB128 varints** — the shared variable-width integer substrate.
+//! * **LEB128 varints**, the shared variable-width integer substrate.
 
 use crate::core::errors::{PvError, Result};
 
@@ -153,7 +153,7 @@ pub fn pack_codes(codes: &[u8], bits: u8) -> Vec<u8> {
 /// Inverse of [`pack_codes`]; recovers exactly `count` codes.
 pub fn unpack_codes(packed: &[u8], bits: u8, count: usize) -> Result<Vec<u8>> {
     // SECURITY: `bits` comes from a decoded (possibly malicious) dictionary, so
-    // validate it at runtime — a `debug_assert` would panic in debug builds and
+    // validate it at runtime, a `debug_assert` would panic in debug builds and
     // `1u16 << bits` would shift-overflow in release for `bits >= 16`.
     if !(1..=8).contains(&bits) {
         return Err(PvError::Corruption(format!(

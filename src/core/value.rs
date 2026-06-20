@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// A single cell value.
 ///
 /// The derived total order is `Null` &lt; `Int` &lt; `Text` &lt; `Blob`, numeric
-/// within `Int` and lexicographic within `Text`/`Blob` — the ordering used by
+/// within `Int` and lexicographic within `Text`/`Blob`, the ordering used by
 /// `ORDER BY`, `MIN`/`MAX`, range comparisons, and the ordered secondary index.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Value {

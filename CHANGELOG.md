@@ -6,7 +6,14 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-20
+
+A set of backward-compatible SQL and indexing features added on top of 0.1.0.
+
 ### Added
+- **`GROUP BY`.** `SELECT cols, AGG(...) FROM t [WHERE] GROUP BY cols` groups rows
+  by one or more columns and evaluates `COUNT`, `SUM`, `MIN`, and `MAX` per group.
+  A bare column in the select list must be a grouping column.
 - **Index-accelerated `ORDER BY`.** A `SELECT ... ORDER BY indexed_col` with no
   `WHERE` reads the ordered index in key order instead of collecting every row and
   sorting, and a `LIMIT` lets it stop early once enough visible rows are found.
@@ -86,5 +93,6 @@ runs both natively and in the browser through WebAssembly.
   test plus a `cargo-fuzz` crate), and `cargo audit` reports no advisories. Both
   run in CI.
 
-[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/MiniJe/picovolt/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/MiniJe/picovolt/releases/tag/v0.1.0

@@ -1,4 +1,4 @@
-//! `pvsql` — a tiny interactive SQL shell for PicoVolt.
+//! `pvsql`, a tiny interactive SQL shell for PicoVolt.
 //!
 //! Run: `cargo run --release --example repl [workspace-path]`
 //!
@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
     let mut db = Database::open_dev(&path)?;
 
-    println!("pvsql — PicoVolt interactive shell");
+    println!("pvsql: PicoVolt interactive shell");
     println!("workspace: {path}");
     println!("Type SQL, or `.help` for commands.\n");
 

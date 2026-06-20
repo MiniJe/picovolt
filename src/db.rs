@@ -3,16 +3,16 @@
 //! This is the integration layer. As of the page-backed engine it composes:
 //!
 //! * a **buffer pool** ([`crate::storage::cache::PageCache`]) so reads stream
-//!   through a bounded set of resident pages — datasets need not fit in RAM;
-//! * **append-only page chains** — inserts append to a table's tail page and
+//!   through a bounded set of resident pages, datasets need not fit in RAM;
+//! * **append-only page chains**, inserts append to a table's tail page and
 //!   write only that page (plus a small manifest), so autocommit is O(1) per
 //!   insert instead of rewriting the whole table;
-//! * **secondary indexes** ([`crate::storage::index`]) — opt-in equality indexes
+//! * **secondary indexes** ([`crate::storage::index`]), opt-in equality indexes
 //!   turn `WHERE col = value` into a lookup instead of a full scan.
 //!
 //! A table is a singly linked chain of row pages (each header points to the
-//! next), so the manifest stores only a head page id per table — O(tables), not
-//! O(pages) — keeping per-insert manifest writes cheap.
+//! next), so the manifest stores only a head page id per table, O(tables), not
+//! O(pages), keeping per-insert manifest writes cheap.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -31,7 +31,7 @@ use crate::core::value::{Row, Value};
 use crate::engine::compliance::{ComplianceMonitor, RuntimeMetrics};
 use crate::engine::mvcc::{Snapshot, TxManager};
 use crate::engine::query::{
-    parse, AggFunc, Aggregate, CompareOp, OrderBy, Predicate, Projection, Statement,
+    parse, AggFunc, Aggregate, CompareOp, OrderBy, Predicate, Projection, SelectItem, Statement,
 };
 use crate::engine::wasm::WasmRuntime;
 use crate::storage::cache::{PageCache, DEFAULT_CACHE_PAGES};
@@ -222,7 +222,7 @@ impl Database {
     /// Open a fresh in-memory database (no filesystem or mmap).
     ///
     /// Ideal for tests, ephemeral data, and `wasm32` targets (browser / Node)
-    /// where there is no filesystem. Data lives only in RAM — export it with
+    /// where there is no filesystem. Data lives only in RAM, export it with
     /// [`bake_to_bytes`](Self::bake_to_bytes) to persist.
     pub fn open_memory() -> Self {
         Self {
@@ -242,7 +242,7 @@ impl Database {
     }
 
     /// Load a baked `.pvdb` **byte image** into a fresh, **writable** in-memory
-    /// database — the inverse of [`bake_to_bytes`](Self::bake_to_bytes).
+    /// database, the inverse of [`bake_to_bytes`](Self::bake_to_bytes).
     ///
     /// Unlike [`open_prod`](Self::open_prod) (read-only, mmap'd), this copies the
     /// pages into RAM so editing can continue, and it preserves the full MVCC
@@ -345,23 +345,32 @@ impl Database {
                 projection,
                 before,
                 filter,
+                group_by,
                 order,
                 limit,
             } => {
-                // Fast path: `ORDER BY indexed_col` with no `WHERE` reads the
-                // ordered index in key order, skipping the sort and (with `LIMIT`)
-                // stopping early. Aggregates ignore `ORDER BY`, so exclude them.
-                if let (None, Some(ob)) = (&filter, &order) {
-                    if !matches!(projection, Projection::Aggregates(_))
-                        && self.has_index(&table, &ob.column)
-                    {
-                        let (columns, rows) =
-                            self.select_ordered_by_index(&table, ob, before, limit)?;
-                        return project_select(columns, rows, projection, None, None);
+                // Fast path: `ORDER BY indexed_col` with no `WHERE`, grouping, or
+                // aggregates reads the ordered index in key order, skipping the
+                // sort and (with `LIMIT`) stopping early.
+                if group_by.is_empty()
+                    && filter.is_none()
+                    && !matches!(projection, Projection::Items(_))
+                {
+                    if let Some(ob) = &order {
+                        if self.has_index(&table, &ob.column) {
+                            let (columns, rows) =
+                                self.select_ordered_by_index(&table, ob, before, limit)?;
+                            return project_select(columns, rows, projection, None, None);
+                        }
                     }
                 }
                 let (columns, rows) = self.select_filtered(&table, filter.as_ref(), before)?;
-                project_select(columns, rows, projection, order, limit)
+                if !group_by.is_empty() || matches!(projection, Projection::Items(_)) {
+                    let items = projection_to_items(projection)?;
+                    project_grouped(columns, rows, items, group_by, order, limit)
+                } else {
+                    project_select(columns, rows, projection, order, limit)
+                }
             }
             Statement::Update { table, set, filter } => {
                 let n = self.update_where(&table, &set.0, &set.1, &filter)?;
@@ -776,7 +785,7 @@ impl Database {
     }
 
     /// Load a WASM extension, invoke `func(ptr, len) -> i32` over `input`, and
-    /// read the (in-place mutated) output region back out as bytes — the
+    /// read the (in-place mutated) output region back out as bytes, the
     /// transform counterpart to [`run_wasm_scalar`](Database::run_wasm_scalar).
     pub fn run_wasm_apply(&self, wasm_bytes: &[u8], func: &str, input: &[u8]) -> Result<Vec<u8>> {
         WasmRuntime::new()
@@ -905,7 +914,7 @@ impl Database {
 
     /// Commit the manifest atomically: write a temp file, `fsync` it, then rename
     /// over the live manifest. After a crash either the old or new manifest is
-    /// present in full — never a torn write.
+    /// present in full, never a torn write.
     fn write_manifest_atomic(&self, root: &Path, json: &[u8]) -> Result<()> {
         // The renamed-away inode would orphan a cached handle; drop it.
         *self.manifest_file.borrow_mut() = None;
@@ -975,7 +984,8 @@ pub fn pv_bake(workspace: impl AsRef<Path>, out_path: impl AsRef<Path>) -> Resul
 // Query post-processing: projection, ORDER BY, LIMIT
 // ---------------------------------------------------------------------------
 
-/// Apply aggregates / column projection, `ORDER BY`, and `LIMIT` to a result set.
+/// Apply `*` / column projection, `ORDER BY`, and `LIMIT` to a result set.
+/// Grouped and aggregate queries go through [`project_grouped`] instead.
 fn project_select(
     columns: Vec<String>,
     mut rows: Vec<Row>,
@@ -983,11 +993,6 @@ fn project_select(
     order: Option<OrderBy>,
     limit: Option<usize>,
 ) -> Result<QueryResult> {
-    // Aggregates collapse the whole result to one row; ORDER BY / LIMIT don't apply.
-    if let Projection::Aggregates(aggs) = &projection {
-        return compute_aggregates(aggs, &columns, &rows);
-    }
-
     // Sort on the full row, before projection can drop the sort column.
     if let Some(ob) = &order {
         let ix = columns
@@ -1022,7 +1027,7 @@ fn project_select(
                 .collect();
             (cols, projected)
         }
-        Projection::Aggregates(_) => unreachable!("handled above"),
+        Projection::Items(_) => unreachable!("items go through project_grouped"),
     };
 
     if let Some(n) = limit {
@@ -1046,7 +1051,7 @@ fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
 
 /// Candidate addresses from an ordered index for `pred`, if one applies: an
 /// indexed `col = value` (point lookup) or `col <op> value` for a range operator
-/// (ordered scan) — directly or as an `AND` conjunct, never under `OR`. Returns
+/// (ordered scan), directly or as an `AND` conjunct, never under `OR`. Returns
 /// `None` to fall back to a full scan. Candidates are re-checked against the full
 /// predicate by the caller, so an over-broad set is still correct.
 fn index_candidates(table: &Table, pred: &Predicate) -> Option<Vec<RecordAddr>> {
@@ -1061,7 +1066,7 @@ fn index_candidates(table: &Table, pred: &Predicate) -> Option<Vec<RecordAddr>> 
                 CompareOp::Le => Some(idx.range((Unbounded, Included(v())))),
                 CompareOp::Gt => Some(idx.range((Excluded(v()), Unbounded))),
                 CompareOp::Ge => Some(idx.range((Included(v()), Unbounded))),
-                // `!=` and `LIKE` aren't range-shaped — a scan is no worse.
+                // `!=` and `LIKE` aren't range-shaped, a scan is no worse.
                 CompareOp::Ne | CompareOp::Like => None,
             }
         }
@@ -1158,17 +1163,109 @@ fn like_match(text: &str, pattern: &str) -> bool {
     pi == p.len()
 }
 
-/// Compute aggregate terms over the (already filtered) rows → a single result row.
-fn compute_aggregates(aggs: &[Aggregate], columns: &[String], rows: &[Row]) -> Result<QueryResult> {
-    let mut out_columns = Vec::with_capacity(aggs.len());
-    let mut out_row = Vec::with_capacity(aggs.len());
-    for agg in aggs {
-        out_columns.push(agg_label(agg));
-        out_row.push(compute_one_aggregate(agg, columns, rows)?);
+/// Turn a projection into select items for the grouped path. `SELECT *` cannot be
+/// combined with grouping or aggregates.
+fn projection_to_items(projection: Projection) -> Result<Vec<SelectItem>> {
+    match projection {
+        Projection::Items(items) => Ok(items),
+        Projection::Columns(cols) => Ok(cols.into_iter().map(SelectItem::Column).collect()),
+        Projection::All => Err(PvError::Query(
+            "SELECT * cannot be combined with GROUP BY or aggregates".into(),
+        )),
+    }
+}
+
+/// Evaluate a grouped or whole-table aggregate query: partition `rows` by the
+/// `group_by` columns (a single group when `group_by` is empty), evaluate each
+/// select item per group, then apply `ORDER BY` and `LIMIT` to the result.
+fn project_grouped(
+    columns: Vec<String>,
+    rows: Vec<Row>,
+    items: Vec<SelectItem>,
+    group_by: Vec<String>,
+    order: Option<OrderBy>,
+    limit: Option<usize>,
+) -> Result<QueryResult> {
+    // A bare column in the select list must be a grouping column.
+    for item in &items {
+        if let SelectItem::Column(c) = item {
+            if !group_by.iter().any(|g| g == c) {
+                return Err(PvError::Schema(format!(
+                    "column `{c}` must appear in GROUP BY or inside an aggregate"
+                )));
+            }
+        }
+    }
+    // Group-by column indices (also validates the columns exist).
+    let gb_idx: Vec<usize> = group_by
+        .iter()
+        .map(|c| {
+            columns
+                .iter()
+                .position(|x| x == c)
+                .ok_or_else(|| PvError::Schema(format!("no column `{c}`")))
+        })
+        .collect::<Result<_>>()?;
+
+    // Partition into groups, ordered by group key.
+    let mut groups: BTreeMap<Vec<Value>, Vec<Row>> = BTreeMap::new();
+    if group_by.is_empty() {
+        groups.insert(Vec::new(), rows);
+    } else {
+        for row in rows {
+            let key: Vec<Value> = gb_idx.iter().map(|&i| row[i].clone()).collect();
+            groups.entry(key).or_default().push(row);
+        }
+    }
+
+    let out_columns: Vec<String> = items
+        .iter()
+        .map(|it| match it {
+            SelectItem::Column(c) => c.clone(),
+            SelectItem::Aggregate(a) => agg_label(a),
+        })
+        .collect();
+
+    let mut out_rows: Vec<Row> = Vec::with_capacity(groups.len());
+    for (key, group_rows) in &groups {
+        let mut out = Vec::with_capacity(items.len());
+        for item in &items {
+            match item {
+                SelectItem::Column(c) => {
+                    let gi = group_by
+                        .iter()
+                        .position(|g| g == c)
+                        .expect("validated above");
+                    out.push(key[gi].clone());
+                }
+                SelectItem::Aggregate(a) => {
+                    out.push(compute_one_aggregate(a, &columns, group_rows)?)
+                }
+            }
+        }
+        out_rows.push(out);
+    }
+
+    if let Some(ob) = &order {
+        let ix = out_columns
+            .iter()
+            .position(|c| c == &ob.column)
+            .ok_or_else(|| PvError::Schema(format!("no column `{}` to order by", ob.column)))?;
+        out_rows.sort_by(|a, b| {
+            let o = cmp_values(&a[ix], &b[ix]);
+            if ob.descending {
+                o.reverse()
+            } else {
+                o
+            }
+        });
+    }
+    if let Some(n) = limit {
+        out_rows.truncate(n);
     }
     Ok(QueryResult::Rows {
         columns: out_columns,
-        rows: vec![out_row],
+        rows: out_rows,
     })
 }
 
@@ -1531,7 +1628,7 @@ mod tests {
         assert!(db.query("SELECT * FROM p ORDER BY nope").is_err());
     }
 
-    /// Sorted `id`s of a SELECT result — a small assertion helper for the SQL tests.
+    /// Sorted `id`s of a SELECT result, a small assertion helper for the SQL tests.
     fn ids(db: &mut Database, sql: &str) -> Vec<i64> {
         let r = db.query(sql).unwrap();
         let ix = r.columns().unwrap().iter().position(|c| c == "id").unwrap();
@@ -1633,6 +1730,88 @@ mod tests {
             &[vec![Value::Text("alice".into()), Value::Text("bob".into())]]
         );
         assert!(db.query("SELECT SUM(name) FROM w").is_err());
+    }
+
+    #[test]
+    fn group_by_aggregates() {
+        let mut db = Database::open_memory();
+        db.query("CREATE TABLE orders (id, customer, amount)")
+            .unwrap();
+        for (i, c, a) in [
+            (1, "alice", 120),
+            (2, "bob", 45),
+            (3, "alice", 60),
+            (4, "carol", 200),
+            (5, "bob", 55),
+        ] {
+            db.query(&format!("INSERT INTO orders VALUES ({i}, '{c}', {a})"))
+                .unwrap();
+        }
+
+        // One row per group, with per-group aggregates. Groups come out in key
+        // order (alice, bob, carol).
+        let r = db
+            .query("SELECT customer, COUNT(*), SUM(amount) FROM orders GROUP BY customer")
+            .unwrap();
+        assert_eq!(
+            r.columns().unwrap(),
+            &[
+                "customer".to_string(),
+                "count".to_string(),
+                "sum(amount)".to_string()
+            ]
+        );
+        assert_eq!(
+            r.rows().unwrap(),
+            &[
+                vec![Value::Text("alice".into()), Value::Int(2), Value::Int(180)],
+                vec![Value::Text("bob".into()), Value::Int(2), Value::Int(100)],
+                vec![Value::Text("carol".into()), Value::Int(1), Value::Int(200)],
+            ]
+        );
+
+        // WHERE filters rows before grouping; MIN/MAX per group.
+        let r = db
+            .query("SELECT customer, MIN(amount), MAX(amount) FROM orders WHERE amount > 50 GROUP BY customer")
+            .unwrap();
+        assert_eq!(
+            r.rows().unwrap(),
+            &[
+                vec![Value::Text("alice".into()), Value::Int(60), Value::Int(120)],
+                vec![Value::Text("bob".into()), Value::Int(55), Value::Int(55)],
+                vec![
+                    Value::Text("carol".into()),
+                    Value::Int(200),
+                    Value::Int(200)
+                ],
+            ]
+        );
+
+        // GROUP BY a column alone yields the distinct group keys.
+        let distinct = db
+            .query("SELECT customer FROM orders GROUP BY customer")
+            .unwrap();
+        let names: Vec<_> = distinct
+            .rows()
+            .unwrap()
+            .iter()
+            .map(|r| r[0].clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                Value::Text("alice".into()),
+                Value::Text("bob".into()),
+                Value::Text("carol".into()),
+            ]
+        );
+
+        // Invalid combinations are rejected, not silently wrong.
+        assert!(db
+            .query("SELECT customer, amount FROM orders GROUP BY customer")
+            .is_err()); // bare non-grouped column
+        assert!(db.query("SELECT * FROM orders GROUP BY customer").is_err()); // SELECT *
+        assert!(db.query("SELECT customer, COUNT(*) FROM orders").is_err()); // mix without GROUP BY
     }
 
     #[test]
@@ -1950,7 +2129,7 @@ mod tests {
     #[test]
     fn cyclic_page_chain_errors_rather_than_hangs() {
         // SECURITY: a crafted page whose next-link points to itself must not loop
-        // forever — the scan caps traversal at the total page count.
+        // forever, the scan caps traversal at the total page count.
         let tmp = tempfile::tempdir().unwrap();
         let mut dev = DevStore::create(tmp.path()).unwrap();
         let pid = dev.alloc_page(); // 0; page_count -> 1

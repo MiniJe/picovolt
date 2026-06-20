@@ -1,12 +1,12 @@
-//! Virtualization Layer Engine (VLE) — the router that hides whether pages live
+//! Virtualization Layer Engine (VLE), the router that hides whether pages live
 //! in a mutable `.pv/` directory (Development Mode) or inside a single immutable
 //! memory-mapped `.pvdb` monolith (Production Mode), per spec §2.
 //!
-//! * [`DevStore`] — append-only 4096-byte pages spread across `chunks/*.pvd`
+//! * [`DevStore`], append-only 4096-byte pages spread across `chunks/*.pvd`
 //!   files capped at 64 MiB each.
-//! * [`Monolith`] — a read-only mmap over a baked `.pvdb`, slicing pages and
+//! * [`Monolith`], a read-only mmap over a baked `.pvdb`, slicing pages and
 //!   exposing the CAS / manifest regions by absolute offset.
-//! * [`bake_monolith`] — compiles a dev workspace's pages + CAS pool + manifest
+//! * [`bake_monolith`], compiles a dev workspace's pages + CAS pool + manifest
 //!   into the contiguous monolith layout.
 
 use std::cell::RefCell;
@@ -287,7 +287,7 @@ impl Monolith {
 }
 
 // ---------------------------------------------------------------------------
-// In-memory backend (no filesystem) — `Database::open_memory` and wasm targets
+// In-memory backend (no filesystem), `Database::open_memory` and wasm targets
 // ---------------------------------------------------------------------------
 
 /// A page store held entirely in RAM (no filesystem / mmap). Useful for tests,

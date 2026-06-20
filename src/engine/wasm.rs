@@ -3,7 +3,7 @@
 //! User-defined functions run inside a sandboxed [`wasmi`] interpreter. The host
 //! ↔ guest bridge follows the spec's six-step flow: the host allocates guest
 //! linear memory, copies the input byte stream in, invokes an exported function
-//! by name, and reads the result back out — no structural serialization across
+//! by name, and reads the result back out, no structural serialization across
 //! the boundary, just shared linear-memory pointers.
 //!
 //! ## Guest ABI
@@ -21,8 +21,8 @@ fn wasm_err<E: std::fmt::Display>(e: E) -> PvError {
     PvError::Wasm(e.to_string())
 }
 
-/// A uniform interface over WASM backends — the [`wasmi`] engine and PicoVolt's
-/// own [`crate::engine::interp`] interpreter — so call sites and differential
+/// A uniform interface over WASM backends, the [`wasmi`] engine and PicoVolt's
+/// own [`crate::engine::interp`] interpreter, so call sites and differential
 /// tests can treat them interchangeably.
 pub trait WasmExec {
     /// Write `input` to guest memory at offset 0, call `func(ptr, len) -> i32`,

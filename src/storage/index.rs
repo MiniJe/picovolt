@@ -36,7 +36,7 @@ impl SecondaryIndex {
     }
 
     /// Addresses of records carrying exactly `value` (may include tombstoned
-    /// versions — the caller filters by visibility).
+    /// versions, the caller filters by visibility).
     pub fn lookup(&self, value: &Value) -> &[RecordAddr] {
         self.map.get(value).map(Vec::as_slice).unwrap_or(&[])
     }

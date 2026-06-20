@@ -27,11 +27,13 @@ extension sandbox; an SQL front-end; and the WebAssembly and npm bindings.
 - **Index-accelerated `ORDER BY`:** a `SELECT ... ORDER BY indexed_col` with no
   `WHERE` reads the index in key order and skips the sort, and a `LIMIT` stops the
   read early.
+- **`GROUP BY`:** group rows by one or more columns and evaluate `COUNT`, `SUM`,
+  `MIN`, and `MAX` per group.
 
 ## Next
 
-- **`GROUP BY` and `AVG`:** grouped aggregation, and `AVG` once there is a value
-  type that can hold a fraction (today `Value` is integer, text, or blob only).
+- **`AVG`:** average aggregation, once there is a value type that can hold a
+  fraction (today `Value` is integer, text, or blob only).
 - **Persisted indexes:** indexes are currently rebuilt by a scan on open.
   Persisting them in the `.pvdb` file and workspace would let large tables open
   quickly.

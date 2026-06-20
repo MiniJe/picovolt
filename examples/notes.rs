@@ -1,4 +1,4 @@
-//! `pvnote` — a tiny notes store built on PicoVolt.
+//! `pvnote`, a tiny notes store built on PicoVolt.
 //!
 //! Demonstrates idiomatic usage end to end: schema + inserts, CAS dedup of long
 //! bodies, MVCC edit history with time-travel, and "publishing" (baking) to a

@@ -4,7 +4,7 @@
 //! A [`RowPage`] wraps a raw 4096-byte buffer and provides O(1) slotted appends:
 //! the slot array grows downward from just past the header while record payloads
 //! grow upward from the end of the page. [`ColumnarPage`] performs the cold-state
-//! transposition — decoding a set of rows column-by-column and applying the
+//! transposition, decoding a set of rows column-by-column and applying the
 //! §4 compression primitives.
 
 use crate::core::errors::{PvError, Result};
@@ -156,7 +156,7 @@ impl RowPage {
     }
 }
 
-/// A read-only, **borrowing** view over a row-page buffer — lets the buffer pool
+/// A read-only, **borrowing** view over a row-page buffer, lets the buffer pool
 /// hand out pages for scanning without copying the 4096 bytes.
 pub struct RowPageRef<'a> {
     buf: &'a [u8],
@@ -216,7 +216,7 @@ const COL_ENC_DICTIONARY: u8 = 2;
 const COL_ENC_RAW: u8 = 3;
 
 /// Cold columnar page codec. Operates on fully-resolved [`Row`]s (CAS pointers
-/// already dereferenced) — see the module note in the README about CAS-in-cold
+/// already dereferenced), see the module note in the README about CAS-in-cold
 /// pages being a future refinement.
 pub struct ColumnarPage;
 

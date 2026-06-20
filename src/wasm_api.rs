@@ -60,7 +60,7 @@ impl Db {
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
-    /// The most recently committed transaction id — the upper bound for a
+    /// The most recently committed transaction id, the upper bound for a
     /// `... BEFORE tx` time-travel query.
     #[wasm_bindgen(js_name = currentTx)]
     pub fn current_tx(&self) -> u32 {

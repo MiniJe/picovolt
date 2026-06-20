@@ -65,7 +65,7 @@ pub type PageId = u64;
 /// used to chain MVCC versions together.
 pub type PhysAddr = u64;
 
-/// Reserved transaction id meaning "no transaction" — used by
+/// Reserved transaction id meaning "no transaction", used by
 /// [`RecordEnvelope::tx_deleted`] to mark a record as still active.
 pub const TX_NULL: TxId = 0;
 

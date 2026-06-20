@@ -6,9 +6,9 @@
 //! the on-disk blob pool a simple id-ordered concatenation.
 //!
 //! Three backends share one interface:
-//! * **memory** — blobs held in RAM (used while building a database in RAM);
-//! * **dev** — blobs additionally mirrored to `.pv/blobs/<aa>/<hash>` files;
-//! * **prod** — blobs read by reference out of an mmap'd `.pvdb` blob pool.
+//! * **memory**, blobs held in RAM (used while building a database in RAM);
+//! * **dev**, blobs additionally mirrored to `.pv/blobs/<aa>/<hash>` files;
+//! * **prod**, blobs read by reference out of an mmap'd `.pvdb` blob pool.
 
 use std::collections::HashMap;
 use std::fs;
@@ -126,7 +126,7 @@ impl CasStore {
 
     /// Pack every blob, in id order, into a contiguous pool. Returns the bytes
     /// plus a directory of `(offset, len)` pairs (offsets relative to the pool
-    /// start) — exactly the form baked into a `.pvdb` CAS blob pool.
+    /// start), exactly the form baked into a `.pvdb` CAS blob pool.
     pub fn pack(&self) -> Result<(Vec<u8>, CasDir)> {
         let mut pool = Vec::new();
         let mut dir = Vec::with_capacity(self.entries.len());

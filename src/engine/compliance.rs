@@ -2,7 +2,7 @@
 //!
 //! PicoVolt itself is Apache-2.0 and imposes **no** usage limits. This module is
 //! a small, opt-in utility an application can call to enforce its *own* business
-//! rules — for example, a self-imposed free-tier cap on a hosted product. It is
+//! rules, for example, a self-imposed free-tier cap on a hosted product. It is
 //! purely local (no network calls) and inert unless the application calls
 //! [`ComplianceMonitor::assert_compliance`]; nothing in the engine invokes it.
 //!
