@@ -348,6 +348,18 @@ impl Database {
                 order,
                 limit,
             } => {
+                // Fast path: `ORDER BY indexed_col` with no `WHERE` reads the
+                // ordered index in key order, skipping the sort and (with `LIMIT`)
+                // stopping early. Aggregates ignore `ORDER BY`, so exclude them.
+                if let (None, Some(ob)) = (&filter, &order) {
+                    if !matches!(projection, Projection::Aggregates(_))
+                        && self.has_index(&table, &ob.column)
+                    {
+                        let (columns, rows) =
+                            self.select_ordered_by_index(&table, ob, before, limit)?;
+                        return project_select(columns, rows, projection, None, None);
+                    }
+                }
                 let (columns, rows) = self.select_filtered(&table, filter.as_ref(), before)?;
                 project_select(columns, rows, projection, order, limit)
             }
@@ -597,6 +609,48 @@ impl Database {
                         }
                         Ok(())
                     })?;
+                }
+            }
+        }
+        Ok((columns, rows))
+    }
+
+    /// Whether `column` of `table` has a secondary index.
+    fn has_index(&self, table_name: &str, column: &str) -> bool {
+        self.tables
+            .get(table_name)
+            .is_some_and(|t| t.indexes.contains_key(column))
+    }
+
+    /// Read all visible rows in the order of an index on `ob.column`, descending
+    /// when requested, stopping once `limit` visible rows are collected. The
+    /// caller must have checked that the column is indexed. Used to satisfy
+    /// `ORDER BY indexed_col` without a sort.
+    fn select_ordered_by_index(
+        &self,
+        table_name: &str,
+        ob: &OrderBy,
+        before: Option<u64>,
+        limit: Option<usize>,
+    ) -> Result<(Vec<String>, Vec<Row>)> {
+        let table = self
+            .tables
+            .get(table_name)
+            .ok_or_else(|| PvError::TableNotFound(table_name.into()))?;
+        let index = table
+            .indexes
+            .get(&ob.column)
+            .expect("caller checked the column is indexed");
+        let snapshot = Snapshot::as_of(before.unwrap_or_else(|| self.txm.current()));
+        let columns = table.columns.clone();
+        let mut rows = Vec::new();
+        let mut cache = self.cache.borrow_mut();
+        for addr in index.ordered_addrs(ob.descending) {
+            let (env, row) = read_record_at(&mut cache, table, &self.cas, addr)?;
+            if snapshot.sees(&env) {
+                rows.push(row);
+                if limit.is_some_and(|n| rows.len() >= n) {
+                    break;
                 }
             }
         }
@@ -1665,7 +1719,7 @@ mod tests {
         );
 
         // MVCC: after an UPDATE the ordered index reflects the new value, with the
-        // old version tombstoned (not visible) — range results track the change.
+        // old version tombstoned (not visible), so range results track the change.
         indexed
             .query("UPDATE t SET score = 5 WHERE id = 2")
             .unwrap();
@@ -1676,6 +1730,87 @@ mod tests {
         assert_eq!(
             ids(&mut indexed, "SELECT id FROM t WHERE score < 50"),
             vec![2, 5]
+        );
+    }
+
+    #[test]
+    fn order_by_index_matches_sort() {
+        let build = |index: bool| {
+            let mut db = Database::open_memory();
+            db.query("CREATE TABLE t (id, score)").unwrap();
+            for (i, s) in [(1, 50), (2, 90), (3, 70), (4, 90), (5, 10)] {
+                db.query(&format!("INSERT INTO t VALUES ({i}, {s})"))
+                    .unwrap();
+            }
+            if index {
+                db.query("CREATE INDEX ON t (score)").unwrap();
+            }
+            db
+        };
+        let mut indexed = build(true);
+        let mut plain = build(false);
+
+        // The `score` sequence a query returns, in result order (not re-sorted).
+        let scores = |db: &mut Database, sql: &str| -> Vec<i64> {
+            let r = db.query(sql).unwrap();
+            let si = r
+                .columns()
+                .unwrap()
+                .iter()
+                .position(|c| c == "score")
+                .unwrap();
+            r.rows()
+                .unwrap()
+                .iter()
+                .map(|row| match row[si] {
+                    Value::Int(v) => v,
+                    ref other => panic!("non-int score: {other:?}"),
+                })
+                .collect()
+        };
+
+        // The index-ordered fast path (indexed) and the sort path (plain) must
+        // agree on the score order for ascending and descending, with and without
+        // a limit.
+        for sql in [
+            "SELECT score, id FROM t ORDER BY score",
+            "SELECT score, id FROM t ORDER BY score ASC",
+            "SELECT score, id FROM t ORDER BY score DESC",
+            "SELECT score, id FROM t ORDER BY score LIMIT 3",
+            "SELECT score, id FROM t ORDER BY score DESC LIMIT 2",
+        ] {
+            assert_eq!(
+                scores(&mut indexed, sql),
+                scores(&mut plain, sql),
+                "order: {sql}"
+            );
+        }
+
+        assert_eq!(
+            scores(&mut indexed, "SELECT score FROM t ORDER BY score"),
+            vec![10, 50, 70, 90, 90]
+        );
+        assert_eq!(
+            scores(
+                &mut indexed,
+                "SELECT score FROM t ORDER BY score DESC LIMIT 2"
+            ),
+            vec![90, 90]
+        );
+
+        // Projection composes with the fast path: the smallest score is id 5.
+        let proj = indexed
+            .query("SELECT id FROM t ORDER BY score LIMIT 1")
+            .unwrap();
+        assert_eq!(proj.columns().unwrap(), &["id".to_string()]);
+        assert_eq!(proj.rows().unwrap(), &[vec![Value::Int(5)]]);
+
+        // The fast path honors MVCC visibility: a deleted row drops out of the
+        // index-ordered result.
+        indexed.query("DELETE FROM t WHERE id = 5").unwrap();
+        assert_eq!(
+            scores(&mut indexed, "SELECT score FROM t ORDER BY score"),
+            vec![50, 70, 90, 90]
         );
     }
 

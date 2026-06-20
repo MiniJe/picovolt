@@ -51,6 +51,16 @@ impl SecondaryIndex {
             .collect()
     }
 
+    /// Every address in key order: ascending, or descending when `descending` is
+    /// set. Lets a reader satisfy `ORDER BY indexed_col` without a sort.
+    pub fn ordered_addrs(&self, descending: bool) -> Vec<RecordAddr> {
+        if descending {
+            self.map.values().rev().flatten().copied().collect()
+        } else {
+            self.map.values().flatten().copied().collect()
+        }
+    }
+
     /// Total number of (value, addr) entries indexed.
     pub fn len(&self) -> usize {
         self.entries
@@ -122,5 +132,17 @@ mod tests {
             )),
             vec![3, 2, 4]
         );
+    }
+
+    #[test]
+    fn ordered_addrs_walks_keys_in_order() {
+        let mut idx = SecondaryIndex::new();
+        for (v, a) in [(30, 1), (10, 2), (20, 3), (10, 4)] {
+            idx.insert(&Value::Int(v), a);
+        }
+        // Ascending keys: 10 (a2, a4), 20 (a3), 30 (a1).
+        assert_eq!(idx.ordered_addrs(false), vec![2, 4, 3, 1]);
+        // Descending keys: 30 (a1), 20 (a3), 10 (a2, a4).
+        assert_eq!(idx.ordered_addrs(true), vec![1, 3, 2, 4]);
     }
 }

@@ -7,6 +7,10 @@ All notable changes to PicoVolt are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Index-accelerated `ORDER BY`.** A `SELECT ... ORDER BY indexed_col` with no
+  `WHERE` reads the ordered index in key order instead of collecting every row and
+  sorting, and a `LIMIT` lets it stop early once enough visible rows are found.
+  Falls back to a sort when the column is unindexed or a `WHERE` clause is present.
 - **Ordered secondary indexes.** `CREATE INDEX` now builds a range-capable
   ordered index (a `BTreeMap` keyed on `Value`'s total order). Range predicates
   (`col < v`, `<=`, `>`, `>=`) use it for an ordered scan instead of a full table
