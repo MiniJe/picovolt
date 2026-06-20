@@ -27,5 +27,25 @@ locally before opening a PR.
 
 ## License of contributions
 
-By submitting a contribution you agree that it is licensed under the project's
-[Apache License 2.0](LICENSE) (see section 5 of the license).
+Contributions are accepted under the project's [Apache License 2.0](LICENSE)
+(inbound = outbound, per section 5 of the license).
+
+### Sign your work (DCO)
+
+PicoVolt uses the [Developer Certificate of Origin](https://developercertificate.org/)
+— a lightweight, one-line alternative to a CLA. It's a statement that you wrote
+the patch or otherwise have the right to submit it under the project license. Add
+a `Signed-off-by` line to every commit:
+
+```sh
+git commit -s -m "your message"     # appends: Signed-off-by: Name <email>
+```
+
+Use your real name and an email you can be reached at; the name must match the
+DCO text. CI checks that commits in a PR are signed off.
+
+**One thing to be aware of, stated plainly:** because contributions are
+Apache-2.0 (which permits proprietary downstream use), code you contribute to the
+open core may also appear in the planned commercial **`picovolt-pro`** edition
+described in [ROADMAP.md](ROADMAP.md). The open core stays open — see the roadmap
+for how that boundary works.

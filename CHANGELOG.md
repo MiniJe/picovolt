@@ -7,7 +7,10 @@ adheres to [Semantic Versioning](https://semver.org). See
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+- `Database::run_wasm_apply` — byte-stream counterpart to `run_wasm_scalar`, for
+  WASM extensions that transform their input region in place. Rounds out the
+  documented extension seam (see [docs/EXTENDING.md](docs/EXTENDING.md)).
 
 ## [0.1.0] - 2026-06-20
 

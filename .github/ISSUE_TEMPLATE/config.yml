@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or idea
+    url: https://github.com/MiniJe/picovolt/discussions
+    about: For usage questions and open-ended discussion, start a Discussion.
+  - name: Security vulnerability
+    url: https://github.com/MiniJe/picovolt/security/advisories/new
+    about: Report security issues privately — please don't open a public issue.

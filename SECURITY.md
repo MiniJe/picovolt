@@ -3,8 +3,9 @@
 ## Status
 
 PicoVolt is **experimental software**. The untrusted-input parsing paths have
-been hardened (see below) and reviewed, but the code has **not** been fuzzed or
-independently certified. Don't store data you can't lose.
+been hardened, reviewed, and fuzzed (see below), but the fuzzing has not run for
+long soak times and the code has **not** been independently audited or certified.
+Don't store data you can't lose.
 
 ## Hardening done
 
@@ -45,7 +46,12 @@ soak times.
 
 ## Reporting a vulnerability
 
-Please open a GitHub issue describing the problem, or — for anything sensitive —
-contact the maintainers privately before public disclosure. Since this is an
-experimental project, there is no formal SLA, but reports are appreciated and
-will be addressed on a best-effort basis.
+For anything sensitive, **report privately before public disclosure** — please
+don't open a public issue for an exploitable bug. Use GitHub's
+[private vulnerability reporting](https://github.com/MiniJe/picovolt/security/advisories/new)
+(the repo's **Security → Report a vulnerability** tab), or email
+`security@picovolt.dev`.
+
+For non-sensitive hardening suggestions, a regular GitHub issue is fine. Since
+this is an experimental project there is no formal SLA, but reports are
+appreciated and addressed on a best-effort basis.

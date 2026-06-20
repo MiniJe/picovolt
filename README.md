@@ -136,6 +136,24 @@ no range/ordered indexes and no concurrency.
 PicoVolt runs in the browser via an in-memory backend; the [`js/`](js) directory
 has a browser (`index.html`) and Node (`node-demo.cjs`) demo.
 
+## Extending PicoVolt
+
+Two extension paths — sandboxed WASM user-defined functions, and native modules
+built on the public API — are documented in [docs/EXTENDING.md](docs/EXTENDING.md).
+The same public surface is what the planned commercial `picovolt-pro` edition
+will build on; the open core stays Apache-2.0. See [ROADMAP.md](ROADMAP.md).
+
+## Project
+
+| | |
+|--|--|
+| Where it's going | [ROADMAP.md](ROADMAP.md) |
+| Contributing (DCO sign-off, the test gate) | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Code of conduct | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) |
+| Versioning & releases | [RELEASING.md](RELEASING.md) · [CHANGELOG.md](CHANGELOG.md) |
+| Security policy & reporting | [SECURITY.md](SECURITY.md) |
+| Extending the engine | [docs/EXTENDING.md](docs/EXTENDING.md) |
+
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE). Third-party

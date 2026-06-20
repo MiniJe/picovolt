@@ -1,0 +1,59 @@
+name: Bug report
+description: Something behaves incorrectly, panics, or corrupts data.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. PicoVolt is experimental — concrete repros help a lot.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you observe, and what did you expect instead?
+      placeholder: "SELECT ... returned X; I expected Y."
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: The SQL and/or Rust that triggers it. Smaller is better.
+      render: rust
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend
+      description: Which storage mode were you using?
+      options:
+        - Dev (.pv workspace)
+        - Prod (.pvdb monolith)
+        - In-memory
+        - wasm / npm bindings
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: PicoVolt version
+      description: Crate version, npm version, or git commit.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: "Windows 11 / Rust 1.79 — or browser/Node version for wasm"
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Backtraces, logs, or a `.pvdb` that reproduces it (if safe to share).
+    validations:
+      required: false

@@ -74,3 +74,24 @@ jobs:
       - uses: taiki-e/install-action@cargo-fuzz
       - name: Build fuzz targets (compile check)
         run: cargo fuzz build --sanitizer none
+
+  dco:
+    name: DCO sign-off
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Every commit has a Signed-off-by line
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          fail=0
+          for c in $(git rev-list --no-merges "$base..$head"); do
+            if ! git show -s --format=%B "$c" | grep -qiE '^Signed-off-by: .+ <.+@.+>'; then
+              echo "::error::commit $c is missing a Signed-off-by line (use 'git commit -s')"
+              fail=1
+            fi
+          done
+          exit $fail

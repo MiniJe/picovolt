@@ -670,11 +670,24 @@ impl Database {
         self.compliance = monitor;
     }
 
-    /// Load a WASM extension and invoke `func(ptr, len) -> i32` over `input`.
+    /// Load a WASM extension and invoke `func(ptr, len) -> i32` over `input`,
+    /// returning the scalar result. See [`crate::engine::wasm`] for the guest ABI.
+    ///
+    /// This is the supported seam for sandboxed third-party extensions; pair it
+    /// with [`run_wasm_apply`](Database::run_wasm_apply) for byte-stream output.
     pub fn run_wasm_scalar(&self, wasm_bytes: &[u8], func: &str, input: &[u8]) -> Result<i32> {
         WasmRuntime::new()
             .load(wasm_bytes)?
             .call_scalar(func, input)
+    }
+
+    /// Load a WASM extension, invoke `func(ptr, len) -> i32` over `input`, and
+    /// read the (in-place mutated) output region back out as bytes — the
+    /// transform counterpart to [`run_wasm_scalar`](Database::run_wasm_scalar).
+    pub fn run_wasm_apply(&self, wasm_bytes: &[u8], func: &str, input: &[u8]) -> Result<Vec<u8>> {
+        WasmRuntime::new()
+            .load(wasm_bytes)?
+            .apply_in_place(func, input)
     }
 
     // --- introspection / control -------------------------------------------
@@ -1334,6 +1347,50 @@ mod tests {
             db.assert_compliance(&over),
             Err(PvError::Compliance(_))
         ));
+    }
+
+    #[test]
+    fn wasm_extension_seam_runs_scalar_and_apply() {
+        // The supported third-party extension seam: a sandboxed guest exporting
+        // `memory` plus a `fn(ptr, len) -> i32`. `sum` returns a scalar; `inc`
+        // mutates the input region in place and reports the output length.
+        let guest = wat::parse_str(
+            r#"
+            (module
+              (memory (export "memory") 1)
+              (func (export "sum") (param $ptr i32) (param $len i32) (result i32)
+                (local $i i32) (local $acc i32)
+                (block $done (loop $loop
+                  (br_if $done (i32.ge_u (local.get $i) (local.get $len)))
+                  (local.set $acc (i32.add (local.get $acc)
+                    (i32.load8_u (i32.add (local.get $ptr) (local.get $i)))))
+                  (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                  (br $loop)))
+                (local.get $acc))
+              (func (export "inc") (param $ptr i32) (param $len i32) (result i32)
+                (local $i i32)
+                (block $done (loop $loop
+                  (br_if $done (i32.ge_u (local.get $i) (local.get $len)))
+                  (i32.store8 (i32.add (local.get $ptr) (local.get $i))
+                    (i32.add (i32.load8_u (i32.add (local.get $ptr) (local.get $i))) (i32.const 1)))
+                  (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                  (br $loop)))
+                (local.get $len)))
+            "#,
+        )
+        .unwrap();
+
+        let db = Database::open_memory();
+        assert_eq!(
+            db.run_wasm_scalar(&guest, "sum", &[1, 2, 3, 4, 10])
+                .unwrap(),
+            20
+        );
+        assert_eq!(
+            db.run_wasm_apply(&guest, "inc", &[0, 9, 254]).unwrap(),
+            vec![1, 10, 255]
+        );
+        assert!(db.run_wasm_scalar(&guest, "missing", &[]).is_err());
     }
 
     #[test]
