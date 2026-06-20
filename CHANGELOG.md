@@ -6,6 +6,11 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-20
+
+More backward-compatible SQL features on top of 0.2.0: `AVG` with a new exact
+decimal value type, streaming reads, and positioned parse errors.
+
 ### Added
 - **Streaming reads.** `Database::for_each_row` visits a table's visible rows one
   at a time (with optional time-travel) instead of materializing the full result,
@@ -116,6 +121,7 @@ runs both natively and in the browser through WebAssembly.
   test plus a `cargo-fuzz` crate), and `cargo audit` reports no advisories. Both
   run in CI.
 
-[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/MiniJe/picovolt/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/MiniJe/picovolt/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/MiniJe/picovolt/releases/tag/v0.1.0

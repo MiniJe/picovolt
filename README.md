@@ -1,7 +1,7 @@
 # PicoVolt (PVDB)
 
 [![CI](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml/badge.svg)](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](CHANGELOG.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)
 
@@ -23,7 +23,7 @@ cache efficiency.
 
 ## Status
 
-The engine is built out across four phases, all implemented, with 94 unit and
+The engine is built out across four phases, all implemented, with 103 unit and
 integration tests plus doctests passing and a clean `cargo clippy -D warnings` on
 Linux and Windows. Changes are tracked in [CHANGELOG.md](CHANGELOG.md).
 
