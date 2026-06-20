@@ -77,7 +77,9 @@ jobs:
         with:
           tool: cargo-fuzz
       - name: Build fuzz targets (compile check)
-        run: cargo fuzz build --sanitizer none
+        # Pin the host target: cargo-fuzz otherwise defaults to musl, whose std
+        # isn't installed on the runner (E0463: can't find crate for `core`).
+        run: cargo fuzz build --sanitizer none --target x86_64-unknown-linux-gnu
 
   dco:
     name: DCO sign-off
