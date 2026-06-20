@@ -110,6 +110,10 @@ pub enum AggFunc {
     Min,
     /// Maximum value (any comparable type).
     Max,
+    /// Average of integer values, rendered as fixed-point text because there is no
+    /// fractional `Value` type. The result is a display value; it cannot currently
+    /// be used as a sort key, filter, or index entry.
+    Avg,
 }
 
 /// One aggregate term, e.g. `SUM(amount)`. `column` is `None` only for `COUNT(*)`.
@@ -475,6 +479,7 @@ fn agg_func(word: &str) -> Option<AggFunc> {
         "SUM" => Some(AggFunc::Sum),
         "MIN" => Some(AggFunc::Min),
         "MAX" => Some(AggFunc::Max),
+        "AVG" => Some(AggFunc::Avg),
         _ => None,
     }
 }
@@ -959,6 +964,23 @@ mod tests {
         );
         // SUM(*) is rejected; only COUNT may use `*`.
         assert!(parse("SELECT SUM(*) FROM t").is_err());
+        // AVG parses to its own aggregate and requires a column.
+        assert_eq!(
+            parse("SELECT AVG(amount) FROM t").unwrap(),
+            Statement::Select {
+                table: "t".into(),
+                projection: Projection::Items(vec![SelectItem::Aggregate(Aggregate {
+                    func: AggFunc::Avg,
+                    column: Some("amount".into()),
+                })]),
+                before: None,
+                filter: None,
+                group_by: vec![],
+                order: None,
+                limit: None,
+            }
+        );
+        assert!(parse("SELECT AVG(*) FROM t").is_err());
     }
 
     #[test]

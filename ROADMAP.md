@@ -29,11 +29,15 @@ extension sandbox; an SQL front-end; and the WebAssembly and npm bindings.
   read early.
 - **`GROUP BY`:** group rows by one or more columns and evaluate `COUNT`, `SUM`,
   `MIN`, and `MAX` per group.
+- **`AVG`:** averages an integer column, on its own or under `GROUP BY`. The
+  result is rendered as fixed-point text because `Value` has no fractional type, a
+  limitation that a future numeric type would remove.
 
 ## Next
 
-- **`AVG`:** average aggregation, once there is a value type that can hold a
-  fraction (today `Value` is integer, text, or blob only).
+- **A fractional value type:** would make `AVG` numeric (today it returns text)
+  and enable other non-integer arithmetic. It must preserve the total `Ord`/`Eq`
+  on `Value` that the ordered index relies on.
 - **Persisted indexes:** indexes are currently rebuilt by a scan on open.
   Persisting them in the `.pvdb` file and workspace would let large tables open
   quickly.

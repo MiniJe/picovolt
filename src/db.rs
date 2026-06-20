@@ -1275,6 +1275,7 @@ fn agg_label(agg: &Aggregate) -> String {
         AggFunc::Sum => "sum",
         AggFunc::Min => "min",
         AggFunc::Max => "max",
+        AggFunc::Avg => "avg",
     };
     match &agg.column {
         None => f.to_string(),
@@ -1306,9 +1307,13 @@ fn compute_one_aggregate(agg: &Aggregate, columns: &[String], rows: &[Row]) -> R
         AggFunc::Sum => {
             let ix = col_ix.expect("SUM requires a column");
             let mut sum: i128 = 0;
+            let mut saw = false;
             for r in rows {
                 match &r[ix] {
-                    Value::Int(i) => sum += *i as i128,
+                    Value::Int(i) => {
+                        sum += *i as i128;
+                        saw = true;
+                    }
                     Value::Null => {}
                     other => {
                         return Err(PvError::Schema(format!(
@@ -1317,9 +1322,15 @@ fn compute_one_aggregate(agg: &Aggregate, columns: &[String], rows: &[Row]) -> R
                     }
                 }
             }
-            Value::Int(
-                i64::try_from(sum).map_err(|_| PvError::Schema("SUM overflowed i64".into()))?,
-            )
+            // An empty or all-null group sums to NULL, matching MIN/MAX/AVG and
+            // standard SQL (only COUNT returns 0 for an empty input).
+            if !saw {
+                Value::Null
+            } else {
+                Value::Int(
+                    i64::try_from(sum).map_err(|_| PvError::Schema("SUM overflowed i64".into()))?,
+                )
+            }
         }
         AggFunc::Min | AggFunc::Max => {
             let ix = col_ix.expect("MIN/MAX requires a column");
@@ -1346,8 +1357,52 @@ fn compute_one_aggregate(agg: &Aggregate, columns: &[String], rows: &[Row]) -> R
             }
             acc.cloned().unwrap_or(Value::Null)
         }
+        AggFunc::Avg => {
+            let ix = col_ix.expect("AVG requires a column");
+            let mut sum: i128 = 0;
+            let mut count: i128 = 0;
+            for r in rows {
+                match &r[ix] {
+                    Value::Int(i) => {
+                        sum += *i as i128;
+                        count += 1;
+                    }
+                    Value::Null => {}
+                    other => {
+                        return Err(PvError::Schema(format!(
+                            "AVG requires integer values, found {other:?}"
+                        )))
+                    }
+                }
+            }
+            // No fractional `Value` type exists, so render the average as
+            // fixed-point text. An empty or all-null group averages to NULL,
+            // matching MIN/MAX. The rendering is computed in exact integer
+            // arithmetic (not through f64) so large integers are not corrupted.
+            if count == 0 {
+                Value::Null
+            } else {
+                Value::Text(render_avg_2dp(sum, count))
+            }
+        }
     };
     Ok(value)
+}
+
+/// Render `sum / count` (with `count > 0`) to two decimal places as text, rounded
+/// half away from zero, using exact integer arithmetic. Avoiding `f64` keeps large
+/// integer averages exact (a value above 2^53 would otherwise be misrendered) and
+/// makes rounding deterministic.
+fn render_avg_2dp(sum: i128, count: i128) -> String {
+    let negative = sum < 0;
+    let magnitude = sum.unsigned_abs();
+    let c = count.unsigned_abs();
+    // round(magnitude * 100 / c) with halves rounded up (away from zero).
+    let scaled = (magnitude * 200 + c) / (c * 2);
+    let int_part = scaled / 100;
+    let frac = scaled % 100;
+    let sign = if negative && scaled != 0 { "-" } else { "" };
+    format!("{sign}{int_part}.{frac:02}")
 }
 
 // ---------------------------------------------------------------------------
@@ -1812,6 +1867,130 @@ mod tests {
             .is_err()); // bare non-grouped column
         assert!(db.query("SELECT * FROM orders GROUP BY customer").is_err()); // SELECT *
         assert!(db.query("SELECT customer, COUNT(*) FROM orders").is_err()); // mix without GROUP BY
+    }
+
+    #[test]
+    fn avg_aggregate() {
+        let mut db = Database::open_memory();
+        db.query("CREATE TABLE t (id, amount)").unwrap();
+        db.query("INSERT INTO t VALUES (1, 1)").unwrap();
+        db.query("INSERT INTO t VALUES (2, 2)").unwrap();
+
+        // AVG renders as fixed-point text; 1 and 2 average to "1.50".
+        let r = db.query("SELECT AVG(amount) FROM t").unwrap();
+        assert_eq!(r.columns().unwrap(), &["avg(amount)".to_string()]);
+        assert_eq!(r.rows().unwrap(), &[vec![Value::Text("1.50".into())]]);
+
+        // AVG ignores NULLs: the divisor is the non-null count.
+        db.query("INSERT INTO t VALUES (3, NULL)").unwrap();
+        assert_eq!(
+            db.query("SELECT AVG(amount) FROM t")
+                .unwrap()
+                .rows()
+                .unwrap(),
+            &[vec![Value::Text("1.50".into())]]
+        );
+        db.query("INSERT INTO t VALUES (4, 9)").unwrap(); // (1 + 2 + 9) / 3 = 4.00
+        assert_eq!(
+            db.query("SELECT AVG(amount) FROM t")
+                .unwrap()
+                .rows()
+                .unwrap(),
+            &[vec![Value::Text("4.00".into())]]
+        );
+
+        // Empty and all-null groups average to NULL.
+        db.query("CREATE TABLE e (x)").unwrap();
+        assert_eq!(
+            db.query("SELECT AVG(x) FROM e").unwrap().rows().unwrap(),
+            &[vec![Value::Null]]
+        );
+        db.query("INSERT INTO e VALUES (NULL)").unwrap();
+        assert_eq!(
+            db.query("SELECT AVG(x) FROM e").unwrap().rows().unwrap(),
+            &[vec![Value::Null]]
+        );
+
+        // AVG over non-integer text errors, like SUM.
+        db.query("CREATE TABLE w (name)").unwrap();
+        db.query("INSERT INTO w VALUES ('bob')").unwrap();
+        assert!(db.query("SELECT AVG(name) FROM w").is_err());
+
+        // AVG under GROUP BY: one average per group.
+        let mut g = Database::open_memory();
+        g.query("CREATE TABLE s (team, score)").unwrap();
+        for (t, sc) in [("a", 10), ("a", 20), ("b", 5), ("b", 6)] {
+            g.query(&format!("INSERT INTO s VALUES ('{t}', {sc})"))
+                .unwrap();
+        }
+        let r = g
+            .query("SELECT team, AVG(score) FROM s GROUP BY team")
+            .unwrap();
+        assert_eq!(
+            r.rows().unwrap(),
+            &[
+                vec![Value::Text("a".into()), Value::Text("15.00".into())],
+                vec![Value::Text("b".into()), Value::Text("5.50".into())],
+            ]
+        );
+    }
+
+    #[test]
+    fn avg_is_exact_and_rounds_half_away_from_zero() {
+        // Large integers are exact (computed in i128, not through f64). The
+        // average of i64::MAX over one row is that value, not off by one.
+        let mut big = Database::open_memory();
+        big.query("CREATE TABLE b (v)").unwrap();
+        big.query("INSERT INTO b VALUES (9223372036854775807)")
+            .unwrap();
+        assert_eq!(
+            big.query("SELECT AVG(v) FROM b").unwrap().rows().unwrap(),
+            &[vec![Value::Text("9223372036854775807.00".into())]]
+        );
+
+        // 5 / 8 = 0.625 rounds half away from zero to "0.63" (not banker's "0.62").
+        let mut rnd = Database::open_memory();
+        rnd.query("CREATE TABLE r (v)").unwrap();
+        for v in [5, 0, 0, 0, 0, 0, 0, 0] {
+            rnd.query(&format!("INSERT INTO r VALUES ({v})")).unwrap();
+        }
+        assert_eq!(
+            rnd.query("SELECT AVG(v) FROM r").unwrap().rows().unwrap(),
+            &[vec![Value::Text("0.63".into())]]
+        );
+
+        // Negative averages render with a sign; -3 / 2 = -1.50.
+        let mut neg = Database::open_memory();
+        neg.query("CREATE TABLE n (v)").unwrap();
+        neg.query("INSERT INTO n VALUES (-1)").unwrap();
+        neg.query("INSERT INTO n VALUES (-2)").unwrap();
+        assert_eq!(
+            neg.query("SELECT AVG(v) FROM n").unwrap().rows().unwrap(),
+            &[vec![Value::Text("-1.50".into())]]
+        );
+    }
+
+    #[test]
+    fn sum_of_empty_or_all_null_is_null() {
+        let mut db = Database::open_memory();
+        db.query("CREATE TABLE t (x)").unwrap();
+        // Empty input sums to NULL (matching MIN/MAX/AVG and standard SQL).
+        assert_eq!(
+            db.query("SELECT SUM(x) FROM t").unwrap().rows().unwrap(),
+            &[vec![Value::Null]]
+        );
+        // All-null input also sums to NULL.
+        db.query("INSERT INTO t VALUES (NULL)").unwrap();
+        assert_eq!(
+            db.query("SELECT SUM(x) FROM t").unwrap().rows().unwrap(),
+            &[vec![Value::Null]]
+        );
+        // A real value makes it an integer sum again.
+        db.query("INSERT INTO t VALUES (7)").unwrap();
+        assert_eq!(
+            db.query("SELECT SUM(x) FROM t").unwrap().rows().unwrap(),
+            &[vec![Value::Int(7)]]
+        );
     }
 
     #[test]

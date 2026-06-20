@@ -105,7 +105,7 @@ cargo run --release --example bench    # evaluation harness across modes and wor
 
 SQL supported: `CREATE TABLE`, `CREATE INDEX ON t (col)`, `INSERT`,
 `UPDATE ... SET ... WHERE`, `DELETE ... WHERE`, `DROP TABLE`, and
-`SELECT {* | col, ... | COUNT/SUM/MIN/MAX(...)} FROM t [WHERE <pred>]
+`SELECT {* | col, ... | COUNT/SUM/MIN/MAX/AVG(...)} FROM t [WHERE <pred>]
 [GROUP BY cols] [BEFORE tx] [ORDER BY col [ASC|DESC]] [LIMIT n]`, where `<pred>`
 combines `col <op> value` (`=`, `!=`, `<`, `<=`, `>`, `>=`, `LIKE`) with `AND`,
 `OR`, and parentheses.

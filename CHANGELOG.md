@@ -6,6 +6,17 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- **`AVG` aggregate.** Averages an integer column, on its own or under `GROUP BY`.
+  Since `Value` has no fractional type, the result is rendered as fixed-point text
+  (for example `"1.50"`), computed in exact integer arithmetic and rounded half
+  away from zero. NULLs are ignored, and an empty or all-null group averages to
+  NULL. The text result is a display value and cannot be used as a sort key.
+
+### Changed
+- `SUM` of an empty or all-null group now returns `NULL` instead of `0`, matching
+  `MIN`, `MAX`, `AVG`, and standard SQL. (`COUNT` still returns `0`.)
+
 ## [0.2.0] - 2026-06-20
 
 A set of backward-compatible SQL and indexing features added on top of 0.1.0.
