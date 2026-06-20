@@ -200,78 +200,132 @@ enum Tok {
     Star,
 }
 
-fn tokenize(sql: &str) -> Result<Vec<Tok>> {
+/// Render `msg` annotated with the line and column of character index `char_pos`
+/// in `sql`, plus the offending line and a caret. `char_pos` is clamped to the
+/// input length, so an end-of-input position points just past the last character.
+fn point_at(sql: &str, char_pos: usize, msg: &str) -> String {
+    let chars: Vec<char> = sql.chars().collect();
+    let pos = char_pos.min(chars.len());
+    let line_start = chars[..pos]
+        .iter()
+        .rposition(|&c| c == '\n')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let line_end = chars[pos..]
+        .iter()
+        .position(|&c| c == '\n')
+        .map(|i| pos + i)
+        .unwrap_or(chars.len());
+    let line_no = chars[..line_start].iter().filter(|&&c| c == '\n').count() + 1;
+    let col = pos - line_start + 1;
+    let line_text: String = chars[line_start..line_end].iter().collect();
+    let caret = " ".repeat(pos - line_start);
+    format!("{msg} (line {line_no}, column {col})\n  {line_text}\n  {caret}^")
+}
+
+/// A character cursor that tracks the index of the next character to read, so the
+/// tokenizer can record where each token begins.
+struct Lexer<'a> {
+    chars: std::iter::Peekable<std::str::Chars<'a>>,
+    pos: usize,
+}
+
+impl<'a> Lexer<'a> {
+    fn new(s: &'a str) -> Self {
+        Self {
+            chars: s.chars().peekable(),
+            pos: 0,
+        }
+    }
+
+    fn peek(&mut self) -> Option<char> {
+        self.chars.peek().copied()
+    }
+
+    fn bump(&mut self) -> Option<char> {
+        let c = self.chars.next();
+        if c.is_some() {
+            self.pos += 1;
+        }
+        c
+    }
+}
+
+/// Tokenize `sql` into `(token, start_char_index)` pairs.
+fn tokenize(sql: &str) -> Result<Vec<(Tok, usize)>> {
     let mut toks = Vec::new();
-    let mut chars = sql.chars().peekable();
-    while let Some(&c) = chars.peek() {
+    let mut lx = Lexer::new(sql);
+    let err = |pos, msg: &str| PvError::Query(point_at(sql, pos, msg));
+    while let Some(c) = lx.peek() {
+        let start = lx.pos;
         match c {
             ws if ws.is_whitespace() => {
-                chars.next();
+                lx.bump();
             }
             '(' => {
-                chars.next();
-                toks.push(Tok::LParen);
+                lx.bump();
+                toks.push((Tok::LParen, start));
             }
             ')' => {
-                chars.next();
-                toks.push(Tok::RParen);
+                lx.bump();
+                toks.push((Tok::RParen, start));
             }
             ',' => {
-                chars.next();
-                toks.push(Tok::Comma);
+                lx.bump();
+                toks.push((Tok::Comma, start));
             }
             '=' => {
-                chars.next();
-                toks.push(Tok::Eq);
+                lx.bump();
+                toks.push((Tok::Eq, start));
             }
             '<' => {
-                chars.next();
-                match chars.peek() {
+                lx.bump();
+                match lx.peek() {
                     Some('=') => {
-                        chars.next();
-                        toks.push(Tok::Le);
+                        lx.bump();
+                        toks.push((Tok::Le, start));
                     }
                     Some('>') => {
-                        chars.next();
-                        toks.push(Tok::Ne);
+                        lx.bump();
+                        toks.push((Tok::Ne, start));
                     }
-                    _ => toks.push(Tok::Lt),
+                    _ => toks.push((Tok::Lt, start)),
                 }
             }
             '>' => {
-                chars.next();
-                if chars.peek() == Some(&'=') {
-                    chars.next();
-                    toks.push(Tok::Ge);
+                lx.bump();
+                if lx.peek() == Some('=') {
+                    lx.bump();
+                    toks.push((Tok::Ge, start));
                 } else {
-                    toks.push(Tok::Gt);
+                    toks.push((Tok::Gt, start));
                 }
             }
             '!' => {
-                chars.next();
-                if chars.peek() == Some(&'=') {
-                    chars.next();
-                    toks.push(Tok::Ne);
+                lx.bump();
+                if lx.peek() == Some('=') {
+                    lx.bump();
+                    toks.push((Tok::Ne, start));
                 } else {
-                    return Err(PvError::Query("expected `=` after `!`".into()));
+                    return Err(err(start, "expected `=` after `!`"));
                 }
             }
             '*' => {
-                chars.next();
-                toks.push(Tok::Star);
+                lx.bump();
+                toks.push((Tok::Star, start));
             }
             ';' => {
-                chars.next(); // statement terminator, ignored
+                lx.bump(); // statement terminator, ignored
             }
             '\'' => {
-                chars.next(); // opening quote
+                lx.bump(); // opening quote
                 let mut s = String::new();
                 let mut closed = false;
                 loop {
-                    match chars.next() {
+                    match lx.bump() {
                         // A doubled quote `''` is an escaped literal `'` (SQL style).
-                        Some('\'') if chars.peek() == Some(&'\'') => {
-                            chars.next();
+                        Some('\'') if lx.peek() == Some('\'') => {
+                            lx.bump();
                             s.push('\'');
                         }
                         Some('\'') => {
@@ -283,113 +337,140 @@ fn tokenize(sql: &str) -> Result<Vec<Tok>> {
                     }
                 }
                 if !closed {
-                    return Err(PvError::Query("unterminated string literal".into()));
+                    return Err(err(start, "unterminated string literal"));
                 }
-                toks.push(Tok::Str(s));
+                toks.push((Tok::Str(s), start));
             }
             '-' | '0'..='9' => {
                 let mut num = String::new();
                 if c == '-' {
                     num.push(c);
-                    chars.next();
+                    lx.bump();
                 }
                 let mut saw_digit = false;
-                while let Some(&d) = chars.peek() {
+                while let Some(d) = lx.peek() {
                     if d.is_ascii_digit() {
                         num.push(d);
                         saw_digit = true;
-                        chars.next();
+                        lx.bump();
                     } else {
                         break;
                     }
                 }
                 if !saw_digit {
-                    return Err(PvError::Query("expected digits after '-'".into()));
+                    return Err(err(start, "expected digits after `-`"));
                 }
                 let v: i64 = num
                     .parse()
-                    .map_err(|_| PvError::Query(format!("invalid integer: {num}")))?;
-                toks.push(Tok::Int(v));
+                    .map_err(|_| err(start, &format!("invalid integer `{num}`")))?;
+                toks.push((Tok::Int(v), start));
             }
             c if c.is_alphanumeric() || c == '_' => {
                 let mut w = String::new();
-                while let Some(&d) = chars.peek() {
+                while let Some(d) = lx.peek() {
                     if d.is_alphanumeric() || d == '_' {
                         w.push(d);
-                        chars.next();
+                        lx.bump();
                     } else {
                         break;
                     }
                 }
-                toks.push(Tok::Word(w));
+                toks.push((Tok::Word(w), start));
             }
-            other => return Err(PvError::Query(format!("unexpected character: {other:?}"))),
+            other => return Err(err(start, &format!("unexpected character `{other}`"))),
         }
     }
     Ok(toks)
 }
 
-/// Cursor over a token stream with small typed consumers.
+/// Cursor over a token stream with small typed consumers. Carries the source text
+/// so parse errors can point at the offending token's line and column.
 struct Cursor {
-    toks: Vec<Tok>,
+    toks: Vec<(Tok, usize)>,
     pos: usize,
+    sql: String,
+    end: usize,
 }
 
 impl Cursor {
-    fn new(toks: Vec<Tok>) -> Self {
-        Self { toks, pos: 0 }
+    fn new(toks: Vec<(Tok, usize)>, sql: &str) -> Self {
+        Self {
+            toks,
+            pos: 0,
+            sql: sql.to_string(),
+            end: sql.chars().count(),
+        }
+    }
+
+    /// Character index of the current (not-yet-consumed) token, or end-of-input.
+    fn here(&self) -> usize {
+        self.toks.get(self.pos).map(|(_, p)| *p).unwrap_or(self.end)
+    }
+
+    /// A positioned parse error at the current token.
+    fn err(&self, msg: impl std::fmt::Display) -> PvError {
+        self.err_at(self.here(), msg)
+    }
+
+    /// A positioned parse error at a specific character index (used when an error
+    /// is about a token that was just consumed).
+    fn err_at(&self, at: usize, msg: impl std::fmt::Display) -> PvError {
+        PvError::Query(point_at(&self.sql, at, &msg.to_string()))
     }
 
     fn next(&mut self) -> Result<Tok> {
-        let t = self
-            .toks
-            .get(self.pos)
-            .cloned()
-            .ok_or_else(|| PvError::Query("unexpected end of statement".into()))?;
-        self.pos += 1;
-        Ok(t)
+        match self.toks.get(self.pos) {
+            Some((t, _)) => {
+                let t = t.clone();
+                self.pos += 1;
+                Ok(t)
+            }
+            None => Err(self.err("unexpected end of statement")),
+        }
     }
 
     fn peek(&self) -> Option<&Tok> {
-        self.toks.get(self.pos)
+        self.toks.get(self.pos).map(|(t, _)| t)
     }
 
     fn peek2(&self) -> Option<&Tok> {
-        self.toks.get(self.pos + 1)
+        self.toks.get(self.pos + 1).map(|(t, _)| t)
     }
 
     /// Consume a keyword (case-insensitive), erroring if it doesn't match.
     fn keyword(&mut self, kw: &str) -> Result<()> {
+        let at = self.here();
         match self.next()? {
             Tok::Word(w) if w.eq_ignore_ascii_case(kw) => Ok(()),
-            other => Err(PvError::Query(format!("expected `{kw}`, found {other:?}"))),
+            other => Err(self.err_at(at, format!("expected `{kw}`, found {other:?}"))),
         }
     }
 
     fn ident(&mut self) -> Result<String> {
+        let at = self.here();
         match self.next()? {
             Tok::Word(w) => Ok(w),
-            other => Err(PvError::Query(format!(
-                "expected identifier, found {other:?}"
-            ))),
+            other => Err(self.err_at(at, format!("expected identifier, found {other:?}"))),
         }
     }
 
     fn expect(&mut self, tok: Tok) -> Result<()> {
+        let at = self.here();
         let got = self.next()?;
         if got == tok {
             Ok(())
         } else {
-            Err(PvError::Query(format!("expected {tok:?}, found {got:?}")))
+            Err(self.err_at(at, format!("expected {tok:?}, found {got:?}")))
         }
     }
 
     fn value(&mut self) -> Result<Value> {
+        let at = self.here();
         match self.next()? {
             Tok::Int(i) => Ok(Value::Int(i)),
             Tok::Str(s) => Ok(Value::Text(s)),
             Tok::Word(w) if w.eq_ignore_ascii_case("null") => Ok(Value::Null),
-            other => Err(PvError::Query(format!("expected a value, found {other:?}"))),
+            other => Err(self.err_at(at, format!("expected a value, found {other:?}"))),
         }
     }
 
@@ -397,14 +478,15 @@ impl Cursor {
         if self.pos == self.toks.len() {
             Ok(())
         } else {
-            Err(PvError::Query("trailing tokens after statement".into()))
+            Err(self.err("trailing tokens after statement"))
         }
     }
 }
 
 /// Parse a single SQL statement.
 pub fn parse(sql: &str) -> Result<Statement> {
-    let mut cur = Cursor::new(tokenize(sql)?);
+    let mut cur = Cursor::new(tokenize(sql)?, sql);
+    let at = cur.here();
     let stmt = match cur.next()? {
         Tok::Word(w) if w.eq_ignore_ascii_case("create") => parse_create(&mut cur)?,
         Tok::Word(w) if w.eq_ignore_ascii_case("insert") => parse_insert(&mut cur)?,
@@ -412,13 +494,14 @@ pub fn parse(sql: &str) -> Result<Statement> {
         Tok::Word(w) if w.eq_ignore_ascii_case("update") => parse_update(&mut cur)?,
         Tok::Word(w) if w.eq_ignore_ascii_case("delete") => parse_delete(&mut cur)?,
         Tok::Word(w) if w.eq_ignore_ascii_case("drop") => parse_drop(&mut cur)?,
-        other => return Err(PvError::Query(format!("unsupported statement: {other:?}"))),
+        other => return Err(cur.err_at(at, format!("unsupported statement: {other:?}"))),
     };
     cur.finish()?;
     Ok(stmt)
 }
 
 fn parse_create(cur: &mut Cursor) -> Result<Statement> {
+    let at = cur.here();
     match cur.next()? {
         Tok::Word(w) if w.eq_ignore_ascii_case("table") => {
             let name = cur.ident()?;
@@ -426,13 +509,12 @@ fn parse_create(cur: &mut Cursor) -> Result<Statement> {
             let mut columns = Vec::new();
             loop {
                 columns.push(cur.ident()?);
+                let sep = cur.here();
                 match cur.next()? {
                     Tok::Comma => continue,
                     Tok::RParen => break,
                     other => {
-                        return Err(PvError::Query(format!(
-                            "expected ',' or ')', found {other:?}"
-                        )))
+                        return Err(cur.err_at(sep, format!("expected `,` or `)`, found {other:?}")))
                     }
                 }
             }
@@ -446,9 +528,10 @@ fn parse_create(cur: &mut Cursor) -> Result<Statement> {
             cur.expect(Tok::RParen)?;
             Ok(Statement::CreateIndex { table, column })
         }
-        other => Err(PvError::Query(format!(
-            "expected TABLE or INDEX after CREATE, found {other:?}"
-        ))),
+        other => Err(cur.err_at(
+            at,
+            format!("expected TABLE or INDEX after CREATE, found {other:?}"),
+        )),
     }
 }
 
@@ -460,14 +543,11 @@ fn parse_insert(cur: &mut Cursor) -> Result<Statement> {
     let mut values = Vec::new();
     loop {
         values.push(cur.value()?);
+        let sep = cur.here();
         match cur.next()? {
             Tok::Comma => continue,
             Tok::RParen => break,
-            other => {
-                return Err(PvError::Query(format!(
-                    "expected ',' or ')', found {other:?}"
-                )))
-            }
+            other => return Err(cur.err_at(sep, format!("expected `,` or `)`, found {other:?}"))),
         }
     }
     Ok(Statement::Insert { table, values })
@@ -521,9 +601,10 @@ fn parse_select_item(cur: &mut Cursor) -> Result<SelectItem> {
 }
 
 fn parse_aggregate(cur: &mut Cursor) -> Result<Aggregate> {
+    let at = cur.here();
     let word = cur.ident()?;
     let func =
-        agg_func(&word).ok_or_else(|| PvError::Query(format!("unknown aggregate `{word}`")))?;
+        agg_func(&word).ok_or_else(|| cur.err_at(at, format!("unknown aggregate `{word}`")))?;
     cur.expect(Tok::LParen)?;
     let column = if matches!(cur.peek(), Some(Tok::Star)) {
         cur.next()?;
@@ -533,9 +614,7 @@ fn parse_aggregate(cur: &mut Cursor) -> Result<Aggregate> {
     };
     cur.expect(Tok::RParen)?;
     if column.is_none() && func != AggFunc::Count {
-        return Err(PvError::Query(
-            "only COUNT(*) may use `*`; SUM/MIN/MAX need a column".into(),
-        ));
+        return Err(cur.err_at(at, "only COUNT(*) may use `*`; SUM/MIN/MAX need a column"));
     }
     Ok(Aggregate { func, column })
 }
@@ -570,6 +649,7 @@ fn parse_comparison(cur: &mut Cursor) -> Result<Predicate> {
         return Ok(inner);
     }
     let column = cur.ident()?;
+    let op_at = cur.here();
     let op = match cur.next()? {
         Tok::Eq => CompareOp::Eq,
         Tok::Ne => CompareOp::Ne,
@@ -579,9 +659,10 @@ fn parse_comparison(cur: &mut Cursor) -> Result<Predicate> {
         Tok::Ge => CompareOp::Ge,
         Tok::Word(w) if w.eq_ignore_ascii_case("like") => CompareOp::Like,
         other => {
-            return Err(PvError::Query(format!(
-                "expected a comparison operator, found {other:?}"
-            )))
+            return Err(cur.err_at(
+                op_at,
+                format!("expected a comparison operator, found {other:?}"),
+            ))
         }
     };
     let value = cur.value()?;
@@ -615,12 +696,14 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
 
     let before = if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("before")) {
         cur.next()?; // consume BEFORE
+        let at = cur.here();
         match cur.next()? {
             Tok::Int(i) if i >= 0 => Some(i as u64),
             other => {
-                return Err(PvError::Query(format!(
-                    "BEFORE expects a non-negative integer, found {other:?}"
-                )))
+                return Err(cur.err_at(
+                    at,
+                    format!("BEFORE expects a non-negative integer, found {other:?}"),
+                ))
             }
         }
     } else {
@@ -649,12 +732,14 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
 
     let limit = if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("limit")) {
         cur.next()?; // consume LIMIT
+        let at = cur.here();
         match cur.next()? {
             Tok::Int(i) if i >= 0 => Some(i as usize),
             other => {
-                return Err(PvError::Query(format!(
-                    "LIMIT expects a non-negative integer, found {other:?}"
-                )))
+                return Err(cur.err_at(
+                    at,
+                    format!("LIMIT expects a non-negative integer, found {other:?}"),
+                ))
             }
         }
     } else {
@@ -1038,5 +1123,33 @@ mod tests {
         assert!(parse("SELECT * FROM").is_err());
         assert!(parse("INSERT INTO t VALUES (1,").is_err());
         assert!(parse("UPDATE t SET a = 1").is_err()); // missing WHERE
+    }
+
+    #[test]
+    fn parse_errors_are_positioned() {
+        // A parse error names the offending token's line and column and draws a
+        // caret under the source.
+        let e = parse("SELECT * users").unwrap_err().to_string();
+        assert!(e.contains("expected `from`"), "{e}");
+        assert!(e.contains("line 1, column 10"), "{e}"); // `users` begins at column 10
+        assert!(e.contains("SELECT * users"), "{e}"); // the offending line is echoed
+        assert!(e.contains('^'), "{e}");
+
+        // Tokenizer errors are positioned too.
+        let e = parse("SELECT $ FROM t").unwrap_err().to_string();
+        assert!(e.contains("unexpected character"), "{e}");
+        assert!(e.contains("line 1, column 8"), "{e}");
+
+        let e = parse("SELECT * FROM t WHERE name = 'abc")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("unterminated string literal"), "{e}");
+        assert!(e.contains('^'), "{e}");
+
+        // End-of-input errors point just past the end.
+        let e = parse("SELECT * FROM").unwrap_err().to_string();
+        assert!(e.contains("unexpected end of statement"), "{e}");
+        assert!(e.contains("line 1, column 14"), "{e}");
+        assert!(e.contains('^'), "{e}");
     }
 }

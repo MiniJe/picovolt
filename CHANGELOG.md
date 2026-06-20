@@ -7,6 +7,9 @@ All notable changes to PicoVolt are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Positioned parse errors.** A SQL parse or tokenizer error now reports the line
+  and column of the offending token and draws a caret under the source, instead of
+  only describing the problem.
 - **`AVG` aggregate.** Averages an integer column, on its own or under `GROUP BY`.
   Since `Value` has no fractional type, the result is rendered as fixed-point text
   (for example `"1.50"`), computed in exact integer arithmetic and rounded half

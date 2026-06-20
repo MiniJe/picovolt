@@ -32,6 +32,8 @@ extension sandbox; an SQL front-end; and the WebAssembly and npm bindings.
 - **`AVG`:** averages an integer column, on its own or under `GROUP BY`. The
   result is rendered as fixed-point text because `Value` has no fractional type, a
   limitation that a future numeric type would remove.
+- **Positioned parse errors:** parse and tokenizer errors report the line and
+  column of the offending token and draw a caret under the source.
 
 ## Next
 
@@ -45,8 +47,6 @@ extension sandbox; an SQL front-end; and the WebAssembly and npm bindings.
   transposition ([`storage/page.rs`](src/storage/page.rs)) to a background worker.
 - **Streaming query results:** an iterator API so large `SELECT`s do not have to
   materialize every row up front.
-- **Better parse diagnostics:** error messages that point at the offending token
-  position rather than only describing the problem.
 
 ## Toward 1.0
 
