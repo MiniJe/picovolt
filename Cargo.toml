@@ -9,8 +9,8 @@ repository = "https://github.com/MiniJe/picovolt"
 readme = "README.md"
 keywords = ["database", "embedded", "storage-engine", "mvcc", "columnar"]
 categories = ["database-implementations"]
-# Keep the published Rust package lean — repo-only tooling/demos.
-exclude = ["/fuzz", "/.github", "/js", "/site"]
+# Keep the published Rust package lean — repo-only tooling.
+exclude = ["/fuzz", "/.github"]
 
 # `cdylib` is needed for the wasm/npm build (wasm-pack); `rlib` for normal use.
 [lib]

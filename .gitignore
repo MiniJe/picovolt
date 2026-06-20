@@ -19,6 +19,4 @@ Cargo.lock
 
 # wasm-pack / npm output
 /pkg
-/js/pkg
-/site/pkg
 node_modules/

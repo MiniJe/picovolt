@@ -101,10 +101,4 @@ cd pkg && npm publish --access public
 ## After a release
 
 - Confirm the GitHub Release and (if published) the crates.io / npm pages.
-- Rebuild the site bindings so the live playground tracks the release:
-  ```sh
-  cargo build --lib --target wasm32-unknown-unknown --release --features wasm
-  wasm-bindgen --target web --out-dir site/pkg \
-    target/wasm32-unknown-unknown/release/picovolt.wasm
-  ```
 - Start the next `## [Unreleased]` notes as work lands.

@@ -74,9 +74,6 @@ and Windows), fuzzed, and runs both natively and in the browser via WebAssembly.
 - **`.pvdb` round-trip.** `Database::bake_to_bytes` / `Database::import_bytes`
   (and the JS `export` / `fromBytes`) serialize a full database — history and
   writability intact — to and from a portable byte image.
-- **Live site.** A picovolt.dev landing page with an in-browser SQL playground
-  ([`site/index.html`](site/index.html)) and a task-board app with a
-  history-replay time slider ([`site/app.html`](site/app.html)).
 
 ### Security
 - Untrusted-input hardening across the `.pvdb`/workspace and WASM decoders:

@@ -133,11 +133,12 @@ no concurrency.
 | Target | How |
 |--------|-----|
 | **Rust** (crates.io) | `cargo add picovolt` (once published) |
-| **JavaScript / npm** (WebAssembly, browser + Node) | `wasm-pack build --target web --release --out-dir js/pkg -- --features wasm` — see [js/README.md](js/README.md) |
+| **JavaScript / npm** (WebAssembly, browser + Node) | `wasm-pack build --target bundler --release -- --features wasm` (see [RELEASING.md](RELEASING.md)) |
 | **In-memory** (native, no filesystem) | `Database::open_memory()`, export with `bake_to_bytes()` |
 
-PicoVolt runs in the browser via an in-memory backend; the [`js/`](js) directory
-has a browser (`index.html`) and Node (`node-demo.cjs`) demo.
+PicoVolt runs in the browser via an in-memory backend: build the wasm package
+with the command above, then `import { Db } from "picovolt"` and run SQL with
+`db.query(...)` — see [src/wasm_api.rs](src/wasm_api.rs) for the JS surface.
 
 ## Extending PicoVolt
 
