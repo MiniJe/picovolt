@@ -30,7 +30,9 @@ use crate::core::types::{
 use crate::core::value::{Row, Value};
 use crate::engine::compliance::{ComplianceMonitor, RuntimeMetrics};
 use crate::engine::mvcc::{Snapshot, TxManager};
-use crate::engine::query::{parse, OrderBy, Projection, Statement};
+use crate::engine::query::{
+    parse, AggFunc, Aggregate, CompareOp, OrderBy, Predicate, Projection, Statement,
+};
 use crate::engine::wasm::WasmRuntime;
 use crate::storage::cache::{PageCache, DEFAULT_CACHE_PAGES};
 use crate::storage::cas::CasStore;
@@ -346,22 +348,15 @@ impl Database {
                 order,
                 limit,
             } => {
-                let (columns, rows) = match filter {
-                    Some((column, value)) => self.select_where(&table, &column, &value, before)?,
-                    None => self.select(&table, before)?,
-                };
+                let (columns, rows) = self.select_filtered(&table, filter.as_ref(), before)?;
                 project_select(columns, rows, projection, order, limit)
             }
             Statement::Update { table, set, filter } => {
-                let n = self.update(&table, &set.0, &set.1, &filter.0, &filter.1)?;
+                let n = self.update_where(&table, &set.0, &set.1, &filter)?;
                 Ok(QueryResult::Mutated(n))
             }
-            Statement::Delete {
-                table,
-                column,
-                value,
-            } => {
-                let n = self.delete(&table, &column, &value)?;
+            Statement::Delete { table, filter } => {
+                let n = self.delete_where(&table, &filter)?;
                 Ok(QueryResult::Mutated(n))
             }
             Statement::DropTable { table } => {
@@ -469,43 +464,60 @@ impl Database {
 
     /// Tombstone every currently-visible row whose `column` equals `value`.
     pub fn delete(&mut self, table_name: &str, column: &str, value: &Value) -> Result<usize> {
+        self.delete_where(table_name, &Predicate::eq(column, value.clone()))
+    }
+
+    /// Delete rows matching `pred` (an MVCC tombstone). Returns the number deleted.
+    pub fn delete_where(&mut self, table_name: &str, pred: &Predicate) -> Result<usize> {
         self.ensure_writable()?;
         let tx = self.txm.begin_write();
         let snapshot = self.txm.snapshot();
-
-        let to_delete: Vec<RecordAddr> = {
-            let table = self
-                .tables
-                .get(table_name)
-                .ok_or_else(|| PvError::TableNotFound(table_name.into()))?;
-            let col_ix = column_index(table, column)?;
-            let mut cache = self.cache.borrow_mut();
-            let mut hits = Vec::new();
-            for_each_candidate(
-                &mut cache,
-                table,
-                &self.cas,
-                column,
-                value,
-                |addr, env, row| {
-                    if snapshot.sees(env) && &row[col_ix] == value {
-                        hits.push(addr);
-                    }
-                    Ok(())
-                },
-            )?;
-            hits
-        };
+        let matches = self.collect_matching(table_name, pred, &snapshot)?;
 
         let table = self.tables.get_mut(table_name).expect("existence checked");
         {
             let mut cache = self.cache.borrow_mut();
-            for &addr in &to_delete {
-                patch_delete_at(&mut cache, table, addr, tx)?;
+            for (addr, _) in &matches {
+                patch_delete_at(&mut cache, table, *addr, tx)?;
             }
         }
         self.maybe_flush()?;
-        Ok(to_delete.len())
+        Ok(matches.len())
+    }
+
+    /// Collect `(address, row)` for every visible row matching `pred`, using the
+    /// equality index when `pred` contains a simple `indexed_col = value`
+    /// (possibly as an `AND` conjunct), otherwise a filtered scan.
+    fn collect_matching(
+        &self,
+        table_name: &str,
+        pred: &Predicate,
+        snapshot: &Snapshot,
+    ) -> Result<Vec<(RecordAddr, Row)>> {
+        let table = self
+            .tables
+            .get(table_name)
+            .ok_or_else(|| PvError::TableNotFound(table_name.into()))?;
+        let columns = table.columns.clone();
+        check_predicate_columns(&columns, pred)?;
+        let mut hits: Vec<(RecordAddr, Row)> = Vec::new();
+        let mut cache = self.cache.borrow_mut();
+        if let Some((col, val)) = indexed_equality(table, pred) {
+            for_each_candidate(&mut cache, table, &self.cas, col, val, |addr, env, row| {
+                if snapshot.sees(env) && row_matches(pred, &columns, row)? {
+                    hits.push((addr, row.clone()));
+                }
+                Ok(())
+            })?;
+        } else {
+            scan(&mut cache, table, &self.cas, |addr, env, row| {
+                if snapshot.sees(env) && row_matches(pred, &columns, row)? {
+                    hits.push((addr, row.clone()));
+                }
+                Ok(())
+            })?;
+        }
+        Ok(hits)
     }
 
     /// Read a table through a snapshot. `before = Some(tx)` time-travels.
@@ -527,8 +539,8 @@ impl Database {
         Ok((columns, rows))
     }
 
-    /// Read rows where `column == value`, using a secondary index if one exists
-    /// (otherwise a filtered scan). `before` optionally time-travels.
+    /// Read rows where `column == value`, using a secondary index if one exists.
+    /// `before` optionally time-travels.
     pub fn select_where(
         &self,
         table_name: &str,
@@ -536,34 +548,63 @@ impl Database {
         value: &Value,
         before: Option<u64>,
     ) -> Result<(Vec<String>, Vec<Row>)> {
+        self.select_filtered(
+            table_name,
+            Some(&Predicate::eq(column, value.clone())),
+            before,
+        )
+    }
+
+    /// Read rows matching an optional `WHERE` predicate. Uses the equality index
+    /// when the predicate carries a simple `indexed_col = value` (possibly as an
+    /// `AND` conjunct), otherwise a filtered scan. `before` optionally time-travels.
+    pub fn select_filtered(
+        &self,
+        table_name: &str,
+        filter: Option<&Predicate>,
+        before: Option<u64>,
+    ) -> Result<(Vec<String>, Vec<Row>)> {
         let table = self
             .tables
             .get(table_name)
             .ok_or_else(|| PvError::TableNotFound(table_name.into()))?;
-        let col_ix = column_index(table, column)?;
         let snapshot = Snapshot::as_of(before.unwrap_or_else(|| self.txm.current()));
         let columns = table.columns.clone();
         let mut rows = Vec::new();
         let mut cache = self.cache.borrow_mut();
-        for_each_candidate(
-            &mut cache,
-            table,
-            &self.cas,
-            column,
-            value,
-            |_addr, env, row| {
-                if snapshot.sees(env) && &row[col_ix] == value {
-                    rows.push(row.clone());
+        match filter {
+            None => {
+                scan(&mut cache, table, &self.cas, |_a, env, row| {
+                    if snapshot.sees(env) {
+                        rows.push(row.clone());
+                    }
+                    Ok(())
+                })?;
+            }
+            Some(pred) => {
+                check_predicate_columns(&columns, pred)?;
+                if let Some((col, val)) = indexed_equality(table, pred) {
+                    for_each_candidate(&mut cache, table, &self.cas, col, val, |_a, env, row| {
+                        if snapshot.sees(env) && row_matches(pred, &columns, row)? {
+                            rows.push(row.clone());
+                        }
+                        Ok(())
+                    })?;
+                } else {
+                    scan(&mut cache, table, &self.cas, |_a, env, row| {
+                        if snapshot.sees(env) && row_matches(pred, &columns, row)? {
+                            rows.push(row.clone());
+                        }
+                        Ok(())
+                    })?;
                 }
-                Ok(())
-            },
-        )?;
+            }
+        }
         Ok((columns, rows))
     }
 
     /// Update rows where `where_column == where_value`, assigning `set_value` to
-    /// `set_column`. Append-only (MVCC): matching versions are tombstoned and new
-    /// versions carrying the change are inserted. Returns the number updated.
+    /// `set_column`. Returns the number updated.
     pub fn update(
         &mut self,
         table_name: &str,
@@ -572,35 +613,34 @@ impl Database {
         where_column: &str,
         where_value: &Value,
     ) -> Result<usize> {
-        self.ensure_writable()?;
+        self.update_where(
+            table_name,
+            set_column,
+            set_value,
+            &Predicate::eq(where_column, where_value.clone()),
+        )
+    }
 
-        // Collect matching visible rows (address + a copy of their values).
-        let (set_ix, matches) = {
+    /// Update rows matching `pred`, assigning `set_value` to `set_column`.
+    /// Append-only (MVCC): matching versions are tombstoned and new versions
+    /// carrying the change are inserted. Returns the number updated.
+    pub fn update_where(
+        &mut self,
+        table_name: &str,
+        set_column: &str,
+        set_value: &Value,
+        pred: &Predicate,
+    ) -> Result<usize> {
+        self.ensure_writable()?;
+        let set_ix = {
             let table = self
                 .tables
                 .get(table_name)
                 .ok_or_else(|| PvError::TableNotFound(table_name.into()))?;
-            let set_ix = column_index(table, set_column)?;
-            let where_ix = column_index(table, where_column)?;
-            let snapshot = self.txm.snapshot();
-            let mut hits: Vec<(RecordAddr, Row)> = Vec::new();
-            let mut cache = self.cache.borrow_mut();
-            for_each_candidate(
-                &mut cache,
-                table,
-                &self.cas,
-                where_column,
-                where_value,
-                |addr, env, row| {
-                    if snapshot.sees(env) && &row[where_ix] == where_value {
-                        hits.push((addr, row.clone()));
-                    }
-                    Ok(())
-                },
-            )?;
-            (set_ix, hits)
+            column_index(table, set_column)?
         };
-
+        let snapshot = self.txm.snapshot();
+        let matches = self.collect_matching(table_name, pred, &snapshot)?;
         let count = matches.len();
         if count == 0 {
             return Ok(0);
@@ -881,7 +921,7 @@ pub fn pv_bake(workspace: impl AsRef<Path>, out_path: impl AsRef<Path>) -> Resul
 // Query post-processing: projection, ORDER BY, LIMIT
 // ---------------------------------------------------------------------------
 
-/// Apply `COUNT(*)` / column projection, `ORDER BY`, and `LIMIT` to a result set.
+/// Apply aggregates / column projection, `ORDER BY`, and `LIMIT` to a result set.
 fn project_select(
     columns: Vec<String>,
     mut rows: Vec<Row>,
@@ -889,11 +929,9 @@ fn project_select(
     order: Option<OrderBy>,
     limit: Option<usize>,
 ) -> Result<QueryResult> {
-    if matches!(projection, Projection::Count) {
-        return Ok(QueryResult::Rows {
-            columns: vec!["count".to_string()],
-            rows: vec![vec![Value::Int(rows.len() as i64)]],
-        });
+    // Aggregates collapse the whole result to one row; ORDER BY / LIMIT don't apply.
+    if let Projection::Aggregates(aggs) = &projection {
+        return compute_aggregates(aggs, &columns, &rows);
     }
 
     // Sort on the full row, before projection can drop the sort column.
@@ -930,7 +968,7 @@ fn project_select(
                 .collect();
             (cols, projected)
         }
-        Projection::Count => unreachable!("handled above"),
+        Projection::Aggregates(_) => unreachable!("handled above"),
     };
 
     if let Some(n) = limit {
@@ -959,6 +997,207 @@ fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
         (Value::Null, Value::Null) => std::cmp::Ordering::Equal,
         _ => rank(a).cmp(&rank(b)),
     }
+}
+
+// ---------------------------------------------------------------------------
+// WHERE predicates & aggregates
+// ---------------------------------------------------------------------------
+
+/// If `pred` carries a simple `indexed_col = value` (directly or as an `AND`
+/// conjunct, never under `OR`), return it so the equality index can be used.
+fn indexed_equality<'a>(table: &Table, pred: &'a Predicate) -> Option<(&'a str, &'a Value)> {
+    match pred {
+        Predicate::Compare {
+            column,
+            op: CompareOp::Eq,
+            value,
+        } if table.indexes.contains_key(column) => Some((column.as_str(), value)),
+        Predicate::And(a, b) => indexed_equality(table, a).or_else(|| indexed_equality(table, b)),
+        _ => None,
+    }
+}
+
+/// Error if the predicate references a column the table doesn't have.
+fn check_predicate_columns(columns: &[String], pred: &Predicate) -> Result<()> {
+    match pred {
+        Predicate::And(a, b) | Predicate::Or(a, b) => {
+            check_predicate_columns(columns, a)?;
+            check_predicate_columns(columns, b)
+        }
+        Predicate::Compare { column, .. } => {
+            if columns.iter().any(|c| c == column) {
+                Ok(())
+            } else {
+                Err(PvError::Schema(format!("no column `{column}`")))
+            }
+        }
+    }
+}
+
+/// Evaluate a predicate against one row.
+fn row_matches(pred: &Predicate, columns: &[String], row: &[Value]) -> Result<bool> {
+    match pred {
+        Predicate::And(a, b) => Ok(row_matches(a, columns, row)? && row_matches(b, columns, row)?),
+        Predicate::Or(a, b) => Ok(row_matches(a, columns, row)? || row_matches(b, columns, row)?),
+        Predicate::Compare { column, op, value } => {
+            let ix = columns
+                .iter()
+                .position(|c| c == column)
+                .ok_or_else(|| PvError::Schema(format!("no column `{column}`")))?;
+            Ok(eval_compare(&row[ix], *op, value))
+        }
+    }
+}
+
+/// Apply one comparison. Ordering comparisons against `NULL` are never true
+/// (SQL three-valued logic); `=`/`!=` compare by value, `LIKE` needs two texts.
+fn eval_compare(lhs: &Value, op: CompareOp, rhs: &Value) -> bool {
+    use std::cmp::Ordering;
+    match op {
+        CompareOp::Eq => lhs == rhs,
+        CompareOp::Ne => lhs != rhs,
+        CompareOp::Like => match (lhs, rhs) {
+            (Value::Text(t), Value::Text(p)) => like_match(t, p),
+            _ => false,
+        },
+        CompareOp::Lt | CompareOp::Le | CompareOp::Gt | CompareOp::Ge => {
+            if matches!(lhs, Value::Null) || matches!(rhs, Value::Null) {
+                return false;
+            }
+            let ord = cmp_values(lhs, rhs);
+            match op {
+                CompareOp::Lt => ord == Ordering::Less,
+                CompareOp::Le => ord != Ordering::Greater,
+                CompareOp::Gt => ord == Ordering::Greater,
+                CompareOp::Ge => ord != Ordering::Less,
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
+/// SQL `LIKE`: `%` matches any run (including empty), `_` any single char.
+/// Case-sensitive. Linear-time two-pointer match with `%` backtracking.
+fn like_match(text: &str, pattern: &str) -> bool {
+    let t: Vec<char> = text.chars().collect();
+    let p: Vec<char> = pattern.chars().collect();
+    let (mut ti, mut pi) = (0usize, 0usize);
+    let (mut star_p, mut star_t): (Option<usize>, usize) = (None, 0);
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '_' || p[pi] == t[ti]) {
+            ti += 1;
+            pi += 1;
+        } else if pi < p.len() && p[pi] == '%' {
+            star_p = Some(pi);
+            star_t = ti;
+            pi += 1;
+        } else if let Some(sp) = star_p {
+            pi = sp + 1;
+            star_t += 1;
+            ti = star_t;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '%' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+/// Compute aggregate terms over the (already filtered) rows → a single result row.
+fn compute_aggregates(aggs: &[Aggregate], columns: &[String], rows: &[Row]) -> Result<QueryResult> {
+    let mut out_columns = Vec::with_capacity(aggs.len());
+    let mut out_row = Vec::with_capacity(aggs.len());
+    for agg in aggs {
+        out_columns.push(agg_label(agg));
+        out_row.push(compute_one_aggregate(agg, columns, rows)?);
+    }
+    Ok(QueryResult::Rows {
+        columns: out_columns,
+        rows: vec![out_row],
+    })
+}
+
+fn agg_label(agg: &Aggregate) -> String {
+    let f = match agg.func {
+        AggFunc::Count => "count",
+        AggFunc::Sum => "sum",
+        AggFunc::Min => "min",
+        AggFunc::Max => "max",
+    };
+    match &agg.column {
+        None => f.to_string(),
+        Some(c) => format!("{f}({c})"),
+    }
+}
+
+fn compute_one_aggregate(agg: &Aggregate, columns: &[String], rows: &[Row]) -> Result<Value> {
+    let col_ix = match &agg.column {
+        None => None,
+        Some(c) => Some(
+            columns
+                .iter()
+                .position(|x| x == c)
+                .ok_or_else(|| PvError::Schema(format!("no column `{c}`")))?,
+        ),
+    };
+    let value = match agg.func {
+        AggFunc::Count => {
+            let n = match col_ix {
+                None => rows.len(),
+                Some(ix) => rows
+                    .iter()
+                    .filter(|r| !matches!(r[ix], Value::Null))
+                    .count(),
+            };
+            Value::Int(n as i64)
+        }
+        AggFunc::Sum => {
+            let ix = col_ix.expect("SUM requires a column");
+            let mut sum: i128 = 0;
+            for r in rows {
+                match &r[ix] {
+                    Value::Int(i) => sum += *i as i128,
+                    Value::Null => {}
+                    other => {
+                        return Err(PvError::Schema(format!(
+                            "SUM requires integer values, found {other:?}"
+                        )))
+                    }
+                }
+            }
+            Value::Int(
+                i64::try_from(sum).map_err(|_| PvError::Schema("SUM overflowed i64".into()))?,
+            )
+        }
+        AggFunc::Min | AggFunc::Max => {
+            let ix = col_ix.expect("MIN/MAX requires a column");
+            let mut acc: Option<&Value> = None;
+            for r in rows {
+                if matches!(r[ix], Value::Null) {
+                    continue;
+                }
+                acc = Some(match acc {
+                    None => &r[ix],
+                    Some(cur) => {
+                        let take = match agg.func {
+                            AggFunc::Min => cmp_values(&r[ix], cur).is_lt(),
+                            AggFunc::Max => cmp_values(&r[ix], cur).is_gt(),
+                            _ => unreachable!(),
+                        };
+                        if take {
+                            &r[ix]
+                        } else {
+                            cur
+                        }
+                    }
+                });
+            }
+            acc.cloned().unwrap_or(Value::Null)
+        }
+    };
+    Ok(value)
 }
 
 // ---------------------------------------------------------------------------
@@ -1258,6 +1497,156 @@ mod tests {
         // Unknown projection / order column is a clean schema error, not a panic.
         assert!(db.query("SELECT nope FROM p").is_err());
         assert!(db.query("SELECT * FROM p ORDER BY nope").is_err());
+    }
+
+    /// Sorted `id`s of a SELECT result — a small assertion helper for the SQL tests.
+    fn ids(db: &mut Database, sql: &str) -> Vec<i64> {
+        let r = db.query(sql).unwrap();
+        let ix = r.columns().unwrap().iter().position(|c| c == "id").unwrap();
+        let mut v: Vec<i64> = r
+            .rows()
+            .unwrap()
+            .iter()
+            .map(|row| match row[ix] {
+                Value::Int(i) => i,
+                ref other => panic!("non-int id: {other:?}"),
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn where_comparisons_boolean_and_like() {
+        let mut db = Database::open_memory();
+        db.query("CREATE TABLE t (id, name, age)").unwrap();
+        db.query("INSERT INTO t VALUES (1, 'alice', 30)").unwrap();
+        db.query("INSERT INTO t VALUES (2, 'bob', 25)").unwrap();
+        db.query("INSERT INTO t VALUES (3, 'carol', 40)").unwrap();
+        db.query("INSERT INTO t VALUES (4, 'dave', 25)").unwrap();
+
+        // Comparison operators.
+        assert_eq!(ids(&mut db, "SELECT * FROM t WHERE age > 25"), vec![1, 3]);
+        assert_eq!(ids(&mut db, "SELECT * FROM t WHERE age >= 30"), vec![1, 3]);
+        assert_eq!(ids(&mut db, "SELECT * FROM t WHERE age != 25"), vec![1, 3]);
+        assert_eq!(ids(&mut db, "SELECT id FROM t WHERE id < 3"), vec![1, 2]);
+        assert_eq!(ids(&mut db, "SELECT id FROM t WHERE id <= 2"), vec![1, 2]);
+
+        // Boolean combinations: AND binds tighter than OR.
+        assert_eq!(
+            ids(&mut db, "SELECT * FROM t WHERE age = 25 OR id = 1"),
+            vec![1, 2, 4]
+        );
+        assert_eq!(
+            ids(&mut db, "SELECT * FROM t WHERE age > 25 AND id < 3"),
+            vec![1]
+        );
+        assert_eq!(
+            ids(
+                &mut db,
+                "SELECT * FROM t WHERE (id = 1 OR id = 4) AND age = 25"
+            ),
+            vec![4]
+        );
+
+        // LIKE: `%` any run, `_` one char.
+        assert_eq!(
+            ids(&mut db, "SELECT * FROM t WHERE name LIKE 'a%'"),
+            vec![1]
+        );
+        assert_eq!(
+            ids(&mut db, "SELECT id FROM t WHERE name LIKE '_a%'"),
+            vec![3, 4]
+        );
+    }
+
+    #[test]
+    fn whole_table_aggregates() {
+        let mut db = Database::open_memory();
+        db.query("CREATE TABLE s (id, amount)").unwrap();
+        db.query("INSERT INTO s VALUES (1, 10)").unwrap();
+        db.query("INSERT INTO s VALUES (2, 30)").unwrap();
+        db.query("INSERT INTO s VALUES (3, 20)").unwrap();
+
+        let r = db
+            .query("SELECT COUNT(*), SUM(amount), MIN(amount), MAX(amount) FROM s")
+            .unwrap();
+        assert_eq!(
+            r.columns().unwrap(),
+            &["count", "sum(amount)", "min(amount)", "max(amount)"]
+        );
+        assert_eq!(
+            r.rows().unwrap(),
+            &[vec![
+                Value::Int(3),
+                Value::Int(60),
+                Value::Int(10),
+                Value::Int(30)
+            ]]
+        );
+
+        // Aggregate over a WHERE-filtered subset.
+        let r = db
+            .query("SELECT SUM(amount) FROM s WHERE amount >= 20")
+            .unwrap();
+        assert_eq!(r.rows().unwrap(), &[vec![Value::Int(50)]]);
+
+        // MIN/MAX order text too; SUM over text is a clean error.
+        db.query("CREATE TABLE w (name)").unwrap();
+        db.query("INSERT INTO w VALUES ('bob')").unwrap();
+        db.query("INSERT INTO w VALUES ('alice')").unwrap();
+        let r = db.query("SELECT MIN(name), MAX(name) FROM w").unwrap();
+        assert_eq!(
+            r.rows().unwrap(),
+            &[vec![Value::Text("alice".into()), Value::Text("bob".into())]]
+        );
+        assert!(db.query("SELECT SUM(name) FROM w").is_err());
+    }
+
+    #[test]
+    fn update_and_delete_with_predicates() {
+        let mut db = Database::open_memory();
+        db.query("CREATE TABLE t (id, tier)").unwrap();
+        for i in 1..=5 {
+            db.query(&format!("INSERT INTO t VALUES ({i}, 'free')"))
+                .unwrap();
+        }
+        // UPDATE with a range predicate.
+        assert_eq!(
+            db.query("UPDATE t SET tier = 'pro' WHERE id > 3").unwrap(),
+            QueryResult::Mutated(2)
+        );
+        let pros = db
+            .query("SELECT COUNT(*) FROM t WHERE tier = 'pro'")
+            .unwrap();
+        assert_eq!(pros.rows().unwrap(), &[vec![Value::Int(2)]]);
+
+        // DELETE with OR.
+        assert_eq!(
+            db.query("DELETE FROM t WHERE id = 1 OR id = 2").unwrap(),
+            QueryResult::Mutated(2)
+        );
+        assert_eq!(ids(&mut db, "SELECT id FROM t"), vec![3, 4, 5]);
+    }
+
+    #[test]
+    fn indexed_equality_used_within_and_predicate() {
+        let mut db = Database::open_memory();
+        db.query("CREATE TABLE t (id, tier)").unwrap();
+        db.query("INSERT INTO t VALUES (1, 'pro')").unwrap();
+        db.query("INSERT INTO t VALUES (2, 'free')").unwrap();
+        db.query("INSERT INTO t VALUES (3, 'pro')").unwrap();
+        db.query("CREATE INDEX ON t (tier)").unwrap();
+        // `tier = 'pro'` (indexed) is the fast path; `id > 1` filters the candidates.
+        assert_eq!(
+            ids(&mut db, "SELECT id FROM t WHERE tier = 'pro' AND id > 1"),
+            vec![3]
+        );
+        // Still correct after the index exists for a plain equality, too.
+        assert_eq!(
+            ids(&mut db, "SELECT id FROM t WHERE tier = 'free'"),
+            vec![2]
+        );
     }
 
     #[test]

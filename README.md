@@ -54,7 +54,7 @@ Windows. Versioning and the release process are documented in
 | [`engine/mvcc.rs`](src/engine/mvcc.rs) | transaction clock + snapshot visibility |
 | [`engine/wasm.rs`](src/engine/wasm.rs) | sandboxed `wasmi` extension runtime + the `WasmExec` backend trait |
 | [`engine/interp.rs`](src/engine/interp.rs) | `pv-wasm`: a from-scratch WASM interpreter (integer subset) |
-| [`engine/query.rs`](src/engine/query.rs) | small SQL front-end (CREATE/INSERT/UPDATE/DELETE/DROP, `SELECT {*\|cols\|COUNT(*)} … WHERE … BEFORE … ORDER BY … LIMIT`) |
+| [`engine/query.rs`](src/engine/query.rs) | small SQL front-end (CREATE/INSERT/UPDATE/DELETE/DROP, `SELECT` with projection/aggregates, `WHERE` predicates `<op>`/`AND`/`OR`/`LIKE`, `BEFORE`, `ORDER BY`, `LIMIT`) |
 | [`engine/compliance.rs`](src/engine/compliance.rs) | optional, app-driven usage-policy hook (not a license requirement) |
 | [`db.rs`](src/db.rs) | `Database` surface tying it all together |
 
@@ -111,10 +111,11 @@ cargo run --release --example bench     # evaluation harness across modes/worklo
 
 SQL supported: `CREATE TABLE`, `CREATE INDEX ON t (col)`, `INSERT`, `UPDATE … SET …
 WHERE`, `DELETE … WHERE`, `DROP TABLE`, and
-`SELECT {* | col, … | COUNT(*)} FROM t [WHERE col = v] [BEFORE tx]
-[ORDER BY col [ASC|DESC]] [LIMIT n]`. Durability is selectable via
-`Database::set_durability` (`Fast` OS-cache default, or crash-safe `Sync` with
-fsync + atomic manifest).
+`SELECT {* | col, … | COUNT/SUM/MIN/MAX(…)} FROM t [WHERE <pred>] [BEFORE tx]
+[ORDER BY col [ASC|DESC]] [LIMIT n]`, where `<pred>` combines `col <op> value`
+(`=`, `!=`, `<`, `<=`, `>`, `>=`, `LIKE`) with `AND` / `OR` and parentheses.
+Durability is selectable via `Database::set_durability` (`Fast` OS-cache default,
+or crash-safe `Sync` with fsync + atomic manifest).
 
 Measured results and an honest writeup live in [BENCHMARKS.md](BENCHMARKS.md).
 Short version: PicoVolt is a page-backed engine with O(1) durable appends

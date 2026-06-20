@@ -1,9 +1,12 @@
 //! A deliberately small SQL front-end.
 //!
-//! PicoVolt's focus is the storage/MVCC engine, not query planning, so this
-//! parser covers exactly the statement forms the specification demonstrates —
-//! `CREATE TABLE`, `INSERT`, `SELECT * ... [BEFORE tx]`, and `DELETE`. Anything
-//! richer is intentionally out of scope and reported as [`PvError::Query`].
+//! PicoVolt's focus is the storage/MVCC engine, not query planning, so this is a
+//! compact hand-written tokenizer + recursive-descent parser. It covers
+//! `CREATE TABLE`/`INDEX`, `INSERT`, `DROP TABLE`, `UPDATE`/`DELETE`, and
+//! `SELECT` with column/aggregate projection, `WHERE` predicates (comparison
+//! operators, `AND`/`OR`, `LIKE`), `BEFORE tx` time-travel, `ORDER BY`, and
+//! `LIMIT`. Anything beyond that (joins, subqueries, `GROUP BY`) is intentionally
+//! out of scope and reported as [`PvError::Query`].
 
 use crate::core::errors::{PvError, Result};
 use crate::core::value::Value;
@@ -32,38 +35,36 @@ pub enum Statement {
         /// Column to index.
         column: String,
     },
-    /// `SELECT <proj> FROM name [WHERE col = value] [BEFORE tx] [ORDER BY col [ASC|DESC]] [LIMIT n]`
+    /// `SELECT <proj> FROM name [WHERE <pred>] [BEFORE tx] [ORDER BY col [ASC|DESC]] [LIMIT n]`
     Select {
         /// Source table.
         table: String,
-        /// What to return: `*`, a column list, or `COUNT(*)`.
+        /// What to return: `*`, a column list, or aggregates.
         projection: Projection,
         /// Optional time-travel snapshot id.
         before: Option<u64>,
-        /// Optional `column = value` equality filter.
-        filter: Option<(String, Value)>,
+        /// Optional `WHERE` predicate.
+        filter: Option<Predicate>,
         /// Optional sort.
         order: Option<OrderBy>,
         /// Optional cap on the number of rows returned.
         limit: Option<usize>,
     },
-    /// `UPDATE name SET col = value WHERE col2 = value2`
+    /// `UPDATE name SET col = value WHERE <pred>`
     Update {
         /// Target table.
         table: String,
         /// Column to assign and its new value.
         set: (String, Value),
-        /// Equality predicate selecting rows to update.
-        filter: (String, Value),
+        /// Predicate selecting rows to update.
+        filter: Predicate,
     },
-    /// `DELETE FROM name WHERE col = value`
+    /// `DELETE FROM name WHERE <pred>`
     Delete {
         /// Target table.
         table: String,
-        /// Predicate column.
-        column: String,
-        /// Predicate value (equality).
-        value: Value,
+        /// Predicate selecting rows to delete.
+        filter: Predicate,
     },
     /// `DROP TABLE name`
     DropTable {
@@ -79,8 +80,80 @@ pub enum Projection {
     All,
     /// A specific list of columns.
     Columns(Vec<String>),
-    /// `COUNT(*)` — a single-row, single-column count.
+    /// One or more aggregate terms (`COUNT(*)`, `SUM(col)`, …) over the whole
+    /// (filtered) result — produces a single row.
+    Aggregates(Vec<Aggregate>),
+}
+
+/// An aggregate function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggFunc {
+    /// Row / non-null count.
     Count,
+    /// Sum of integer values.
+    Sum,
+    /// Minimum value (any comparable type).
+    Min,
+    /// Maximum value (any comparable type).
+    Max,
+}
+
+/// One aggregate term, e.g. `SUM(amount)`. `column` is `None` only for `COUNT(*)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Aggregate {
+    /// Which aggregate function.
+    pub func: AggFunc,
+    /// Target column, or `None` for `COUNT(*)`.
+    pub column: Option<String>,
+}
+
+/// A comparison operator in a `WHERE` clause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompareOp {
+    /// `=`
+    Eq,
+    /// `!=` / `<>`
+    Ne,
+    /// `<`
+    Lt,
+    /// `<=`
+    Le,
+    /// `>`
+    Gt,
+    /// `>=`
+    Ge,
+    /// `LIKE` (`%` = any run, `_` = any single char)
+    Like,
+}
+
+/// A `WHERE` predicate: comparisons combined with `AND` / `OR`. `AND` binds
+/// tighter than `OR`; parentheses override precedence.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Predicate {
+    /// `column <op> value`
+    Compare {
+        /// Column on the left.
+        column: String,
+        /// The comparison.
+        op: CompareOp,
+        /// Literal on the right.
+        value: Value,
+    },
+    /// `a AND b`
+    And(Box<Predicate>, Box<Predicate>),
+    /// `a OR b`
+    Or(Box<Predicate>, Box<Predicate>),
+}
+
+impl Predicate {
+    /// Convenience constructor for `column = value`.
+    pub fn eq(column: impl Into<String>, value: Value) -> Self {
+        Predicate::Compare {
+            column: column.into(),
+            op: CompareOp::Eq,
+            value,
+        }
+    }
 }
 
 /// An `ORDER BY column [ASC|DESC]` clause.
@@ -101,6 +174,11 @@ enum Tok {
     RParen,
     Comma,
     Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
     Star,
 }
 
@@ -127,6 +205,38 @@ fn tokenize(sql: &str) -> Result<Vec<Tok>> {
             '=' => {
                 chars.next();
                 toks.push(Tok::Eq);
+            }
+            '<' => {
+                chars.next();
+                match chars.peek() {
+                    Some('=') => {
+                        chars.next();
+                        toks.push(Tok::Le);
+                    }
+                    Some('>') => {
+                        chars.next();
+                        toks.push(Tok::Ne);
+                    }
+                    _ => toks.push(Tok::Lt),
+                }
+            }
+            '>' => {
+                chars.next();
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    toks.push(Tok::Ge);
+                } else {
+                    toks.push(Tok::Gt);
+                }
+            }
+            '!' => {
+                chars.next();
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    toks.push(Tok::Ne);
+                } else {
+                    return Err(PvError::Query("expected `=` after `!`".into()));
+                }
             }
             '*' => {
                 chars.next();
@@ -224,6 +334,10 @@ impl Cursor {
 
     fn peek(&self) -> Option<&Tok> {
         self.toks.get(self.pos)
+    }
+
+    fn peek2(&self) -> Option<&Tok> {
+        self.toks.get(self.pos + 1)
     }
 
     /// Consume a keyword (case-insensitive), erroring if it doesn't match.
@@ -341,17 +455,31 @@ fn parse_insert(cur: &mut Cursor) -> Result<Statement> {
     Ok(Statement::Insert { table, values })
 }
 
+fn agg_func(word: &str) -> Option<AggFunc> {
+    match word.to_ascii_uppercase().as_str() {
+        "COUNT" => Some(AggFunc::Count),
+        "SUM" => Some(AggFunc::Sum),
+        "MIN" => Some(AggFunc::Min),
+        "MAX" => Some(AggFunc::Max),
+        _ => None,
+    }
+}
+
 fn parse_projection(cur: &mut Cursor) -> Result<Projection> {
     if matches!(cur.peek(), Some(Tok::Star)) {
         cur.next()?;
         return Ok(Projection::All);
     }
-    if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("count")) {
-        cur.next()?; // COUNT
-        cur.expect(Tok::LParen)?;
-        cur.expect(Tok::Star)?;
-        cur.expect(Tok::RParen)?;
-        return Ok(Projection::Count);
+    // Aggregate projection: a known function name immediately followed by `(`.
+    let is_agg = matches!(cur.peek(), Some(Tok::Word(w)) if agg_func(w).is_some())
+        && matches!(cur.peek2(), Some(Tok::LParen));
+    if is_agg {
+        let mut aggs = vec![parse_aggregate(cur)?];
+        while matches!(cur.peek(), Some(Tok::Comma)) {
+            cur.next()?;
+            aggs.push(parse_aggregate(cur)?);
+        }
+        return Ok(Projection::Aggregates(aggs));
     }
     let mut columns = vec![cur.ident()?];
     while matches!(cur.peek(), Some(Tok::Comma)) {
@@ -361,19 +489,85 @@ fn parse_projection(cur: &mut Cursor) -> Result<Projection> {
     Ok(Projection::Columns(columns))
 }
 
+fn parse_aggregate(cur: &mut Cursor) -> Result<Aggregate> {
+    let word = cur.ident()?;
+    let func =
+        agg_func(&word).ok_or_else(|| PvError::Query(format!("unknown aggregate `{word}`")))?;
+    cur.expect(Tok::LParen)?;
+    let column = if matches!(cur.peek(), Some(Tok::Star)) {
+        cur.next()?;
+        None
+    } else {
+        Some(cur.ident()?)
+    };
+    cur.expect(Tok::RParen)?;
+    if column.is_none() && func != AggFunc::Count {
+        return Err(PvError::Query(
+            "only COUNT(*) may use `*`; SUM/MIN/MAX need a column".into(),
+        ));
+    }
+    Ok(Aggregate { func, column })
+}
+
+/// Parse a `WHERE` predicate (entry point: lowest-precedence `OR`).
+fn parse_predicate(cur: &mut Cursor) -> Result<Predicate> {
+    let mut left = parse_and(cur)?;
+    while matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("or")) {
+        cur.next()?;
+        let right = parse_and(cur)?;
+        left = Predicate::Or(Box::new(left), Box::new(right));
+    }
+    Ok(left)
+}
+
+fn parse_and(cur: &mut Cursor) -> Result<Predicate> {
+    let mut left = parse_comparison(cur)?;
+    while matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("and")) {
+        cur.next()?;
+        let right = parse_comparison(cur)?;
+        left = Predicate::And(Box::new(left), Box::new(right));
+    }
+    Ok(left)
+}
+
+fn parse_comparison(cur: &mut Cursor) -> Result<Predicate> {
+    // Parenthesised sub-predicate.
+    if matches!(cur.peek(), Some(Tok::LParen)) {
+        cur.next()?;
+        let inner = parse_predicate(cur)?;
+        cur.expect(Tok::RParen)?;
+        return Ok(inner);
+    }
+    let column = cur.ident()?;
+    let op = match cur.next()? {
+        Tok::Eq => CompareOp::Eq,
+        Tok::Ne => CompareOp::Ne,
+        Tok::Lt => CompareOp::Lt,
+        Tok::Le => CompareOp::Le,
+        Tok::Gt => CompareOp::Gt,
+        Tok::Ge => CompareOp::Ge,
+        Tok::Word(w) if w.eq_ignore_ascii_case("like") => CompareOp::Like,
+        other => {
+            return Err(PvError::Query(format!(
+                "expected a comparison operator, found {other:?}"
+            )))
+        }
+    };
+    let value = cur.value()?;
+    Ok(Predicate::Compare { column, op, value })
+}
+
 fn parse_select(cur: &mut Cursor) -> Result<Statement> {
     let projection = parse_projection(cur)?;
     cur.keyword("from")?;
     let table = cur.ident()?;
 
-    let mut filter = None;
-    if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("where")) {
+    let filter = if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("where")) {
         cur.next()?; // consume WHERE
-        let column = cur.ident()?;
-        cur.expect(Tok::Eq)?;
-        let value = cur.value()?;
-        filter = Some((column, value));
-    }
+        Some(parse_predicate(cur)?)
+    } else {
+        None
+    };
 
     let before = if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("before")) {
         cur.next()?; // consume BEFORE
@@ -440,13 +634,11 @@ fn parse_update(cur: &mut Cursor) -> Result<Statement> {
     cur.expect(Tok::Eq)?;
     let set_value = cur.value()?;
     cur.keyword("where")?;
-    let where_column = cur.ident()?;
-    cur.expect(Tok::Eq)?;
-    let where_value = cur.value()?;
+    let filter = parse_predicate(cur)?;
     Ok(Statement::Update {
         table,
         set: (set_column, set_value),
-        filter: (where_column, where_value),
+        filter,
     })
 }
 
@@ -460,14 +652,8 @@ fn parse_delete(cur: &mut Cursor) -> Result<Statement> {
     cur.keyword("from")?;
     let table = cur.ident()?;
     cur.keyword("where")?;
-    let column = cur.ident()?;
-    cur.expect(Tok::Eq)?;
-    let value = cur.value()?;
-    Ok(Statement::Delete {
-        table,
-        column,
-        value,
-    })
+    let filter = parse_predicate(cur)?;
+    Ok(Statement::Delete { table, filter })
 }
 
 #[cfg(test)]
@@ -530,7 +716,7 @@ mod tests {
                 table: "users".into(),
                 projection: Projection::All,
                 before: None,
-                filter: Some(("status".into(), Value::Text("active".into()))),
+                filter: Some(Predicate::eq("status", Value::Text("active".into()))),
                 order: None,
                 limit: None,
             }
@@ -541,7 +727,7 @@ mod tests {
                 table: "users".into(),
                 projection: Projection::All,
                 before: Some(9),
-                filter: Some(("id".into(), Value::Int(5))),
+                filter: Some(Predicate::eq("id", Value::Int(5))),
                 order: None,
                 limit: Some(10),
             }
@@ -563,13 +749,20 @@ mod tests {
             }
         );
         // COUNT(*).
-        assert!(matches!(
+        assert_eq!(
             parse("SELECT COUNT(*) FROM users").unwrap(),
             Statement::Select {
-                projection: Projection::Count,
-                ..
+                table: "users".into(),
+                projection: Projection::Aggregates(vec![Aggregate {
+                    func: AggFunc::Count,
+                    column: None,
+                }]),
+                before: None,
+                filter: None,
+                order: None,
+                limit: None,
             }
-        ));
+        );
         // ORDER BY ... DESC.
         assert_eq!(
             parse("SELECT * FROM users ORDER BY name DESC").unwrap(),
@@ -594,7 +787,7 @@ mod tests {
             Statement::Update {
                 table: "users".into(),
                 set: ("status".into(), Value::Text("gone".into())),
-                filter: ("id".into(), Value::Int(3)),
+                filter: Predicate::eq("id", Value::Int(3)),
             }
         );
         assert_eq!(
@@ -622,8 +815,112 @@ mod tests {
             parse("DELETE FROM users WHERE id = 1").unwrap(),
             Statement::Delete {
                 table: "users".into(),
-                column: "id".into(),
-                value: Value::Int(1),
+                filter: Predicate::eq("id", Value::Int(1)),
+            }
+        );
+    }
+
+    #[test]
+    fn and_binds_tighter_than_or() {
+        use CompareOp::*;
+        // a = 1 OR b > 2 AND c <= 3  parses as  a=1 OR (b>2 AND c<=3)
+        let filter = match parse("SELECT * FROM t WHERE a = 1 OR b > 2 AND c <= 3").unwrap() {
+            Statement::Select {
+                filter: Some(p), ..
+            } => p,
+            other => panic!("expected select with filter, got {other:?}"),
+        };
+        assert_eq!(
+            filter,
+            Predicate::Or(
+                Box::new(Predicate::Compare {
+                    column: "a".into(),
+                    op: Eq,
+                    value: Value::Int(1)
+                }),
+                Box::new(Predicate::And(
+                    Box::new(Predicate::Compare {
+                        column: "b".into(),
+                        op: Gt,
+                        value: Value::Int(2)
+                    }),
+                    Box::new(Predicate::Compare {
+                        column: "c".into(),
+                        op: Le,
+                        value: Value::Int(3)
+                    }),
+                )),
+            )
+        );
+    }
+
+    #[test]
+    fn parens_override_precedence_like_and_ne() {
+        use CompareOp::*;
+        let filter = match parse("DELETE FROM t WHERE (a = 1 OR b = 2) AND name LIKE 'a%'").unwrap()
+        {
+            Statement::Delete { filter, .. } => filter,
+            other => panic!("expected delete, got {other:?}"),
+        };
+        assert_eq!(
+            filter,
+            Predicate::And(
+                Box::new(Predicate::Or(
+                    Box::new(Predicate::eq("a", Value::Int(1))),
+                    Box::new(Predicate::eq("b", Value::Int(2))),
+                )),
+                Box::new(Predicate::Compare {
+                    column: "name".into(),
+                    op: Like,
+                    value: Value::Text("a%".into())
+                }),
+            )
+        );
+        // `!=` and `<>` are the same operator.
+        assert_eq!(
+            parse("SELECT * FROM t WHERE x != 1").unwrap(),
+            parse("SELECT * FROM t WHERE x <> 1").unwrap()
+        );
+    }
+
+    #[test]
+    fn parses_aggregates() {
+        assert_eq!(
+            parse("SELECT SUM(amount), MAX(id), COUNT(id) FROM t").unwrap(),
+            Statement::Select {
+                table: "t".into(),
+                projection: Projection::Aggregates(vec![
+                    Aggregate {
+                        func: AggFunc::Sum,
+                        column: Some("amount".into())
+                    },
+                    Aggregate {
+                        func: AggFunc::Max,
+                        column: Some("id".into())
+                    },
+                    Aggregate {
+                        func: AggFunc::Count,
+                        column: Some("id".into())
+                    },
+                ]),
+                before: None,
+                filter: None,
+                order: None,
+                limit: None,
+            }
+        );
+        // SUM(*) is rejected; only COUNT may use `*`.
+        assert!(parse("SELECT SUM(*) FROM t").is_err());
+        // A column literally named `sum` (no parens) is still a column.
+        assert_eq!(
+            parse("SELECT sum FROM t").unwrap(),
+            Statement::Select {
+                table: "t".into(),
+                projection: Projection::Columns(vec!["sum".into()]),
+                before: None,
+                filter: None,
+                order: None,
+                limit: None,
             }
         );
     }

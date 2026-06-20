@@ -8,6 +8,16 @@ adheres to [Semantic Versioning](https://semver.org). See
 ## [Unreleased]
 
 ### Added
+- **Richer `WHERE` predicates.** Comparison operators (`<`, `<=`, `>`, `>=`,
+  `!=` / `<>`), `AND` / `OR` with parentheses, and `LIKE` (`%` / `_` wildcards),
+  for `SELECT`, `UPDATE`, and `DELETE`. The equality index is still used when the
+  predicate carries a simple `indexed_col = value` (including as an `AND`
+  conjunct); everything else is a filtered scan.
+- **Whole-table aggregates** in `SELECT`: `COUNT(*)`, `COUNT(col)`, `SUM`, `MIN`,
+  `MAX` — over the full or `WHERE`-filtered result.
+- `Database::select_filtered`, `update_where`, and `delete_where` — the
+  predicate-based programmatic counterparts to the equality `select_where` /
+  `update` / `delete` (which now delegate to them).
 - `Database::run_wasm_apply` — byte-stream counterpart to `run_wasm_scalar`, for
   WASM extensions that transform their input region in place. Rounds out the
   documented extension seam (see [docs/EXTENDING.md](docs/EXTENDING.md)).

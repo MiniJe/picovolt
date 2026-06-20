@@ -528,10 +528,11 @@ db.<span class="f">query</span>(<span class="s">"INSERT INTO users VALUES (1, 'a
       const SAMPLES = [
         ["All users", "SELECT * FROM users"],
         ["Pro tier (indexed)", "SELECT * FROM users WHERE tier = 'pro'"],
-        ["Top 3", "SELECT * FROM users LIMIT 3"],
+        ["Power users (AND)", "SELECT name, logins FROM users WHERE tier = 'pro' AND logins > 50 ORDER BY logins DESC"],
+        ["Totals (aggregate)", "SELECT COUNT(*), SUM(logins), MAX(logins) FROM users"],
+        ["Name like 'a%'", "SELECT * FROM users WHERE name LIKE 'a%'"],
         ["Upgrade bob", "UPDATE users SET tier = 'pro' WHERE id = 2"],
-        ["Add a row", "INSERT INTO users VALUES (6, 'frank', 'free', 1)"],
-        ["Delete free", "DELETE FROM users WHERE tier = 'free'"],
+        ["Delete inactive", "DELETE FROM users WHERE logins < 5"],
       ];
 
       function escapeHtml(s) {

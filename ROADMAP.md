@@ -15,17 +15,25 @@ with O(1) appends, a bounded buffer pool, MVCC time-travel, CAS dedup, columnar
 compression, equality indexes, selectable durability, the WASM extension sandbox,
 a small SQL front-end, and the wasm/npm bindings. See [CHANGELOG.md](CHANGELOG.md).
 
+## Done since 0.1.0 (unreleased)
+
+Landed on `main`, shipping in the next minor release:
+
+- **Richer `WHERE` predicates** — comparison operators (`<`, `<=`, `>`, `>=`,
+  `!=` / `<>`), `AND` / `OR` with parentheses, and `LIKE` (`%` / `_`) for
+  `SELECT` / `UPDATE` / `DELETE`. The equality index is still used when the
+  predicate carries a simple `indexed_col = value`.
+- **Whole-table aggregates** — `COUNT`, `SUM`, `MIN`, `MAX`, over the full or
+  `WHERE`-filtered result.
+
 ## Next — open core (0.2.x and on)
 
 Backward-compatible features that close the gaps the README is honest about
-("no range/ordered indexes and no concurrency") and make the SQL front-end less
-of a toy. Each is a **Normal** (minor) release.
+("no range/ordered indexes and no concurrency"). Each is a **Normal** (minor)
+release.
 
-- **Richer SQL predicates.** Comparison operators (`<`, `>`, `<=`, `>=`, `!=`),
-  `AND`/`OR` in `WHERE`, and `LIKE` prefix matching — today `WHERE` is a single
-  `col = value`.
-- **Aggregates and grouping.** `SUM` / `MIN` / `MAX` / `AVG` alongside the
-  existing `COUNT(*)`, then `GROUP BY`.
+- **`GROUP BY` + `AVG`.** Grouped aggregation, and `AVG` once there's a value
+  type that can hold a fraction (today `Value` is integer/text/blob only).
 - **Range / ordered indexes.** An ordered index structure so `WHERE col > v` and
   `ORDER BY col` can use an index instead of a full scan + sort.
 - **Background columnar compaction.** Promote the on-demand row→columnar
