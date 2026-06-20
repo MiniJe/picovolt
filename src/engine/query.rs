@@ -110,9 +110,9 @@ pub enum AggFunc {
     Min,
     /// Maximum value (any comparable type).
     Max,
-    /// Average of integer values, rendered as fixed-point text because there is no
-    /// fractional `Value` type. The result is a display value; it cannot currently
-    /// be used as a sort key, filter, or index entry.
+    /// Average of integer values, returned as an exact fixed-point
+    /// [`Value::Decimal`](crate::core::value::Value::Decimal). It is numeric and
+    /// orderable, but not yet storable on disk or constructible from a literal.
     Avg,
 }
 

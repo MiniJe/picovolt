@@ -427,6 +427,7 @@ fn value_size(v: &Value) -> usize {
     match v {
         Value::Null => 1,
         Value::Int(_) => 8,
+        Value::Decimal(_) => 16,
         Value::Text(s) => s.len(),
         Value::Blob(b) => b.len(),
     }

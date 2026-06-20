@@ -86,6 +86,8 @@ fn value_to_json(v: &Value) -> serde_json::Value {
     match v {
         Value::Null => serde_json::Value::Null,
         Value::Int(i) => serde_json::Value::from(*i),
+        // A decimal has no exact JSON number form, so emit its text rendering.
+        Value::Decimal(_) => serde_json::Value::from(v.to_string()),
         Value::Text(s) => serde_json::Value::from(s.as_str()),
         Value::Blob(b) => serde_json::Value::from(b.clone()),
     }

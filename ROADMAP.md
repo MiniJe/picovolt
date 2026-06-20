@@ -29,9 +29,11 @@ extension sandbox; an SQL front-end; and the WebAssembly and npm bindings.
   read early.
 - **`GROUP BY`:** group rows by one or more columns and evaluate `COUNT`, `SUM`,
   `MIN`, and `MAX` per group.
-- **`AVG`:** averages an integer column, on its own or under `GROUP BY`. The
-  result is rendered as fixed-point text because `Value` has no fractional type, a
-  limitation that a future numeric type would remove.
+- **Fixed-point decimal values:** a `Value::Decimal` type (exact, totally ordered)
+  that `AVG` now returns instead of text. It is not yet storable on disk or
+  constructible from a literal.
+- **`AVG`:** averages an integer column, on its own or under `GROUP BY`, returning
+  an exact decimal.
 - **Positioned parse errors:** parse and tokenizer errors report the line and
   column of the offending token and draw a caret under the source.
 - **Streaming reads:** `Database::for_each_row` visits visible rows one at a time
@@ -40,9 +42,10 @@ extension sandbox; an SQL front-end; and the WebAssembly and npm bindings.
 
 ## Next
 
-- **A fractional value type:** would make `AVG` numeric (today it returns text)
-  and enable other non-integer arithmetic. It must preserve the total `Ord`/`Eq`
-  on `Value` that the ordered index relies on.
+- **Storable decimals:** make `Value::Decimal` persistable (an on-disk record tag,
+  a columnar codec, and decimal literals in the parser), so decimal columns can be
+  created and inserted, not just produced by `AVG`. This is a versioned on-disk
+  format change.
 - **Persisted indexes:** indexes are currently rebuilt by a scan on open.
   Persisting them in the `.pvdb` file and workspace would let large tables open
   quickly.

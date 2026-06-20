@@ -27,7 +27,7 @@ use crate::core::types::{
     pack_addr, unpack_addr, FileHeader, PageId, RecordAddr, RecordEnvelope, TxId, FILE_HEADER_SIZE,
     PAGE_HEADER_SIZE, PAGE_SIZE,
 };
-use crate::core::value::{Row, Value};
+use crate::core::value::{Row, Value, DECIMAL_DEN};
 use crate::engine::compliance::{ComplianceMonitor, RuntimeMetrics};
 use crate::engine::mvcc::{Snapshot, TxManager};
 use crate::engine::query::{
@@ -1414,34 +1414,35 @@ fn compute_one_aggregate(agg: &Aggregate, columns: &[String], rows: &[Row]) -> R
                     }
                 }
             }
-            // No fractional `Value` type exists, so render the average as
-            // fixed-point text. An empty or all-null group averages to NULL,
-            // matching MIN/MAX. The rendering is computed in exact integer
-            // arithmetic (not through f64) so large integers are not corrupted.
+            // An empty or all-null group averages to NULL, matching MIN/MAX.
+            // Otherwise produce an exact fixed-point decimal (computed in i128,
+            // never f64), which is numeric and orderable unlike the old text form.
             if count == 0 {
                 Value::Null
             } else {
-                Value::Text(render_avg_2dp(sum, count))
+                Value::Decimal(decimal_from_ratio(sum, count))
             }
         }
     };
     Ok(value)
 }
 
-/// Render `sum / count` (with `count > 0`) to two decimal places as text, rounded
-/// half away from zero, using exact integer arithmetic. Avoiding `f64` keeps large
-/// integer averages exact (a value above 2^53 would otherwise be misrendered) and
-/// makes rounding deterministic.
-fn render_avg_2dp(sum: i128, count: i128) -> String {
+/// Round `sum / count` (with `count != 0`) to a scale-[`DECIMAL_SCALE`] decimal
+/// mantissa, half away from zero, in exact integer arithmetic. Avoiding `f64`
+/// keeps large integer averages exact (a value above 2^53 would otherwise be
+/// misrendered) and makes rounding deterministic.
+fn decimal_from_ratio(sum: i128, count: i128) -> i128 {
     let negative = sum < 0;
-    let magnitude = sum.unsigned_abs();
+    let num = sum.unsigned_abs() * DECIMAL_DEN as u128; // |sum| * 10^scale
     let c = count.unsigned_abs();
-    // round(magnitude * 100 / c) with halves rounded up (away from zero).
-    let scaled = (magnitude * 200 + c) / (c * 2);
-    let int_part = scaled / 100;
-    let frac = scaled % 100;
-    let sign = if negative && scaled != 0 { "-" } else { "" };
-    format!("{sign}{int_part}.{frac:02}")
+    // round(num / c) with halves rounded up (away from zero).
+    let scaled = (num * 2 + c) / (c * 2);
+    let m = scaled as i128;
+    if negative {
+        -m
+    } else {
+        m
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1960,10 +1961,12 @@ mod tests {
         db.query("INSERT INTO t VALUES (1, 1)").unwrap();
         db.query("INSERT INTO t VALUES (2, 2)").unwrap();
 
-        // AVG renders as fixed-point text; 1 and 2 average to "1.50".
+        // AVG returns an exact decimal: 1 and 2 average to 1.5 (mantissa
+        // 1_500_000 at scale 6), which displays as "1.500000".
         let r = db.query("SELECT AVG(amount) FROM t").unwrap();
         assert_eq!(r.columns().unwrap(), &["avg(amount)".to_string()]);
-        assert_eq!(r.rows().unwrap(), &[vec![Value::Text("1.50".into())]]);
+        assert_eq!(r.rows().unwrap(), &[vec![Value::Decimal(1_500_000)]]);
+        assert_eq!(r.rows().unwrap()[0][0].to_string(), "1.500000");
 
         // AVG ignores NULLs: the divisor is the non-null count.
         db.query("INSERT INTO t VALUES (3, NULL)").unwrap();
@@ -1972,15 +1975,15 @@ mod tests {
                 .unwrap()
                 .rows()
                 .unwrap(),
-            &[vec![Value::Text("1.50".into())]]
+            &[vec![Value::Decimal(1_500_000)]]
         );
-        db.query("INSERT INTO t VALUES (4, 9)").unwrap(); // (1 + 2 + 9) / 3 = 4.00
+        db.query("INSERT INTO t VALUES (4, 9)").unwrap(); // (1 + 2 + 9) / 3 = 4.0
         assert_eq!(
             db.query("SELECT AVG(amount) FROM t")
                 .unwrap()
                 .rows()
                 .unwrap(),
-            &[vec![Value::Text("4.00".into())]]
+            &[vec![Value::Decimal(4_000_000)]]
         );
 
         // Empty and all-null groups average to NULL.
@@ -2013,8 +2016,8 @@ mod tests {
         assert_eq!(
             r.rows().unwrap(),
             &[
-                vec![Value::Text("a".into()), Value::Text("15.00".into())],
-                vec![Value::Text("b".into()), Value::Text("5.50".into())],
+                vec![Value::Text("a".into()), Value::Decimal(15_000_000)],
+                vec![Value::Text("b".into()), Value::Decimal(5_500_000)],
             ]
         );
     }
@@ -2022,35 +2025,68 @@ mod tests {
     #[test]
     fn avg_is_exact_and_rounds_half_away_from_zero() {
         // Large integers are exact (computed in i128, not through f64). The
-        // average of i64::MAX over one row is that value, not off by one.
+        // average of i64::MAX over one row is that value exactly, not off by one.
         let mut big = Database::open_memory();
         big.query("CREATE TABLE b (v)").unwrap();
         big.query("INSERT INTO b VALUES (9223372036854775807)")
             .unwrap();
+        let avg = big.query("SELECT AVG(v) FROM b").unwrap();
         assert_eq!(
-            big.query("SELECT AVG(v) FROM b").unwrap().rows().unwrap(),
-            &[vec![Value::Text("9223372036854775807.00".into())]]
+            avg.rows().unwrap(),
+            &[vec![Value::Decimal(
+                9_223_372_036_854_775_807_i128 * 1_000_000
+            )]]
+        );
+        assert_eq!(
+            avg.rows().unwrap()[0][0].to_string(),
+            "9223372036854775807.000000"
         );
 
-        // 5 / 8 = 0.625 rounds half away from zero to "0.63" (not banker's "0.62").
-        let mut rnd = Database::open_memory();
-        rnd.query("CREATE TABLE r (v)").unwrap();
+        // 5 / 8 = 0.625 is exact at scale 6 (mantissa 625_000), no rounding needed.
+        let mut exact = Database::open_memory();
+        exact.query("CREATE TABLE r (v)").unwrap();
         for v in [5, 0, 0, 0, 0, 0, 0, 0] {
-            rnd.query(&format!("INSERT INTO r VALUES ({v})")).unwrap();
+            exact.query(&format!("INSERT INTO r VALUES ({v})")).unwrap();
         }
         assert_eq!(
-            rnd.query("SELECT AVG(v) FROM r").unwrap().rows().unwrap(),
-            &[vec![Value::Text("0.63".into())]]
+            exact.query("SELECT AVG(v) FROM r").unwrap().rows().unwrap(),
+            &[vec![Value::Decimal(625_000)]]
         );
 
-        // Negative averages render with a sign; -3 / 2 = -1.50.
+        // 1 / 128 = 0.0078125 falls exactly on the scale-6 half; it rounds away
+        // from zero to 0.007813 (mantissa 7813), not banker's 0.007812.
+        let mut half = Database::open_memory();
+        half.query("CREATE TABLE h (v)").unwrap();
+        for i in 0..128 {
+            let v = if i == 0 { 1 } else { 0 };
+            half.query(&format!("INSERT INTO h VALUES ({v})")).unwrap();
+        }
+        let r = half.query("SELECT AVG(v) FROM h").unwrap();
+        assert_eq!(r.rows().unwrap(), &[vec![Value::Decimal(7813)]]);
+        assert_eq!(r.rows().unwrap()[0][0].to_string(), "0.007813");
+
+        // Negative averages keep a sign; -3 / 2 = -1.5.
         let mut neg = Database::open_memory();
         neg.query("CREATE TABLE n (v)").unwrap();
         neg.query("INSERT INTO n VALUES (-1)").unwrap();
         neg.query("INSERT INTO n VALUES (-2)").unwrap();
+        let r = neg.query("SELECT AVG(v) FROM n").unwrap();
+        assert_eq!(r.rows().unwrap(), &[vec![Value::Decimal(-1_500_000)]]);
+        assert_eq!(r.rows().unwrap()[0][0].to_string(), "-1.500000");
+    }
+
+    #[test]
+    fn decimal_values_are_not_storable() {
+        let mut db = Database::open_memory();
+        db.query("CREATE TABLE t (x)").unwrap();
+        // A decimal only arises as an AVG result; trying to store one (e.g. via the
+        // programmatic API) is rejected cleanly rather than corrupting the format.
+        let err = db.insert("t", vec![Value::Decimal(1_500_000)]).unwrap_err();
+        assert!(matches!(err, PvError::Schema(_)), "{err:?}");
+        // The table is unaffected.
         assert_eq!(
-            neg.query("SELECT AVG(v) FROM n").unwrap().rows().unwrap(),
-            &[vec![Value::Text("-1.50".into())]]
+            db.query("SELECT COUNT(*) FROM t").unwrap().rows().unwrap(),
+            &[vec![Value::Int(0)]]
         );
     }
 

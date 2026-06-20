@@ -243,7 +243,7 @@ impl ColumnarPage {
 
         for c in 0..arity {
             let column: Vec<&Value> = rows.iter().map(|r| &r[c]).collect();
-            let (tag, payload) = encode_column(&column);
+            let (tag, payload) = encode_column(&column)?;
             out.push(tag);
             out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
             out.extend_from_slice(&payload);
@@ -297,11 +297,11 @@ impl ColumnarPage {
     }
 }
 
-fn encode_column(values: &[&Value]) -> (u8, Vec<u8>) {
+fn encode_column(values: &[&Value]) -> Result<(u8, Vec<u8>)> {
     // Delta-Z if the whole column is integers.
     if !values.is_empty() && values.iter().all(|v| matches!(v, Value::Int(_))) {
         let ints: Vec<i64> = values.iter().map(|v| v.as_int().unwrap()).collect();
-        return (COL_ENC_DELTA_Z, delta_z_encode(&ints));
+        return Ok((COL_ENC_DELTA_Z, delta_z_encode(&ints)));
     }
     // Dictionary if the whole column is low-cardinality text.
     if !values.is_empty() && values.iter().all(|v| matches!(v, Value::Text(_))) {
@@ -310,11 +310,11 @@ fn encode_column(values: &[&Value]) -> (u8, Vec<u8>) {
             .map(|v| v.as_text().unwrap().to_owned())
             .collect();
         if let Some(dict) = DictionaryColumn::build(&texts) {
-            return (COL_ENC_DICTIONARY, serialize_dict(&dict));
+            return Ok((COL_ENC_DICTIONARY, serialize_dict(&dict)));
         }
     }
-    // Fallback: raw tagged values.
-    (COL_ENC_RAW, encode_raw_column(values))
+    // Fallback: raw tagged values (rejects non-storable values such as decimals).
+    Ok((COL_ENC_RAW, encode_raw_column(values)?))
 }
 
 fn decode_column(tag: u8, payload: &[u8], row_count: usize) -> Result<Vec<Value>> {
@@ -344,7 +344,7 @@ fn decode_column(tag: u8, payload: &[u8], row_count: usize) -> Result<Vec<Value>
     Ok(column)
 }
 
-fn encode_raw_column(values: &[&Value]) -> Vec<u8> {
+fn encode_raw_column(values: &[&Value]) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     out.extend_from_slice(&(values.len() as u32).to_le_bytes());
     for v in values {
@@ -364,9 +364,15 @@ fn encode_raw_column(values: &[&Value]) -> Vec<u8> {
                 out.extend_from_slice(&(b.len() as u32).to_le_bytes());
                 out.extend_from_slice(b);
             }
+            // A decimal is not storable (it only arises as an AVG result). Persisted
+            // rows never hold one, but `from_rows` is public and could be handed an
+            // AVG result, so reject it cleanly rather than panicking.
+            Value::Decimal(_) => {
+                return Err(PvError::Schema("decimal values are not storable".into()))
+            }
         }
     }
-    out
+    Ok(out)
 }
 
 fn decode_raw_column(payload: &[u8]) -> Result<Vec<Value>> {
@@ -541,5 +547,14 @@ mod tests {
         let (header, rows) = ColumnarPage::to_rows(&bytes).unwrap();
         assert_eq!(header.row_count, 0);
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn columnar_rejects_non_storable_decimal() {
+        // `from_rows` is public and could be handed an AVG result (which contains a
+        // decimal). It must return a clean error, not panic.
+        let rows = vec![vec![Value::Decimal(1_500_000)]];
+        let err = ColumnarPage::from_rows(0, &rows).unwrap_err();
+        assert!(matches!(err, PvError::Schema(_)), "{err:?}");
     }
 }

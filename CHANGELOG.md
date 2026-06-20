@@ -14,11 +14,16 @@ All notable changes to PicoVolt are documented here. The format is based on
 - **Positioned parse errors.** A SQL parse or tokenizer error now reports the line
   and column of the offending token and draws a caret under the source, instead of
   only describing the problem.
-- **`AVG` aggregate.** Averages an integer column, on its own or under `GROUP BY`.
-  Since `Value` has no fractional type, the result is rendered as fixed-point text
-  (for example `"1.50"`), computed in exact integer arithmetic and rounded half
-  away from zero. NULLs are ignored, and an empty or all-null group averages to
-  NULL. The text result is a display value and cannot be used as a sort key.
+- **Fixed-point decimal values.** A new `Value::Decimal(i128)` variant holds an
+  exact fixed-point number (mantissa over `10^6`). It is a real, totally-ordered
+  value (comparable, orderable, and `BTreeMap`-key-safe) and renders as
+  fixed-point text such as `"1.500000"`. It is currently produced only by `AVG`;
+  it is not yet storable on disk or constructible from a SQL literal, and trying
+  to store one is rejected with a clear error.
+- **`AVG` aggregate.** Averages an integer column, on its own or under `GROUP BY`,
+  returning an exact `Value::Decimal` computed in i128 arithmetic and rounded half
+  away from zero (so large integers stay exact, unlike an f64 average). NULLs are
+  ignored, and an empty or all-null group averages to NULL.
 
 ### Changed
 - `SUM` of an empty or all-null group now returns `NULL` instead of `0`, matching

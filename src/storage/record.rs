@@ -36,6 +36,11 @@ pub fn encode_row(values: &[Value], cas: &mut CasStore) -> Result<Vec<u8>> {
                 encode_bytes(&mut out, s.as_bytes(), TAG_INLINE_TEXT, TAG_CAS_TEXT, cas)?
             }
             Value::Blob(b) => encode_bytes(&mut out, b, TAG_INLINE_BLOB, TAG_CAS_BLOB, cas)?,
+            // A decimal only ever arises as an AVG result, which is never inserted.
+            // There is no on-disk tag for it.
+            Value::Decimal(_) => {
+                return Err(PvError::Schema("decimal values are not storable".into()))
+            }
         }
     }
     Ok(out)
