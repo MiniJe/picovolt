@@ -6,7 +6,7 @@
     <title>PicoVolt — the embedded database that runs anywhere</title>
     <meta
       name="description"
-      content="PicoVolt (PVDB): a source-available embedded database engine in Rust. Page-backed storage, MVCC time-travel, larger-than-RAM reads, content-addressed dedup — native and in the browser via WebAssembly."
+      content="PicoVolt (PVDB): an open-source (Apache-2.0) embedded database engine in Rust. Page-backed storage, MVCC time-travel, larger-than-RAM reads, content-addressed dedup — native and in the browser via WebAssembly."
     />
     <style>
       :root {
@@ -193,9 +193,56 @@
       footer .links { margin-left: auto; display: flex; gap: 20px; flex-wrap: wrap; }
       footer a { color: var(--muted); }
 
+      /* perf detail */
+      .subhead { text-align: center; color: var(--text); font-size: 18px; font-weight: 700; margin: 52px 0 18px; letter-spacing: -0.01em; }
+      .dtable { width: 100%; border-collapse: collapse; font-size: 14px; }
+      .dtable th, .dtable td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+      .dtable th { color: var(--cyan); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+      .dtable td.metric { color: var(--text); }
+      .dtable .before { color: var(--faint); font-family: var(--mono); font-size: 13px; }
+      .dtable .after { color: var(--green); font-family: var(--mono); font-size: 13px; }
+      .dtable tbody tr:hover { background: rgba(124, 92, 255, 0.05); }
+      .dtable .rmono { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+
+      .bars { display: grid; gap: 22px; max-width: 540px; margin: 8px auto 0; }
+      .bgroup { display: grid; gap: 7px; }
+      .bgroup .blabel { color: var(--text); font-size: 13.5px; }
+      .bseg { display: grid; grid-template-columns: 1fr 118px; gap: 12px; align-items: center; }
+      .bbar { height: 18px; border-radius: 5px; }
+      .bbar.base { background: #2a3052; }
+      .bbar.good { background: linear-gradient(100deg, var(--violet), var(--cyan)); box-shadow: 0 0 12px -2px var(--violet); min-width: 5px; }
+      .btag { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+      .btag.faint { color: var(--faint); }
+      .btag.good { color: var(--green); }
+      .bars-cap { text-align: center; color: var(--faint); font-size: 12.5px; margin-top: 18px; }
+
+      /* editions */
+      #editions { background: linear-gradient(180deg, transparent, rgba(124, 92, 255, 0.04)); }
+      .tiers { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: stretch; }
+      .tier { border: 1px solid var(--border); border-radius: 16px; padding: 28px; background: #10131f; display: flex; flex-direction: column; position: relative; }
+      .tier.pro { border-color: #3a3f66; background: linear-gradient(180deg, rgba(124, 92, 255, 0.09), #10131f); }
+      .tier h3 { margin: 0 0 4px; font-size: 20px; letter-spacing: -0.01em; }
+      .tier .price { font-size: 13.5px; color: var(--muted); margin-bottom: 20px; font-family: var(--mono); }
+      .tier ul { list-style: none; padding: 0; margin: 0 0 24px; display: grid; gap: 11px; }
+      .tier li { font-size: 14px; color: var(--muted); padding-left: 26px; position: relative; line-height: 1.45; }
+      .tier li::before { content: "✓"; position: absolute; left: 0; color: var(--green); font-weight: 700; }
+      .tier li.soon { color: var(--faint); }
+      .tier li.soon::before { content: "◷"; color: var(--cyan); font-weight: 400; }
+      .tier .cta { margin-top: auto; display: flex; flex-direction: column; gap: 12px; }
+      .tier .cta-inline { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+      .tier .cmd { font-family: var(--mono); font-size: 13px; color: var(--muted); background: #0b0e1a; border: 1px solid var(--border); padding: 8px 12px; border-radius: 8px; }
+      .badge { position: absolute; top: 22px; right: 22px; font-family: var(--mono); font-size: 11px; color: var(--cyan); border: 1px solid var(--border); border-radius: 999px; padding: 4px 11px; background: rgba(24, 224, 255, 0.07); }
+      .wait { display: flex; gap: 8px; flex-wrap: wrap; }
+      .wait input { flex: 1 1 170px; background: #0b0e1a; border: 1px solid var(--border); border-radius: 9px; padding: 11px 14px; color: var(--text); font-size: 14px; font-family: var(--sans); outline: none; }
+      .wait input:focus { border-color: var(--violet); }
+      .wait-note { font-size: 12.5px; color: var(--faint); line-height: 1.5; }
+
       @media (max-width: 760px) {
         nav .links a:not(.btn) { display: none; }
         .codecols { grid-template-columns: 1fr; }
+        .tiers { grid-template-columns: 1fr; }
+        .bseg { grid-template-columns: 1fr 98px; gap: 8px; }
+        .dtable th:nth-child(2), .dtable td:nth-child(2) { display: none; }
       }
     </style>
   </head>
@@ -208,6 +255,7 @@
           <a href="#playground">Playground</a>
           <a href="./app.html">Tasks app ↗</a>
           <a href="#benchmarks">Benchmarks</a>
+          <a href="#editions">Editions</a>
           <a href="https://github.com/MiniJe/picovolt">GitHub</a>
           <a class="btn" href="#playground">Try it live</a>
         </span>
@@ -217,7 +265,7 @@
     <header class="hero">
       <div class="glow"></div>
       <div class="wrap">
-        <span class="eyebrow">source-available embedded database · Rust + WebAssembly</span>
+        <span class="eyebrow">open-source embedded database · Rust + WebAssembly</span>
         <h1>The embedded database that<br />runs <span class="grad-text">anywhere</span>.</h1>
         <p class="lead">
           Page-backed storage, MVCC time-travel, larger-than-RAM reads, and
@@ -307,7 +355,60 @@
           <div class="stat"><div class="num grad-text">4 ms</div><div class="lbl">open a baked database (mmap)</div></div>
           <div class="stat"><div class="num grad-text">1.9M/s</div><div class="lbl">in-memory append</div></div>
         </div>
-        <p class="bench-note">Wall-clock on a developer laptop; relative behavior matters more than absolutes.</p>
+        <div class="subhead">Three real weaknesses, fixed</div>
+        <table class="dtable">
+          <thead>
+            <tr><th>Was</th><th>Before</th><th>After the page-backed engine</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="metric">Autocommit was O(n²)</td>
+              <td class="before">59.8&nbsp;s / 1k inserts (~107 rows/s)</td>
+              <td class="after">~33,000 rows/s, linear</td>
+            </tr>
+            <tr>
+              <td class="metric">Whole dataset lived in RAM</td>
+              <td class="before">every open loaded all rows</td>
+              <td class="after">667-page set served from a 16-page pool</td>
+            </tr>
+            <tr>
+              <td class="metric">Every read was a full scan</td>
+              <td class="before"><code>WHERE col = v</code> scanned all rows</td>
+              <td class="after">secondary index → ~11,000× faster</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="subhead">On-disk footprint</div>
+        <div class="bars">
+          <div class="bgroup">
+            <span class="blabel">Repeated blobs · CAS dedup</span>
+            <div class="bseg"><span class="bbar base" style="width: 100%"></span><span class="btag faint">uncompressed</span></div>
+            <div class="bseg"><span class="bbar good" style="width: 8.3%"></span><span class="btag good">12× smaller</span></div>
+          </div>
+          <div class="bgroup">
+            <span class="blabel">Cold columns · columnar</span>
+            <div class="bseg"><span class="bbar base" style="width: 100%"></span><span class="btag faint">uncompressed</span></div>
+            <div class="bseg"><span class="bbar good" style="width: 10%"></span><span class="btag good">10× smaller</span></div>
+          </div>
+        </div>
+        <p class="bars-cap">Each pair: uncompressed baseline vs. on-disk size after CAS dedup / columnar compression.</p>
+
+        <div class="subhead">Headline throughput</div>
+        <table class="dtable">
+          <thead><tr><th>Operation</th><th>Throughput</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td class="metric">In-memory append</td><td class="rmono">~1.9M rows/s</td><td class="rmono">no flush</td></tr>
+            <tr><td class="metric">Batched durable write</td><td class="rmono">~1.4M rows/s</td><td class="rmono">insert + 1 flush (20k ≈ 2 ms)</td></tr>
+            <tr><td class="metric">Autocommit (durable per insert)</td><td class="after">~33k rows/s</td><td class="rmono">linear</td></tr>
+            <tr><td class="metric">Full scan / time-travel scan</td><td class="rmono">~3.5M / ~5.7M rows/s</td><td class="rmono">decoded from the buffer pool</td></tr>
+            <tr><td class="metric">Bake → open a monolith</td><td class="rmono">~15 ms / ~5 ms</td><td class="rmono">compile 20k rows / mmap + decode</td></tr>
+          </tbody>
+        </table>
+
+        <p class="bench-note">Wall-clock on a single developer laptop (release build); relative behavior
+          matters more than absolutes. Reproduce with <code>cargo run --release --example bench</code> —
+          full method and trade-offs in <a href="https://github.com/MiniJe/picovolt/blob/main/BENCHMARKS.md">BENCHMARKS.md</a>.</p>
       </div>
     </section>
 
@@ -336,6 +437,57 @@ db.<span class="f">query</span>(<span class="s">"CREATE TABLE users (id, name, t
 db.<span class="f">query</span>(<span class="s">"INSERT INTO users VALUES (1, 'alice', 'pro')"</span>);
 
 <span class="k">const</span> res = JSON.<span class="f">parse</span>(db.<span class="f">query</span>(<span class="s">"SELECT * FROM users"</span>));</pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="editions">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>Open core, with a pro edition on the way</h2>
+          <p>The engine is free and Apache-2.0 — forever. A commercial edition will
+            add the modules teams need to run it in production.</p>
+        </div>
+        <div class="tiers">
+          <div class="tier">
+            <h3>PicoVolt</h3>
+            <div class="price">Free · Apache-2.0 · available today</div>
+            <ul>
+              <li>Page-backed engine with O(1) durable appends</li>
+              <li>MVCC time-travel, CAS dedup, columnar compression</li>
+              <li>Secondary indexes &amp; selectable crash-safe durability</li>
+              <li>SQL front-end, sandboxed WASM extensions, <code>.pvdb</code> bake</li>
+              <li>Runs native <em>and</em> in the browser (WebAssembly)</li>
+            </ul>
+            <div class="cta">
+              <div class="cta-inline">
+                <a class="btn" href="https://github.com/MiniJe/picovolt">★ GitHub</a>
+                <span class="cmd">cargo add picovolt</span>
+              </div>
+            </div>
+          </div>
+          <div class="tier pro">
+            <span class="badge">in development</span>
+            <h3>PicoVolt Pro</h3>
+            <div class="price">Commercial · pricing TBD</div>
+            <ul>
+              <li class="soon">Encryption at rest</li>
+              <li class="soon">Replication &amp; change-data-capture</li>
+              <li class="soon">Server mode — network layer + wire protocol</li>
+              <li class="soon">Range/composite indexes &amp; parallel query</li>
+              <li class="soon">Observability, an admin UI, and priority support</li>
+            </ul>
+            <div class="cta">
+              <!-- Backend-free: opens the visitor's mail client. Swap action/JS for a
+                   form service (Formspree, Buttondown, …) when one is set up. -->
+              <form class="wait" id="waitform">
+                <input type="email" id="waitemail" placeholder="you@company.com" aria-label="Email for the pro waitlist" />
+                <button class="btn primary" type="submit">Join the waitlist</button>
+              </form>
+              <p class="wait-note">Pro isn't built yet — join to help shape it and get
+                notified. No spam; only news about the pro edition.</p>
+            </div>
           </div>
         </div>
       </div>
@@ -497,6 +649,24 @@ db.<span class="f">query</span>(<span class="s">"INSERT INTO users VALUES (1, 'a
             "then serve this folder over HTTP and reload.<br><br><small style='color:var(--faint)'>" +
             escapeHtml(String(e)) + "</small></div>";
         }
+      })();
+    </script>
+
+    <script>
+      // Waitlist: no backend — open the visitor's mail client to waitlist@picovolt.dev.
+      (function () {
+        var f = document.getElementById("waitform");
+        if (!f) return;
+        f.addEventListener("submit", function (e) {
+          e.preventDefault();
+          var email = (document.getElementById("waitemail").value || "").trim();
+          var subject = encodeURIComponent("PicoVolt Pro — waitlist");
+          var body = encodeURIComponent(
+            "Please add me to the PicoVolt Pro waitlist." + (email ? "\n\nEmail: " + email : "")
+          );
+          window.location.href =
+            "mailto:waitlist@picovolt.dev?subject=" + subject + "&body=" + body;
+        });
       })();
     </script>
   </body>
