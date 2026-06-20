@@ -486,7 +486,7 @@ impl Database {
     }
 
     /// Collect `(address, row)` for every visible row matching `pred`, using the
-    /// equality index when `pred` contains a simple `indexed_col = value`
+    /// index when `pred` carries an indexed `col = value` or `col <op> value`
     /// (possibly as an `AND` conjunct), otherwise a filtered scan.
     fn collect_matching(
         &self,
@@ -502,13 +502,13 @@ impl Database {
         check_predicate_columns(&columns, pred)?;
         let mut hits: Vec<(RecordAddr, Row)> = Vec::new();
         let mut cache = self.cache.borrow_mut();
-        if let Some((col, val)) = indexed_equality(table, pred) {
-            for_each_candidate(&mut cache, table, &self.cas, col, val, |addr, env, row| {
-                if snapshot.sees(env) && row_matches(pred, &columns, row)? {
-                    hits.push((addr, row.clone()));
+        if let Some(addrs) = index_candidates(table, pred) {
+            for addr in addrs {
+                let (env, row) = read_record_at(&mut cache, table, &self.cas, addr)?;
+                if snapshot.sees(&env) && row_matches(pred, &columns, &row)? {
+                    hits.push((addr, row));
                 }
-                Ok(())
-            })?;
+            }
         } else {
             scan(&mut cache, table, &self.cas, |addr, env, row| {
                 if snapshot.sees(env) && row_matches(pred, &columns, row)? {
@@ -583,13 +583,13 @@ impl Database {
             }
             Some(pred) => {
                 check_predicate_columns(&columns, pred)?;
-                if let Some((col, val)) = indexed_equality(table, pred) {
-                    for_each_candidate(&mut cache, table, &self.cas, col, val, |_a, env, row| {
-                        if snapshot.sees(env) && row_matches(pred, &columns, row)? {
-                            rows.push(row.clone());
+                if let Some(addrs) = index_candidates(table, pred) {
+                    for addr in addrs {
+                        let (env, row) = read_record_at(&mut cache, table, &self.cas, addr)?;
+                        if snapshot.sees(&env) && row_matches(pred, &columns, &row)? {
+                            rows.push(row);
                         }
-                        Ok(())
-                    })?;
+                    }
                 } else {
                     scan(&mut cache, table, &self.cas, |_a, env, row| {
                         if snapshot.sees(env) && row_matches(pred, &columns, row)? {
@@ -980,40 +980,39 @@ fn project_select(
     })
 }
 
-/// Total ordering over values for `ORDER BY` (Null &lt; Int &lt; Text &lt; Blob).
+/// Total ordering over values (`Null` &lt; `Int` &lt; `Text` &lt; `Blob`), as
+/// derived on [`Value`]. Used by `ORDER BY`, `MIN`/`MAX`, and range comparisons.
 fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
-    fn rank(v: &Value) -> u8 {
-        match v {
-            Value::Null => 0,
-            Value::Int(_) => 1,
-            Value::Text(_) => 2,
-            Value::Blob(_) => 3,
-        }
-    }
-    match (a, b) {
-        (Value::Int(x), Value::Int(y)) => x.cmp(y),
-        (Value::Text(x), Value::Text(y)) => x.cmp(y),
-        (Value::Blob(x), Value::Blob(y)) => x.cmp(y),
-        (Value::Null, Value::Null) => std::cmp::Ordering::Equal,
-        _ => rank(a).cmp(&rank(b)),
-    }
+    a.cmp(b)
 }
 
 // ---------------------------------------------------------------------------
 // WHERE predicates & aggregates
 // ---------------------------------------------------------------------------
 
-/// If `pred` carries a simple `indexed_col = value` (directly or as an `AND`
-/// conjunct, never under `OR`), return it so the equality index can be used.
-fn indexed_equality<'a>(table: &Table, pred: &'a Predicate) -> Option<(&'a str, &'a Value)> {
+/// Candidate addresses from an ordered index for `pred`, if one applies: an
+/// indexed `col = value` (point lookup) or `col <op> value` for a range operator
+/// (ordered scan) — directly or as an `AND` conjunct, never under `OR`. Returns
+/// `None` to fall back to a full scan. Candidates are re-checked against the full
+/// predicate by the caller, so an over-broad set is still correct.
+fn index_candidates(table: &Table, pred: &Predicate) -> Option<Vec<RecordAddr>> {
+    use std::ops::Bound::{Excluded, Included, Unbounded};
     match pred {
-        Predicate::Compare {
-            column,
-            op: CompareOp::Eq,
-            value,
-        } if table.indexes.contains_key(column) => Some((column.as_str(), value)),
-        Predicate::And(a, b) => indexed_equality(table, a).or_else(|| indexed_equality(table, b)),
-        _ => None,
+        Predicate::Compare { column, op, value } => {
+            let idx = table.indexes.get(column)?;
+            let v = || value.clone();
+            match op {
+                CompareOp::Eq => Some(idx.lookup(value).to_vec()),
+                CompareOp::Lt => Some(idx.range((Unbounded, Excluded(v())))),
+                CompareOp::Le => Some(idx.range((Unbounded, Included(v())))),
+                CompareOp::Gt => Some(idx.range((Excluded(v()), Unbounded))),
+                CompareOp::Ge => Some(idx.range((Included(v()), Unbounded))),
+                // `!=` and `LIKE` aren't range-shaped — a scan is no worse.
+                CompareOp::Ne | CompareOp::Like => None,
+            }
+        }
+        Predicate::And(a, b) => index_candidates(table, a).or_else(|| index_candidates(table, b)),
+        Predicate::Or(_, _) => None,
     }
 }
 
@@ -1305,27 +1304,6 @@ fn scan(
         })?;
     }
     Ok(())
-}
-
-/// Visit candidate records for `column == value`: index lookups when an index
-/// exists, otherwise a full scan.
-fn for_each_candidate(
-    cache: &mut PageCache,
-    table: &Table,
-    cas: &CasStore,
-    column: &str,
-    value: &Value,
-    mut visit: impl FnMut(RecordAddr, &RecordEnvelope, &Row) -> Result<()>,
-) -> Result<()> {
-    if let Some(index) = table.indexes.get(column) {
-        for &addr in index.lookup(value) {
-            let (env, row) = read_record_at(cache, table, cas, addr)?;
-            visit(addr, &env, &row)?;
-        }
-        Ok(())
-    } else {
-        scan(cache, table, cas, |addr, env, row| visit(addr, env, row))
-    }
 }
 
 /// Tombstone the record at `addr` under transaction `tx`.
@@ -1646,6 +1624,58 @@ mod tests {
         assert_eq!(
             ids(&mut db, "SELECT id FROM t WHERE tier = 'free'"),
             vec![2]
+        );
+    }
+
+    #[test]
+    fn range_query_with_index_matches_scan() {
+        // Identical data, one table indexed and one not: a range predicate must
+        // return the same rows whether it goes through the ordered index or a scan.
+        let build = |index: bool| {
+            let mut db = Database::open_memory();
+            db.query("CREATE TABLE t (id, score)").unwrap();
+            for (i, s) in [(1, 50), (2, 90), (3, 70), (4, 90), (5, 10)] {
+                db.query(&format!("INSERT INTO t VALUES ({i}, {s})"))
+                    .unwrap();
+            }
+            if index {
+                db.query("CREATE INDEX ON t (score)").unwrap();
+            }
+            db
+        };
+        let mut indexed = build(true);
+        let mut plain = build(false);
+        for sql in [
+            "SELECT id FROM t WHERE score > 50",
+            "SELECT id FROM t WHERE score >= 70",
+            "SELECT id FROM t WHERE score < 70",
+            "SELECT id FROM t WHERE score <= 50",
+            "SELECT id FROM t WHERE score > 10 AND score < 90",
+            "SELECT id FROM t WHERE score = 90",
+        ] {
+            assert_eq!(
+                ids(&mut indexed, sql),
+                ids(&mut plain, sql),
+                "mismatch: {sql}"
+            );
+        }
+        assert_eq!(
+            ids(&mut indexed, "SELECT id FROM t WHERE score >= 70"),
+            vec![2, 3, 4]
+        );
+
+        // MVCC: after an UPDATE the ordered index reflects the new value, with the
+        // old version tombstoned (not visible) — range results track the change.
+        indexed
+            .query("UPDATE t SET score = 5 WHERE id = 2")
+            .unwrap();
+        assert_eq!(
+            ids(&mut indexed, "SELECT id FROM t WHERE score >= 70"),
+            vec![3, 4]
+        );
+        assert_eq!(
+            ids(&mut indexed, "SELECT id FROM t WHERE score < 50"),
+            vec![2, 5]
         );
     }
 

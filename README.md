@@ -48,7 +48,7 @@ Windows. Versioning and the release process are documented in
 | [`storage/cache.rs`](src/storage/cache.rs) | bounded LRU buffer pool (enables larger-than-RAM reads) |
 | [`storage/cas.rs`](src/storage/cas.rs) | BLAKE3 content-addressable dedup (memory / dev-files / mmap) |
 | [`storage/compress.rs`](src/storage/compress.rs) | Delta-Z, LEB128 varints, dictionary bit-packing |
-| [`storage/index.rs`](src/storage/index.rs) | in-memory equality secondary index (value → record addresses) |
+| [`storage/index.rs`](src/storage/index.rs) | in-memory ordered secondary index (value → record addresses; point + range) |
 | [`storage/record.rs`](src/storage/record.rs) | row ⇄ record-body serialization with CAS interception |
 | [`storage/vle.rs`](src/storage/vle.rs) | dev directory store, prod mmap monolith, `bake` |
 | [`engine/mvcc.rs`](src/engine/mvcc.rs) | transaction clock + snapshot visibility |
@@ -76,8 +76,9 @@ Windows. Versioning and the release process are documented in
   plus an O(tables) manifest, so autocommit is O(1)/insert (linear), not the old
   whole-table rewrite. Reads stream through a bounded buffer pool
   ([`storage/cache.rs`](src/storage/cache.rs)) so datasets need not fit in RAM, and
-  opt-in equality indexes ([`storage/index.rs`](src/storage/index.rs)) turn
-  `WHERE col = value` into a lookup.
+  opt-in ordered indexes ([`storage/index.rs`](src/storage/index.rs)) turn
+  `WHERE col = value` into a point lookup and `WHERE col > v` (and other range
+  comparisons) into an ordered scan instead of a full scan.
 - **Durability is selectable.** `Database::set_durability(Durability::Sync)` makes
   each flush `fsync` the data and commit the manifest atomically (write-temp →
   `fsync` → rename); the default `Fast` mode is OS-cache only (fast, durable on
@@ -120,11 +121,12 @@ or crash-safe `Sync` with fsync + atomic manifest).
 Measured results and an honest writeup live in [BENCHMARKS.md](BENCHMARKS.md).
 Short version: PicoVolt is a page-backed engine with O(1) durable appends
 (autocommit ~33k rows/s, *linear*), larger-than-RAM reads via a bounded buffer
-pool (a 667-page dataset serves from a 16-page pool), secondary indexes
-(`WHERE col = value` ~11,000× faster than a scan), MVCC time-travel, opt-in
-crash-safe durability (`Durability::Sync`), and a fast compile-and-publish path
-(CAS dedup, columnar compression, single-file mmap artifacts). Remaining limits:
-no range/ordered indexes and no concurrency.
+pool (a 667-page dataset serves from a 16-page pool), ordered secondary indexes
+(`WHERE col = value` ~11,000× faster than a scan, plus range predicates), MVCC
+time-travel, opt-in crash-safe durability (`Durability::Sync`), and a fast
+compile-and-publish path (CAS dedup, columnar compression, single-file mmap
+artifacts). Remaining limits: indexes are in-memory (rebuilt on open) and there's
+no concurrency.
 
 ## Install & distribution
 

@@ -28,7 +28,8 @@ How: inserts append to a table's *tail page* and write only that page plus a tin
 manifest (the page chain is a linked list in the page headers, so the manifest is
 O(tables) not O(pages)); write handles are cached so autocommit doesn't reopen
 files per insert. Reads stream through a bounded [`PageCache`](src/storage/cache.rs);
-`CREATE INDEX` builds an equality index used by `WHERE col = value`.
+`CREATE INDEX` builds an ordered index used by `WHERE col = value` and range
+predicates (`col > v`, …).
 
 ## Headline results
 
@@ -57,8 +58,10 @@ Becoming a real storage engine cost some peak in-memory speed — a fair trade:
   crash can lose recent writes); `Durability::Sync` `fsync`s data and commits the
   manifest atomically per flush (crash-safe, much slower). A full WAL is still
   future work.
-- **Indexes are equality-only and in-memory**, rebuilt by a streaming scan on
-  open. Range/ordered lookups and persisted B-trees are future work.
+- **Indexes are ordered but in-memory**, rebuilt by a streaming scan on open.
+  They serve both point (`col = v`) and range (`col > v`) predicates; persisting
+  them as on-disk B-trees is future work. (The ~11,000× figure above is for the
+  point lookup; range scans weren't separately benchmarked.)
 - **`SELECT *` still materializes the full result set** (by definition). The
   larger-than-RAM win is that the *engine* stays bounded; filtered/indexed queries
   return small results without holding the dataset resident.
@@ -69,8 +72,8 @@ Becoming a real storage engine cost some peak in-memory speed — a fair trade:
 PicoVolt is now a small but genuine page-backed engine: **O(1) durable appends,
 larger-than-RAM reads via a buffer pool, indexed lookups, MVCC time-travel, and a
 fast compile-and-publish path** (CAS dedup, columnar compression, single-file mmap
-artifacts). It is still not crash-safe (no `fsync`) and has no range indexes or
-concurrency — but the benchmarks show exactly where those lines are.
+artifacts). Indexes are in-memory (rebuilt on open) and there's no concurrency —
+but the benchmarks show exactly where those lines are.
 
 ## Try it
 

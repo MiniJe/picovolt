@@ -1,22 +1,25 @@
-//! In-memory equality secondary index: column value → record addresses.
+//! In-memory ordered secondary index: column value → record addresses.
 //!
 //! Maps an indexed column's value to the [`RecordAddr`]s of every record version
 //! that carries it (MVCC-style: tombstoned versions stay until vacuumed, and the
-//! reader filters by visibility). This turns `WHERE col = value` from a full scan
-//! into a hash lookup plus a handful of page reads.
+//! reader filters by visibility). A `BTreeMap` keyed on [`Value`]'s total order
+//! turns both `WHERE col = value` *and* range predicates (`col < v`, `col >= v`,
+//! …) into a keyed lookup / ordered scan plus a handful of page reads, instead of
+//! a full table scan.
 //!
-//! Scope: equality only. Range/ordered indexes (a persisted B-tree) are future
-//! work; this index is rebuilt by a streaming scan when a table is opened.
+//! The index is in-memory, rebuilt by a streaming scan when a table is opened; it
+//! is not yet persisted as an on-disk B-tree.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
+use std::ops::RangeBounds;
 
 use crate::core::types::RecordAddr;
 use crate::core::value::Value;
 
-/// An equality index over one column.
+/// An ordered index over one column.
 #[derive(Default)]
 pub struct SecondaryIndex {
-    map: HashMap<Vec<u8>, Vec<RecordAddr>>,
+    map: BTreeMap<Value, Vec<RecordAddr>>,
     entries: usize,
 }
 
@@ -28,17 +31,24 @@ impl SecondaryIndex {
 
     /// Record that `value` occurs at `addr`.
     pub fn insert(&mut self, value: &Value, addr: RecordAddr) {
-        self.map.entry(encode_key(value)).or_default().push(addr);
+        self.map.entry(value.clone()).or_default().push(addr);
         self.entries += 1;
     }
 
-    /// Addresses of records carrying `value` (may include tombstoned versions —
-    /// the caller filters by visibility).
+    /// Addresses of records carrying exactly `value` (may include tombstoned
+    /// versions — the caller filters by visibility).
     pub fn lookup(&self, value: &Value) -> &[RecordAddr] {
+        self.map.get(value).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// Addresses whose key falls within `range`, in ascending key order. Powers
+    /// range predicates; pass e.g. `(Bound::Excluded(v), Bound::Unbounded)` for
+    /// `col > v`.
+    pub fn range<R: RangeBounds<Value>>(&self, range: R) -> Vec<RecordAddr> {
         self.map
-            .get(&encode_key(value))
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+            .range(range)
+            .flat_map(|(_, addrs)| addrs.iter().copied())
+            .collect()
     }
 
     /// Total number of (value, addr) entries indexed.
@@ -57,30 +67,10 @@ impl SecondaryIndex {
     }
 }
 
-/// Encode a value into an order-agnostic equality key (tag + payload bytes).
-fn encode_key(value: &Value) -> Vec<u8> {
-    let mut out = Vec::new();
-    match value {
-        Value::Null => out.push(0),
-        Value::Int(i) => {
-            out.push(1);
-            out.extend_from_slice(&i.to_le_bytes());
-        }
-        Value::Text(s) => {
-            out.push(2);
-            out.extend_from_slice(s.as_bytes());
-        }
-        Value::Blob(b) => {
-            out.push(3);
-            out.extend_from_slice(b);
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ops::Bound;
 
     #[test]
     fn groups_addresses_by_value() {
@@ -106,5 +96,31 @@ mod tests {
         // Int(0) and Null must not collide.
         assert_eq!(idx.lookup(&Value::Int(0)), &[1]);
         assert_eq!(idx.lookup(&Value::Null), &[2]);
+    }
+
+    #[test]
+    fn range_scan_returns_keys_in_order() {
+        let mut idx = SecondaryIndex::new();
+        for (v, a) in [(10, 1), (30, 2), (20, 3), (30, 4), (40, 5)] {
+            idx.insert(&Value::Int(v), a);
+        }
+        // col > 20  → keys 30, 30, 40, in ascending key order.
+        assert_eq!(
+            idx.range((Bound::Excluded(Value::Int(20)), Bound::Unbounded)),
+            vec![2, 4, 5]
+        );
+        // col <= 20 → keys 10, 20.
+        assert_eq!(
+            idx.range((Bound::Unbounded, Bound::Included(Value::Int(20)))),
+            vec![1, 3]
+        );
+        // a bounded window: 20 <= col < 40.
+        assert_eq!(
+            idx.range((
+                Bound::Included(Value::Int(20)),
+                Bound::Excluded(Value::Int(40))
+            )),
+            vec![3, 2, 4]
+        );
     }
 }

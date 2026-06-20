@@ -8,6 +8,13 @@ adheres to [Semantic Versioning](https://semver.org). See
 ## [Unreleased]
 
 ### Added
+- **Ordered secondary indexes.** `CREATE INDEX` now builds a range-capable
+  ordered index (a `BTreeMap` keyed on `Value`'s total order). Range predicates
+  (`col < v`, `<=`, `>`, `>=`) use it for an ordered scan instead of a full table
+  scan, in addition to the existing `col = v` point lookups — directly or as an
+  `AND` conjunct.
+- `Value` now implements `Eq` / `Ord` / `PartialOrd` (total order
+  `Null < Int < Text < Blob`).
 - **Richer `WHERE` predicates.** Comparison operators (`<`, `<=`, `>`, `>=`,
   `!=` / `<>`), `AND` / `OR` with parentheses, and `LIKE` (`%` / `_` wildcards),
   for `SELECT`, `UPDATE`, and `DELETE`. The equality index is still used when the

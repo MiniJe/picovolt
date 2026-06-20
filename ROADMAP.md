@@ -21,21 +21,23 @@ Landed on `main`, shipping in the next minor release:
 
 - **Richer `WHERE` predicates** — comparison operators (`<`, `<=`, `>`, `>=`,
   `!=` / `<>`), `AND` / `OR` with parentheses, and `LIKE` (`%` / `_`) for
-  `SELECT` / `UPDATE` / `DELETE`. The equality index is still used when the
-  predicate carries a simple `indexed_col = value`.
+  `SELECT` / `UPDATE` / `DELETE`.
 - **Whole-table aggregates** — `COUNT`, `SUM`, `MIN`, `MAX`, over the full or
   `WHERE`-filtered result.
+- **Ordered (range-capable) secondary indexes** — `CREATE INDEX` builds a
+  `BTreeMap`-backed index; range predicates (`col > v`, …) use it for an ordered
+  scan instead of a full scan, alongside the existing point lookups.
 
 ## Next — open core (0.2.x and on)
 
-Backward-compatible features that close the gaps the README is honest about
-("no range/ordered indexes and no concurrency"). Each is a **Normal** (minor)
-release.
+Backward-compatible features, each a **Normal** (minor) release.
 
 - **`GROUP BY` + `AVG`.** Grouped aggregation, and `AVG` once there's a value
   type that can hold a fraction (today `Value` is integer/text/blob only).
-- **Range / ordered indexes.** An ordered index structure so `WHERE col > v` and
-  `ORDER BY col` can use an index instead of a full scan + sort.
+- **Index-accelerated `ORDER BY`.** The ordered index already exists; teach the
+  planner to read it in key order so `ORDER BY indexed_col` skips the sort.
+- **Persisted indexes.** Today indexes are rebuilt by a scan on open; persist
+  them in the `.pvdb` / workspace so large tables open fast.
 - **Background columnar compaction.** Promote the on-demand row→columnar
   transposition ([`storage/page.rs`](src/storage/page.rs)) to a background worker,
   as the original design intended.
