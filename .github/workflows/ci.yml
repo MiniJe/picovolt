@@ -25,8 +25,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+      - name: Clippy (capi)
+        run: cargo clippy --all-targets --features capi -- -D warnings
       - name: Test
         run: cargo test --all-targets
+      - name: Test (capi)
+        run: cargo test --all-targets --features capi
       - name: Doc tests
         run: cargo test --doc
 

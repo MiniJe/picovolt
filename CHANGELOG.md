@@ -6,6 +6,34 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-22
+
+A C ABI and the first native-language bindings. PicoVolt can now be embedded from
+C, Go, and Python, alongside the existing Rust and JavaScript/WebAssembly
+surfaces. No engine behavior changed.
+
+### Added
+- **C ABI (`capi` feature).** A stable, panic-safe, C-callable surface
+  ([`src/ffi.rs`](src/ffi.rs)) over the in-process engine, with a hand-written
+  header ([`include/picovolt.h`](include/picovolt.h)). It exposes
+  `pv_open_memory`/`pv_open_dev`/`pv_open_prod`, `pv_query` (returning the same
+  JSON shape as the JavaScript binding), `pv_current_tx`, `pv_export`/`pv_import`,
+  and `pv_version`/`pv_last_error` plus the matching free and close functions.
+  Panics are caught at the boundary and reported through `pv_last_error` rather
+  than unwinding into the caller. Build a shared library with
+  `cargo build --release --features capi`.
+- **Go binding** ([`bindings/go`](bindings/go)). A `cgo` wrapper over the C ABI
+  with an idiomatic `DB` type (`OpenMemory`/`OpenDev`/`OpenProd`, `Query`,
+  `CurrentTx`, `Export`/`Import`, `Close`) and a runnable example.
+- **Python binding** ([`bindings/python`](bindings/python)). A pure-`ctypes`
+  wrapper (no build step on the Python side) exposing a `Database` class that
+  returns query results as parsed Python objects, with a runnable example.
+
+### Changed
+- Query-result JSON serialization is now shared internally
+  ([`src/json.rs`](src/json.rs)) between the WebAssembly and C ABIs, so every
+  binding returns byte-for-byte the same shape.
+
 ## [0.3.0] - 2026-06-20
 
 More backward-compatible SQL features on top of 0.2.0: `AVG` with a new exact
@@ -121,7 +149,8 @@ runs both natively and in the browser through WebAssembly.
   test plus a `cargo-fuzz` crate), and `cargo audit` reports no advisories. Both
   run in CI.
 
-[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/MiniJe/picovolt/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/MiniJe/picovolt/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/MiniJe/picovolt/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/MiniJe/picovolt/releases/tag/v0.1.0

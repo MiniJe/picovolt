@@ -40,6 +40,17 @@ extension sandbox; an SQL front-end; and the WebAssembly and npm bindings.
   instead of materializing the full result, for bounded-memory processing of large
   tables.
 
+## Native language bindings (shipped in 0.4.0)
+
+PicoVolt exposes a C ABI (the `capi` feature, [`src/ffi.rs`](src/ffi.rs), header
+[`include/picovolt.h`](include/picovolt.h)) so it can be embedded from any
+language with a C FFI. Two bindings ship on top of it in
+[`bindings/`](bindings): **Go** (cgo) and **Python** (ctypes). They surface the
+engine's strengths, an embedded single-writer engine with SQL, MVCC time-travel,
+and a compile-to-`.pvdb` path; they do not add JOINs, transactions, or concurrent
+writers, so they suit embedded use rather than a concurrent server's primary
+store.
+
 ## Next
 
 - **Storable decimals:** make `Value::Decimal` persistable (an on-disk record tag,
@@ -51,6 +62,40 @@ extension sandbox; an SQL front-end; and the WebAssembly and npm bindings.
   quickly.
 - **Background columnar compaction:** promote the on-demand row-to-columnar
   transposition ([`storage/page.rs`](src/storage/page.rs)) to a background worker.
+
+## Bindings and extensions
+
+The C ABI opens two directions that grow independently of the core engine.
+
+- **More bindings.** A `database/sql` driver and ORM adapters for Go; prebuilt,
+  pip-installable wheels that bundle the shared library for Python; and a
+  documented C example. Because the bindings share one C ABI, new languages
+  (Ruby, C#, Java, Zig) are wrappers rather than new engine work.
+- **Functional plugins.** The `WasmExec` trait is an existing extension seam.
+  More seams of the same shape could allow:
+  - additional index types behind `CREATE INDEX`, such as a full-text index or a
+    vector/embedding index for nearest-neighbor search;
+  - pluggable storage backends behind the VLE, such as an object-store backend, or
+    durable in-browser persistence (OPFS) for the WebAssembly build, which is
+    in-memory only today;
+  - import and export adapters for CSV, Parquet, JSON, and SQLite;
+  - alternative compression codecs.
+
+## Larger directions
+
+Bigger, still-exploratory pieces, listed so the direction is visible.
+
+- **A server mode.** An optional process that speaks a network protocol (HTTP or
+  gRPC) so clients in any language connect over a socket, without `cgo`. This is
+  also the natural path to serving more than one client.
+- **Write concurrency.** The engine is single-writer today; concurrent writers
+  are the prerequisite for multi-client use.
+- **Encryption at rest** and **replication** for confidentiality and for keeping a
+  warm copy of the data.
+- **A `pv` command-line tool.** Promote the `repl` example into a real binary for
+  import and export, inspection, and time-travel diffs.
+- **Local-first sync.** Operation-log or CRDT sync between an in-browser PicoVolt
+  and a server.
 
 ## Toward 1.0
 

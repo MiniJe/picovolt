@@ -57,9 +57,18 @@ pub mod storage;
 
 mod db;
 
+/// Shared query-result JSON serialization for the language bindings.
+#[cfg(any(feature = "wasm", feature = "capi"))]
+mod json;
+
 /// JavaScript / npm bindings (enabled by the `wasm` feature).
 #[cfg(feature = "wasm")]
 pub mod wasm_api;
+
+/// C ABI for native FFI bindings such as Go (cgo) and Python (ctypes), enabled
+/// by the `capi` feature.
+#[cfg(feature = "capi")]
+pub mod ffi;
 
 #[doc(inline)]
 pub use crate::core::errors::{ComplianceError, PvError, Result};

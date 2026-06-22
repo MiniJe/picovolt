@@ -1,7 +1,7 @@
 # PicoVolt (PVDB)
 
 [![CI](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml/badge.svg)](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)](CHANGELOG.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)
 
@@ -54,6 +54,7 @@ Linux and Windows. Changes are tracked in [CHANGELOG.md](CHANGELOG.md).
 | [`engine/query.rs`](src/engine/query.rs) | SQL front-end (CREATE/INSERT/UPDATE/DELETE/DROP, `SELECT` with projection and aggregates, `WHERE` predicates, `BEFORE`, `ORDER BY`, `LIMIT`) |
 | [`engine/compliance.rs`](src/engine/compliance.rs) | optional, app-driven usage-policy hook (not a license requirement) |
 | [`db.rs`](src/db.rs) | the `Database` surface that ties it together |
+| [`ffi.rs`](src/ffi.rs) | C ABI (the `capi` feature): a panic-safe, C-callable surface wrapping the engine for Go, Python, and C bindings |
 
 ### Engineering notes
 
@@ -126,14 +127,21 @@ no concurrency.
 
 | Target | How |
 |--------|-----|
-| **Rust** (crates.io) | `cargo add picovolt` (once published) |
-| **JavaScript / npm** (WebAssembly, browser and Node) | `wasm-pack build --target bundler --release -- --features wasm` |
+| **Rust** (crates.io) | `cargo add picovolt` |
+| **JavaScript / npm** (WebAssembly, browser and Node) | `npm install picovolt` |
+| **C / Go / Python** (native, via the C ABI) | `cargo build --release --features capi`, then see [`bindings/`](bindings) |
 | **In-memory** (native, no filesystem) | `Database::open_memory()`, export with `bake_to_bytes()` |
 
 PicoVolt runs in the browser through its in-memory backend. Build the WebAssembly
-package with the command above, then `import { Db } from "picovolt"` and run SQL
-with `db.query(...)`. See [src/wasm_api.rs](src/wasm_api.rs) for the JavaScript
-surface.
+package with `wasm-pack build --target bundler --release -- --features wasm`, then
+`import { Db } from "picovolt"` and run SQL with `db.query(...)`. See
+[src/wasm_api.rs](src/wasm_api.rs) for the JavaScript surface.
+
+For native languages, the `capi` feature builds a shared library exposing a C ABI
+([include/picovolt.h](include/picovolt.h), [src/ffi.rs](src/ffi.rs)). The
+[`bindings/`](bindings) directory wraps it for **Go** (cgo) and **Python**
+(ctypes); both return query results as the same JSON shape as the JavaScript
+binding. The bindings suit embedded use, not a concurrent server's primary store.
 
 ## Extending PicoVolt
 

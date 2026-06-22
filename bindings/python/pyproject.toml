@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "picovolt"
+version = "0.4.0"
+description = "Python bindings (ctypes) for the PicoVolt embedded database engine"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+keywords = ["database", "embedded", "storage-engine", "mvcc", "ffi"]
+
+[project.urls]
+Repository = "https://github.com/MiniJe/picovolt"
+
+[tool.setuptools]
+packages = ["picovolt"]
+
+# Note: this packages the pure-Python ctypes wrapper only. The compiled shared
+# library (built with `cargo build --release --features capi`) must be available
+# at run time via PICOVOLT_LIB or the system loader path. Bundling per-platform
+# wheels is future work.
