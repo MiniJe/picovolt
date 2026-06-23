@@ -70,6 +70,12 @@ The C ABI opens two directions that grow independently of the core engine.
   that bundle the shared library both shipped in 0.5.0. Still open: Go ORM
   adapters and a documented C example. Because the bindings share one C ABI, new
   languages (Ruby, C#, Java, Zig) are wrappers rather than new engine work.
+- **Drop-in compatibility.** Parameterized queries (`?` placeholders) shipped in
+  0.6.0, the foundation for using PicoVolt the way other SQL databases are used.
+  Next: surface them in the Go `database/sql` driver, the C ABI, and Python, then
+  offer familiar adapter shapes (a `better-sqlite3`-style JavaScript API and a
+  Python DB-API 2.0 interface) so existing apps can swap PicoVolt in with minimal
+  change.
 - **Functional plugins.** The `WasmExec` trait is an existing extension seam.
   More seams of the same shape could allow:
   - additional index types behind `CREATE INDEX`, such as a full-text index or a

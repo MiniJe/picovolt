@@ -220,6 +220,68 @@ fn decimal_mantissa(int_part: &str, frac: &str, negative: bool) -> Option<i128> 
     Some(if negative { -mag } else { mag })
 }
 
+/// Substitute each `?` placeholder in `sql` with the matching parameter, rendered
+/// as a safely-escaped SQL literal. Placeholders inside string literals are left
+/// untouched, and the parameter count must match exactly. This is what lets the
+/// bindings offer parameterized queries without callers building SQL by hand.
+pub fn bind_params(sql: &str, params: &[Value]) -> crate::Result<String> {
+    let mut out = String::with_capacity(sql.len() + params.len() * 4);
+    let mut in_str = false;
+    let mut next = 0usize;
+    let mut chars = sql.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_str {
+            out.push(c);
+            if c == '\'' {
+                if chars.peek() == Some(&'\'') {
+                    out.push('\'');
+                    chars.next();
+                } else {
+                    in_str = false;
+                }
+            }
+        } else if c == '\'' {
+            in_str = true;
+            out.push(c);
+        } else if c == '?' {
+            let v = params.get(next).ok_or_else(|| {
+                crate::PvError::Schema(format!(
+                    "parameter ? number {} has no bound value ({} provided)",
+                    next + 1,
+                    params.len()
+                ))
+            })?;
+            out.push_str(&value_to_sql_literal(v)?);
+            next += 1;
+        } else {
+            out.push(c);
+        }
+    }
+    if next != params.len() {
+        return Err(crate::PvError::Schema(format!(
+            "{} parameters provided but the statement has {} placeholder(s)",
+            params.len(),
+            next
+        )));
+    }
+    Ok(out)
+}
+
+fn value_to_sql_literal(v: &Value) -> crate::Result<String> {
+    Ok(match v {
+        Value::Null => "NULL".to_string(),
+        Value::Int(i) => i.to_string(),
+        // The fixed-point text (e.g. "1.500000") re-parses as the same decimal.
+        Value::Decimal(_) => v.to_string(),
+        Value::Text(s) => format!("'{}'", s.replace('\'', "''")),
+        Value::Blob(_) => {
+            return Err(crate::PvError::Schema(
+                "blob parameters are not supported in SQL parameter binding".into(),
+            ))
+        }
+    })
+}
+
 /// Render `msg` annotated with the line and column of character index `char_pos`
 /// in `sql`, plus the offending line and a caret. `char_pos` is clamped to the
 /// input length, so an end-of-input position points just past the last character.

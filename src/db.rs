@@ -325,6 +325,14 @@ impl Database {
         Ok(())
     }
 
+    /// Execute a single SQL statement with `?` placeholders bound to `params`.
+    /// Each placeholder is replaced by its parameter rendered as a safely-escaped
+    /// SQL literal, so values containing quotes or SQL syntax cannot be injected.
+    pub fn query_with(&mut self, sql: &str, params: &[Value]) -> Result<QueryResult> {
+        let bound = crate::engine::query::bind_params(sql, params)?;
+        self.query(&bound)
+    }
+
     /// Execute a single SQL statement.
     pub fn query(&mut self, sql: &str) -> Result<QueryResult> {
         match parse(sql)? {
@@ -2111,6 +2119,46 @@ mod tests {
                 .len(),
             3
         );
+    }
+
+    #[test]
+    fn parameterized_queries_bind_safely() {
+        let mut db = Database::open_memory();
+        db.query("CREATE TABLE u (id, name)").unwrap();
+        db.query_with(
+            "INSERT INTO u VALUES (?, ?)",
+            &[Value::Int(1), Value::Text("a'b".into())],
+        )
+        .unwrap();
+        db.query_with("INSERT INTO u VALUES (?, ?)", &[Value::Int(2), Value::Null])
+            .unwrap();
+        // A `?` inside a string literal is data, not a placeholder.
+        db.query_with("INSERT INTO u VALUES (3, '?')", &[]).unwrap();
+        let rows = db
+            .query_with("SELECT name FROM u WHERE id = ?", &[Value::Int(1)])
+            .unwrap()
+            .rows()
+            .unwrap()
+            .to_vec();
+        assert_eq!(rows, vec![vec![Value::Text("a'b".into())]]);
+        // An injection attempt is escaped into a single string value, not executed.
+        db.query_with(
+            "INSERT INTO u VALUES (4, ?)",
+            &[Value::Text("x'); DROP TABLE u; --".into())],
+        )
+        .unwrap();
+        assert_eq!(
+            db.query("SELECT COUNT(*) FROM u").unwrap().rows().unwrap(),
+            &[vec![Value::Int(4)]]
+        );
+        // Arity mismatches are errors.
+        assert!(db.query_with("SELECT * FROM u WHERE id = ?", &[]).is_err());
+        assert!(db
+            .query_with(
+                "SELECT * FROM u WHERE id = ?",
+                &[Value::Int(1), Value::Int(2)]
+            )
+            .is_err());
     }
 
     #[test]

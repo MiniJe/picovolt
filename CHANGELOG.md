@@ -6,6 +6,19 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-23
+
+Parameterized queries, so PicoVolt can be used the way other SQL databases are.
+
+### Added
+- **Parameterized queries.** `Database::query_with(sql, &[Value])` binds `?`
+  placeholders, each rendered as a safely-escaped SQL literal, so values that
+  contain quotes or SQL syntax cannot be injected and callers no longer build SQL
+  strings by hand. Placeholders inside string literals are left untouched and the
+  parameter count is checked. The JavaScript binding exposes this as an optional
+  second argument, `db.query("SELECT * FROM t WHERE id = ?", [1])`, mapping JS
+  null, boolean, string, and number to PicoVolt values.
+
 ## [0.5.0] - 2026-06-23
 
 Storable decimals, plus two more ways to reach the engine from other ecosystems.
@@ -171,7 +184,8 @@ runs both natively and in the browser through WebAssembly.
   test plus a `cargo-fuzz` crate), and `cargo audit` reports no advisories. Both
   run in CI.
 
-[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/MiniJe/picovolt/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/MiniJe/picovolt/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/MiniJe/picovolt/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/MiniJe/picovolt/compare/v0.2.0...v0.3.0

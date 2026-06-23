@@ -30,7 +30,7 @@ import sys
 from ctypes import POINTER, byref, c_char_p, c_size_t, c_uint8, c_uint64, c_void_p
 
 __all__ = ["Database", "PicoVoltError", "version", "__version__"]
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 
 class PicoVoltError(RuntimeError):

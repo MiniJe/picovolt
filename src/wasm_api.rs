@@ -30,15 +30,23 @@ impl Db {
         }
     }
 
-    /// Run one SQL statement. Returns a **JSON string** (call `JSON.parse` in JS):
-    /// `{"columns":[...],"rows":[[...]]}` for `SELECT`, `{"mutated":n}` for
-    /// `INSERT`/`UPDATE`/`DELETE`, or `{"done":true}` otherwise. Throws the error
-    /// message (a string) on failure.
-    pub fn query(&mut self, sql: &str) -> Result<String, JsValue> {
-        let result = self
-            .inner
-            .query(sql)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    /// Run one SQL statement, optionally binding `?` placeholders to `params` (a
+    /// JS array, e.g. `db.query("SELECT * FROM t WHERE id = ?", [1])`). Returns a
+    /// **JSON string** (call `JSON.parse` in JS): `{"columns":[...],"rows":[[...]]}`
+    /// for `SELECT`, `{"mutated":n}` for `INSERT`/`UPDATE`/`DELETE`, or
+    /// `{"done":true}` otherwise. Throws the error message (a string) on failure.
+    pub fn query(&mut self, sql: &str, params: JsValue) -> Result<String, JsValue> {
+        let result = if params.is_undefined() || params.is_null() {
+            self.inner.query(sql)
+        } else {
+            let arr = js_sys::Array::from(&params);
+            let mut values = Vec::with_capacity(arr.length() as usize);
+            for item in arr.iter() {
+                values.push(js_to_value(&item)?);
+            }
+            self.inner.query_with(sql, &values)
+        }
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
         serde_json::to_string(&result_to_json(&result))
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -65,5 +73,27 @@ impl Db {
     #[wasm_bindgen(js_name = currentTx)]
     pub fn current_tx(&self) -> u32 {
         self.inner.current_tx() as u32
+    }
+}
+
+/// Convert a JavaScript parameter into a PicoVolt `Value`: null/undefined to
+/// Null, boolean to 0/1, string to Text, an integral number to Int, and a
+/// fractional number to a fixed-point decimal.
+fn js_to_value(v: &JsValue) -> Result<crate::Value, JsValue> {
+    use crate::Value;
+    if v.is_null() || v.is_undefined() {
+        Ok(Value::Null)
+    } else if let Some(b) = v.as_bool() {
+        Ok(Value::Int(if b { 1 } else { 0 }))
+    } else if let Some(s) = v.as_string() {
+        Ok(Value::Text(s))
+    } else if let Some(n) = v.as_f64() {
+        if n.fract() == 0.0 && n.abs() < 9.007e15 {
+            Ok(Value::Int(n as i64))
+        } else {
+            Ok(Value::Decimal((n * 1_000_000.0).round() as i128))
+        }
+    } else {
+        Err(JsValue::from_str("unsupported SQL parameter type"))
     }
 }
