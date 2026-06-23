@@ -2076,17 +2076,40 @@ mod tests {
     }
 
     #[test]
-    fn decimal_values_are_not_storable() {
+    fn decimal_literals_are_storable_and_round_trip() {
         let mut db = Database::open_memory();
         db.query("CREATE TABLE t (x)").unwrap();
-        // A decimal only arises as an AVG result; trying to store one (e.g. via the
-        // programmatic API) is rejected cleanly rather than corrupting the format.
-        let err = db.insert("t", vec![Value::Decimal(1_500_000)]).unwrap_err();
-        assert!(matches!(err, PvError::Schema(_)), "{err:?}");
-        // The table is unaffected.
+        // Programmatic insert of a decimal now persists.
+        db.insert("t", vec![Value::Decimal(1_500_000)]).unwrap();
+        // SQL decimal literal: 12.50 -> mantissa 12_500_000 at scale 6.
+        db.query("INSERT INTO t VALUES (12.50)").unwrap();
+        // Extra fractional digits truncate to the scale and the sign is kept.
+        db.query("INSERT INTO t VALUES (-0.0000019)").unwrap();
+        let rows = db
+            .query("SELECT * FROM t")
+            .unwrap()
+            .rows()
+            .unwrap()
+            .to_vec();
         assert_eq!(
-            db.query("SELECT COUNT(*) FROM t").unwrap().rows().unwrap(),
-            &[vec![Value::Int(0)]]
+            rows,
+            vec![
+                vec![Value::Decimal(1_500_000)],
+                vec![Value::Decimal(12_500_000)],
+                vec![Value::Decimal(-1)],
+            ]
+        );
+        // Round-trips through a baked .pvdb image.
+        let bytes = db.bake_to_bytes().unwrap();
+        let mut restored = Database::import_bytes(&bytes).unwrap();
+        assert_eq!(
+            restored
+                .query("SELECT * FROM t")
+                .unwrap()
+                .rows()
+                .unwrap()
+                .len(),
+            3
         );
     }
 

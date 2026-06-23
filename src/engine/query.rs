@@ -188,6 +188,7 @@ enum Tok {
     Word(String),
     Str(String),
     Int(i64),
+    Dec(i128),
     LParen,
     RParen,
     Comma,
@@ -198,6 +199,25 @@ enum Tok {
     Gt,
     Ge,
     Star,
+}
+
+/// Build a fixed-point decimal mantissa (scaled by `10^DECIMAL_SCALE`) from the
+/// integer and fractional digit strings of a literal such as `12.50`. Extra
+/// fractional digits past the scale are truncated; fewer are zero-padded.
+fn decimal_mantissa(int_part: &str, frac: &str, negative: bool) -> Option<i128> {
+    use crate::core::value::{DECIMAL_DEN, DECIMAL_SCALE};
+    let int_val: i128 = int_part.parse().ok()?;
+    let scale = DECIMAL_SCALE as usize;
+    let mut f = frac.to_string();
+    if f.len() > scale {
+        f.truncate(scale);
+    }
+    while f.len() < scale {
+        f.push('0');
+    }
+    let frac_val: i128 = f.parse().ok()?;
+    let mag = int_val.checked_mul(DECIMAL_DEN)?.checked_add(frac_val)?;
+    Some(if negative { -mag } else { mag })
 }
 
 /// Render `msg` annotated with the line and column of character index `char_pos`
@@ -342,28 +362,50 @@ fn tokenize(sql: &str) -> Result<Vec<(Tok, usize)>> {
                 toks.push((Tok::Str(s), start));
             }
             '-' | '0'..='9' => {
-                let mut num = String::new();
-                if c == '-' {
-                    num.push(c);
+                let negative = c == '-';
+                if negative {
                     lx.bump();
                 }
-                let mut saw_digit = false;
+                let mut int_part = String::new();
                 while let Some(d) = lx.peek() {
                     if d.is_ascii_digit() {
-                        num.push(d);
-                        saw_digit = true;
+                        int_part.push(d);
                         lx.bump();
                     } else {
                         break;
                     }
                 }
-                if !saw_digit {
-                    return Err(err(start, "expected digits after `-`"));
+                if int_part.is_empty() {
+                    return Err(err(start, "expected digits"));
                 }
-                let v: i64 = num
-                    .parse()
-                    .map_err(|_| err(start, &format!("invalid integer `{num}`")))?;
-                toks.push((Tok::Int(v), start));
+                if lx.peek() == Some('.') {
+                    lx.bump();
+                    let mut frac = String::new();
+                    while let Some(d) = lx.peek() {
+                        if d.is_ascii_digit() {
+                            frac.push(d);
+                            lx.bump();
+                        } else {
+                            break;
+                        }
+                    }
+                    if frac.is_empty() {
+                        return Err(err(start, "expected digits after `.`"));
+                    }
+                    let m = decimal_mantissa(&int_part, &frac, negative)
+                        .ok_or_else(|| err(start, "decimal literal out of range"))?;
+                    toks.push((Tok::Dec(m), start));
+                } else {
+                    let mut s = String::new();
+                    if negative {
+                        s.push('-');
+                    }
+                    s.push_str(&int_part);
+                    let v: i64 = s
+                        .parse()
+                        .map_err(|_| err(start, &format!("invalid integer `{s}`")))?;
+                    toks.push((Tok::Int(v), start));
+                }
             }
             c if c.is_alphanumeric() || c == '_' => {
                 let mut w = String::new();
@@ -468,6 +510,7 @@ impl Cursor {
         let at = self.here();
         match self.next()? {
             Tok::Int(i) => Ok(Value::Int(i)),
+            Tok::Dec(m) => Ok(Value::Decimal(m)),
             Tok::Str(s) => Ok(Value::Text(s)),
             Tok::Word(w) if w.eq_ignore_ascii_case("null") => Ok(Value::Null),
             other => Err(self.err_at(at, format!("expected a value, found {other:?}"))),

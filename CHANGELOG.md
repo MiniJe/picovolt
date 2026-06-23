@@ -6,6 +6,28 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-23
+
+Storable decimals, plus two more ways to reach the engine from other ecosystems.
+
+### Added
+- **Storable decimal values.** `Value::Decimal` can now be inserted and persisted,
+  not only produced by `AVG`. A decimal literal such as `12.50` parses to an exact
+  fixed-point value (scale 6); extra fractional digits truncate to the scale. It
+  round-trips through row storage and a baked `.pvdb` image.
+- **Go `database/sql` driver** ([`bindings/go/pvsql`](bindings/go/pvsql)).
+  Registers a `picovolt` driver so the engine works through Go's standard
+  `database/sql` API: `sql.Open("picovolt", "memory")`, or `"dev:<path>"` /
+  `"prod:<path>"`. Query parameters and transactions are not supported.
+- **Python wheels.** The Python binding builds platform wheels that bundle the
+  compiled C ABI library, so `pip install` works without a separate build step. A
+  `python-wheels` CI workflow builds them for Linux, macOS, and Windows and
+  publishes to PyPI when a token is configured.
+
+### Changed
+- The on-disk record format gained a field tag for decimals. Files that contain
+  decimal values are therefore not readable by 0.4.0 and earlier.
+
 ## [0.4.0] - 2026-06-22
 
 A C ABI and the first native-language bindings. PicoVolt can now be embedded from
@@ -149,7 +171,8 @@ runs both natively and in the browser through WebAssembly.
   test plus a `cargo-fuzz` crate), and `cargo audit` reports no advisories. Both
   run in CI.
 
-[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/MiniJe/picovolt/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/MiniJe/picovolt/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/MiniJe/picovolt/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/MiniJe/picovolt/compare/v0.1.0...v0.2.0

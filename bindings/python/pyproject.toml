@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "picovolt"
-version = "0.4.0"
+version = "0.5.0"
 description = "Python bindings (ctypes) for the PicoVolt embedded database engine"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -17,7 +17,12 @@ Repository = "https://github.com/MiniJe/picovolt"
 [tool.setuptools]
 packages = ["picovolt"]
 
-# Note: this packages the pure-Python ctypes wrapper only. The compiled shared
-# library (built with `cargo build --release --features capi`) must be available
-# at run time via PICOVOLT_LIB or the system loader path. Bundling per-platform
-# wheels is future work.
+[tool.setuptools.package-data]
+# When a prebuilt shared library is copied into the package before building, it
+# is bundled into the (platform-specific) wheel.
+picovolt = ["*.so", "*.dylib", "*.dll"]
+
+# A source checkout still works without a bundled library: the wrapper falls back
+# to PICOVOLT_LIB or the cargo build output (target/release). The platform wheel
+# is produced by copying the compiled library into picovolt/ before the build;
+# see setup.py and .github/workflows/python-wheels.yml.

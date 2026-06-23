@@ -24,6 +24,12 @@ node_modules/
 # Local Claude Code tooling
 /.claude/
 
-# Python binding cache
+# Python binding cache and build artifacts
 __pycache__/
 *.pyc
+/bindings/python/picovolt/*.so
+/bindings/python/picovolt/*.dll
+/bindings/python/picovolt/*.dylib
+/bindings/python/build/
+/bindings/python/dist/
+/bindings/python/*.egg-info/

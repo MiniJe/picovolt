@@ -30,7 +30,7 @@ import sys
 from ctypes import POINTER, byref, c_char_p, c_size_t, c_uint8, c_uint64, c_void_p
 
 __all__ = ["Database", "PicoVoltError", "version", "__version__"]
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 
 class PicoVoltError(RuntimeError):
@@ -46,13 +46,16 @@ def _candidate_paths() -> list[str]:
         "win32": ["picovolt.dll"],
         "darwin": ["libpicovolt.dylib"],
     }.get(sys.platform, ["libpicovolt.so"])
-    # The default cargo build output, relative to this file in a checkout:
-    # bindings/python/picovolt/__init__.py -> repo root is three levels up.
     here = os.path.dirname(os.path.abspath(__file__))
+    # A wheel bundles the shared library inside the package directory.
+    for name in names:
+        paths.append(os.path.join(here, name))
+    # In a source checkout, fall back to the cargo build output (repo root is
+    # three levels up from this file).
     target = os.path.normpath(os.path.join(here, "..", "..", "..", "target", "release"))
     for name in names:
         paths.append(os.path.join(target, name))
-        paths.append(name)  # fall back to the system loader's search path
+        paths.append(name)  # finally, let the system loader search
     return paths
 
 

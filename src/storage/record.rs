@@ -16,6 +16,7 @@ const TAG_INLINE_TEXT: u8 = 0x02;
 const TAG_INLINE_BLOB: u8 = 0x03;
 const TAG_CAS_TEXT: u8 = 0x04;
 const TAG_CAS_BLOB: u8 = 0x05;
+const TAG_DECIMAL: u8 = 0x06;
 
 /// Encode a row body (no envelope), interning oversized payloads into `cas`.
 pub fn encode_row(values: &[Value], cas: &mut CasStore) -> Result<Vec<u8>> {
@@ -36,10 +37,9 @@ pub fn encode_row(values: &[Value], cas: &mut CasStore) -> Result<Vec<u8>> {
                 encode_bytes(&mut out, s.as_bytes(), TAG_INLINE_TEXT, TAG_CAS_TEXT, cas)?
             }
             Value::Blob(b) => encode_bytes(&mut out, b, TAG_INLINE_BLOB, TAG_CAS_BLOB, cas)?,
-            // A decimal only ever arises as an AVG result, which is never inserted.
-            // There is no on-disk tag for it.
-            Value::Decimal(_) => {
-                return Err(PvError::Schema("decimal values are not storable".into()))
+            Value::Decimal(m) => {
+                out.push(TAG_DECIMAL);
+                out.extend_from_slice(&m.to_le_bytes());
             }
         }
     }
@@ -78,6 +78,7 @@ pub fn decode_row(body: &[u8], cas: &CasStore) -> Result<Row> {
         let value = match tag {
             TAG_NULL => Value::Null,
             TAG_INT => Value::Int(read_i64(body, &mut pos)?),
+            TAG_DECIMAL => Value::Decimal(read_i128(body, &mut pos)?),
             TAG_INLINE_TEXT => {
                 let bytes = read_inline(body, &mut pos)?;
                 Value::Text(
@@ -154,6 +155,14 @@ fn read_u64(buf: &[u8], pos: &mut usize) -> Result<u64> {
 
 fn read_i64(buf: &[u8], pos: &mut usize) -> Result<i64> {
     Ok(read_u64(buf, pos)? as i64)
+}
+
+fn read_i128(buf: &[u8], pos: &mut usize) -> Result<i128> {
+    let slice = buf
+        .get(*pos..*pos + 16)
+        .ok_or_else(|| PvError::Corruption("record: truncated i128".into()))?;
+    *pos += 16;
+    Ok(i128::from_le_bytes(slice.try_into().unwrap()))
 }
 
 #[cfg(test)]

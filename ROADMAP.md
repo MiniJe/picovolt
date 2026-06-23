@@ -53,10 +53,9 @@ store.
 
 ## Next
 
-- **Storable decimals:** make `Value::Decimal` persistable (an on-disk record tag,
-  a columnar codec, and decimal literals in the parser), so decimal columns can be
-  created and inserted, not just produced by `AVG`. This is a versioned on-disk
-  format change.
+- **Decimals in the columnar layout:** decimal values became storable in row form,
+  and as SQL literals such as `12.50`, in 0.5.0. Extending the packed columnar
+  layout to encode them (today such pages stay in row form) is the remaining piece.
 - **Persisted indexes:** indexes are currently rebuilt by a scan on open.
   Persisting them in the `.pvdb` file and workspace would let large tables open
   quickly.
@@ -67,10 +66,10 @@ store.
 
 The C ABI opens two directions that grow independently of the core engine.
 
-- **More bindings.** A `database/sql` driver and ORM adapters for Go; prebuilt,
-  pip-installable wheels that bundle the shared library for Python; and a
-  documented C example. Because the bindings share one C ABI, new languages
-  (Ruby, C#, Java, Zig) are wrappers rather than new engine work.
+- **More bindings.** A Go `database/sql` driver and pip-installable Python wheels
+  that bundle the shared library both shipped in 0.5.0. Still open: Go ORM
+  adapters and a documented C example. Because the bindings share one C ABI, new
+  languages (Ruby, C#, Java, Zig) are wrappers rather than new engine work.
 - **Functional plugins.** The `WasmExec` trait is an existing extension seam.
   More seams of the same shape could allow:
   - additional index types behind `CREATE INDEX`, such as a full-text index or a
