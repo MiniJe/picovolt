@@ -6,6 +6,20 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-06-23
+
+An optional HTTP/JSON server, so the engine can be reached over a socket.
+
+### Added
+- **Server mode (`server` feature).** A `picovolt-server` binary
+  ([`src/bin/server.rs`](src/bin/server.rs)) serves the engine over HTTP and
+  JSON. One dedicated thread owns the database and runs statements serially;
+  HTTP worker threads accept concurrent connections and hand each request to that
+  thread over a channel, so the single-threaded core is unchanged. Endpoints:
+  `POST /v1/query` (body `{"sql": "...", "params": [...]}`), `GET /v1/tx`, and
+  `GET /v1/health`. It has no authentication or TLS and is meant to run behind a
+  reverse proxy. Build with `cargo build --release --features server`.
+
 ## [0.9.0] - 2026-06-23
 
 A migrator for bringing data in from SQLite and SQLite-style SQL dumps.
@@ -230,7 +244,8 @@ runs both natively and in the browser through WebAssembly.
   test plus a `cargo-fuzz` crate), and `cargo audit` reports no advisories. Both
   run in CI.
 
-[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/MiniJe/picovolt/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/MiniJe/picovolt/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/MiniJe/picovolt/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/MiniJe/picovolt/compare/v0.6.0...v0.7.0

@@ -1,6 +1,6 @@
 [package]
 name = "picovolt"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 rust-version = "1.74"
 description = "PicoVolt (PVDB): a polymorphic embedded database engine in Rust."
@@ -17,12 +17,21 @@ exclude = ["/fuzz", "/.github", "/bindings"]
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# The HTTP/JSON server (enabled by the `server` feature).
+[[bin]]
+name = "picovolt-server"
+path = "src/bin/server.rs"
+required-features = ["server"]
+
 [features]
 # Enable the JavaScript/npm bindings (build for wasm32 with wasm-pack).
 wasm = ["dep:wasm-bindgen", "dep:console_error_panic_hook", "dep:js-sys"]
 # Enable the C ABI for native FFI bindings (Go/cgo, Python/ctypes, C). Build a
 # shared library with: cargo build --release --features capi
 capi = []
+# Build the picovolt-server binary (HTTP/JSON, single-writer actor). Build with:
+# cargo build --release --features server
+server = ["dep:tiny_http"]
 
 [dependencies]
 thiserror = "1.0"
@@ -36,6 +45,7 @@ wasmi = "0.50"
 wasm-bindgen = { version = "0.2", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 js-sys = { version = "0.3", optional = true }
+tiny_http = { version = "0.12", optional = true }
 
 [dev-dependencies]
 wat = "1"

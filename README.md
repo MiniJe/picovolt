@@ -1,7 +1,7 @@
 # PicoVolt (PVDB)
 
 [![CI](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml/badge.svg)](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.9.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.10.0-blue.svg)](CHANGELOG.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)
 
@@ -151,6 +151,23 @@ module (`import picovolt.dbapi2 as sqlite`), and the Go `database/sql` driver
 ([`bindings/go/pvsql`](bindings/go/pvsql)). Shared limits across all of them:
 positional `?` only, no SQL transactions, no JOINs, and `CREATE TABLE` takes
 column names only.
+
+## Server mode
+
+An optional HTTP and JSON server reaches the engine over a socket. One dedicated
+thread owns the database and runs statements serially, while a pool of HTTP
+worker threads accepts concurrent connections and hands each request to that
+thread over a channel, so the single-threaded core is unchanged.
+
+```sh
+cargo build --release --features server
+./target/release/picovolt-server --memory --addr 127.0.0.1:8080
+curl -s localhost:8080/v1/query -d '{"sql":"SELECT 1 + 1","params":[]}'
+```
+
+Endpoints are `POST /v1/query`, `GET /v1/tx`, and `GET /v1/health`. There is no
+authentication or TLS, so run it behind a reverse proxy. See
+[src/bin/server.rs](src/bin/server.rs).
 
 ## Extending PicoVolt
 
