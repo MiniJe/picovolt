@@ -65,6 +65,13 @@ char *pv_query(PvDb *db, const char *sql);
  */
 char *pv_query_params(PvDb *db, const char *sql, const char *params_json);
 
+/*
+ * Import a SQL dump (e.g. `sqlite3 db .dump`). Returns a JSON report
+ * "{\"executed\":n,\"skipped\":[...],\"errors\":[...]}" (free with
+ * pv_string_free), or NULL on error.
+ */
+char *pv_import_sql(PvDb *db, const char *dump);
+
 /* Most recently committed transaction id (the upper bound for BEFORE tx). */
 uint64_t pv_current_tx(const PvDb *db);
 

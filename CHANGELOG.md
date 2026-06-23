@@ -6,6 +6,20 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-23
+
+A migrator for bringing data in from SQLite and SQLite-style SQL dumps.
+
+### Added
+- **SQL dump import.** `Database::import_sql(dump)` (also `pv_import_sql` in the C
+  ABI, `db.import_sql` in Python, and `db.ImportSQL` in Go) imports a dump such as
+  the output of `sqlite3 db .dump`, returning a report of executed, skipped, and
+  errored statements. `CREATE TABLE` is reduced to column names (types and
+  constraints are dropped, since PicoVolt tables are untyped), double-quoted
+  identifiers are unquoted, and statements PicoVolt does not support (PRAGMA,
+  transactions, triggers, views, indexes, ALTER, ATTACH) are skipped with a
+  reason rather than aborting the import.
+
 ## [0.8.0] - 2026-06-23
 
 Drop-in adapters, so code written for other embedded SQL databases can use
@@ -216,7 +230,8 @@ runs both natively and in the browser through WebAssembly.
   test plus a `cargo-fuzz` crate), and `cargo audit` reports no advisories. Both
   run in CI.
 
-[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/MiniJe/picovolt/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/MiniJe/picovolt/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/MiniJe/picovolt/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/MiniJe/picovolt/compare/v0.5.0...v0.6.0

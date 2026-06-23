@@ -144,6 +144,24 @@ func (db *DB) QueryParams(sql, paramsJSON string) (string, error) {
 	return C.GoString(res), nil
 }
 
+// ImportSQL imports a SQL dump (e.g. `sqlite3 db .dump`). It returns a JSON
+// report string `{"executed":n,"skipped":[...],"errors":[...]}`.
+func (db *DB) ImportSQL(dump string) (string, error) {
+	if db.ptr == nil {
+		return "", errors.New("picovolt: database is closed")
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	cdump := C.CString(dump)
+	defer C.free(unsafe.Pointer(cdump))
+	res := C.pv_import_sql(db.ptr, cdump)
+	if res == nil {
+		return "", lastError()
+	}
+	defer C.pv_string_free(res)
+	return C.GoString(res), nil
+}
+
 // CurrentTx returns the most recently committed transaction id (the upper bound
 // for a "... BEFORE tx" time-travel query).
 func (db *DB) CurrentTx() uint64 {

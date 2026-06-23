@@ -295,6 +295,40 @@ fn json_to_value(v: serde_json::Value) -> Result<crate::Value, String> {
     }
 }
 
+/// Import a SQL dump (such as the output of `sqlite3 db .dump`). Returns a JSON
+/// report `{"executed":n,"skipped":[...],"errors":[...]}` (free with
+/// `pv_string_free`), or NULL on error.
+///
+/// # Safety
+/// `db` must be a live handle and `dump` a valid NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn pv_import_sql(db: *mut PvDb, dump: *const c_char) -> *mut c_char {
+    guard(ptr::null_mut(), || {
+        clear_last_error();
+        let Some(db) = (unsafe { db.as_mut() }) else {
+            set_last_error("pv_import_sql: db handle is NULL");
+            return ptr::null_mut();
+        };
+        let Some(dump) = (unsafe { cstr_to_str(dump) }) else {
+            set_last_error("pv_import_sql: dump is NULL or not valid UTF-8");
+            return ptr::null_mut();
+        };
+        let report = db.inner.import_sql(dump);
+        let json = serde_json::json!({
+            "executed": report.executed,
+            "skipped": report.skipped,
+            "errors": report.errors,
+        });
+        match serde_json::to_string(&json) {
+            Ok(s) => string_to_c(s),
+            Err(e) => {
+                set_last_error(e.to_string());
+                ptr::null_mut()
+            }
+        }
+    })
+}
+
 /// The most recently committed transaction id (the upper bound for a
 /// `... BEFORE tx` time-travel query). Returns `0` if `db` is NULL.
 ///

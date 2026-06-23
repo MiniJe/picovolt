@@ -57,6 +57,9 @@ pub mod storage;
 
 mod db;
 
+/// Best-effort import of a SQL dump (see [`Database::import_sql`]).
+pub mod migrate;
+
 /// Shared query-result JSON serialization for the language bindings.
 #[cfg(any(feature = "wasm", feature = "capi"))]
 mod json;
@@ -88,3 +91,5 @@ pub use crate::engine::interp::{Interpreter, PvModule};
 pub use crate::engine::mvcc::{Snapshot, TxManager};
 #[doc(inline)]
 pub use crate::engine::wasm::{WasmExec, WasmModule, WasmRuntime};
+#[doc(inline)]
+pub use crate::migrate::ImportReport;

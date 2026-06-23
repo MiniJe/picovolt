@@ -30,7 +30,7 @@ import sys
 from ctypes import POINTER, byref, c_char_p, c_size_t, c_uint8, c_uint64, c_void_p
 
 __all__ = ["Database", "PicoVoltError", "version", "__version__"]
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 
 class PicoVoltError(RuntimeError):
@@ -87,6 +87,8 @@ _lib.pv_query.restype = c_void_p  # char* we own and must free
 _lib.pv_query.argtypes = [c_void_p, c_char_p]
 _lib.pv_query_params.restype = c_void_p
 _lib.pv_query_params.argtypes = [c_void_p, c_char_p, c_char_p]
+_lib.pv_import_sql.restype = c_void_p
+_lib.pv_import_sql.argtypes = [c_void_p, c_char_p]
 _lib.pv_current_tx.restype = c_uint64
 _lib.pv_current_tx.argtypes = [c_void_p]
 _lib.pv_export.restype = c_void_p
@@ -171,6 +173,20 @@ class Database:
         else:
             payload = json.dumps(list(params)).encode("utf-8")
             ptr = _lib.pv_query_params(self._ptr, sql.encode("utf-8"), payload)
+        if not ptr:
+            raise _last_error()
+        try:
+            raw = ctypes.string_at(ptr)
+        finally:
+            _lib.pv_string_free(ptr)
+        return json.loads(raw.decode("utf-8"))
+
+    def import_sql(self, dump: str) -> object:
+        """Import a SQL dump (e.g. ``sqlite3 db .dump``). Returns a report dict
+        ``{"executed": n, "skipped": [...], "errors": [...]}``."""
+        if not self._ptr:
+            raise PicoVoltError("database is closed")
+        ptr = _lib.pv_import_sql(self._ptr, dump.encode("utf-8"))
         if not ptr:
             raise _last_error()
         try:
