@@ -90,9 +90,15 @@ The C ABI opens two directions that grow independently of the core engine.
 
 Bigger, still-exploratory pieces, listed so the direction is visible.
 
-- **A server mode.** An optional process that speaks a network protocol (HTTP or
-  gRPC) so clients in any language connect over a socket, without `cgo`. This is
-  also the natural path to serving more than one client.
+- **A server mode** (the next major direction). An optional `picovolt-server`
+  binary that speaks HTTP and JSON, so clients in any language connect over a
+  socket without `cgo`. HTTP and JSON are chosen over gRPC and the PostgreSQL wire
+  protocol because the query result already serializes to the same JSON every
+  binding speaks, and no new client toolchain is needed. A single dedicated thread
+  owns the engine, which keeps the single-threaded core unchanged: HTTP workers
+  hand each request to that thread over a channel and receive the result back.
+  Read-heavy and time-travel queries fan out to read-only replicas built from
+  periodic snapshots. It targets a single virtual server behind a TLS proxy.
 - **Write concurrency.** The engine is single-writer today; concurrent writers
   are the prerequisite for multi-client use.
 - **Encryption at rest** and **replication** for confidentiality and for keeping a

@@ -6,6 +6,19 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-23
+
+Parameterized queries now reach every binding, not just JavaScript.
+
+### Added
+- **Parameters in the C ABI, Go, and Python.** `pv_query_params(db, sql, params_json)`
+  binds a JSON array of parameters through the same safe binder as
+  `Database::query_with`. The Go `database/sql` driver accepts bound parameters
+  (`db.Exec("INSERT INTO t VALUES (?, ?)", 1, "alice")`), and the Python binding
+  takes `db.query(sql, params)`. (JavaScript gained this in 0.6.0.) Values that
+  contain quotes or SQL syntax are escaped, never injected; `[]byte` parameters in
+  the Go driver are rejected rather than silently coerced.
+
 ## [0.6.0] - 2026-06-23
 
 Parameterized queries, so PicoVolt can be used the way other SQL databases are.
@@ -184,7 +197,8 @@ runs both natively and in the browser through WebAssembly.
   test plus a `cargo-fuzz` crate), and `cargo audit` reports no advisories. Both
   run in CI.
 
-[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/MiniJe/picovolt/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/MiniJe/picovolt/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/MiniJe/picovolt/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/MiniJe/picovolt/compare/v0.3.0...v0.4.0

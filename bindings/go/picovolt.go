@@ -123,6 +123,27 @@ func (db *DB) Query(sql string) (string, error) {
 	return C.GoString(res), nil
 }
 
+// QueryParams runs one SQL statement, binding `?` placeholders to a JSON array
+// of parameters (e.g. `[1, "alice", null]`). Each is substituted as a
+// safely-escaped SQL literal. Returns the JSON result string.
+func (db *DB) QueryParams(sql, paramsJSON string) (string, error) {
+	if db.ptr == nil {
+		return "", errors.New("picovolt: database is closed")
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	csql := C.CString(sql)
+	defer C.free(unsafe.Pointer(csql))
+	cparams := C.CString(paramsJSON)
+	defer C.free(unsafe.Pointer(cparams))
+	res := C.pv_query_params(db.ptr, csql, cparams)
+	if res == nil {
+		return "", lastError()
+	}
+	defer C.pv_string_free(res)
+	return C.GoString(res), nil
+}
+
 // CurrentTx returns the most recently committed transaction id (the upper bound
 // for a "... BEFORE tx" time-travel query).
 func (db *DB) CurrentTx() uint64 {

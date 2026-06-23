@@ -10,8 +10,8 @@
 //	db.Exec("CREATE TABLE t (id, name)")
 //	rows, _ := db.Query("SELECT * FROM t")
 //
-// PicoVolt has no bound parameters, so build the SQL string yourself; passing
-// query arguments returns an error. Transactions are not supported.
+// Query parameters are supported through `?` placeholders, each substituted as a
+// safely-escaped SQL literal. Transactions are not supported.
 package pvsql
 
 import (
@@ -27,8 +27,6 @@ import (
 )
 
 func init() { sql.Register("picovolt", drv{}) }
-
-var errNoArgs = errors.New("picovolt: query parameters are not supported; build the SQL string yourself")
 
 type drv struct{}
 
@@ -68,19 +66,38 @@ func (c *conn) run(q string) (string, error) {
 	return c.db.Query(q)
 }
 
+func (c *conn) runParams(q, paramsJSON string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.db.QueryParams(q, paramsJSON)
+}
+
 type stmt struct {
 	c *conn
 	q string
 }
 
 func (s *stmt) Close() error  { return nil }
-func (s *stmt) NumInput() int { return 0 }
+func (s *stmt) NumInput() int { return -1 } // the engine validates placeholder arity
+
+func (s *stmt) run(args []driver.Value) (string, error) {
+	if len(args) == 0 {
+		return s.c.run(s.q)
+	}
+	for _, a := range args {
+		if _, ok := a.([]byte); ok {
+			return "", errors.New("picovolt: []byte (blob) parameters are not supported")
+		}
+	}
+	j, err := json.Marshal(args)
+	if err != nil {
+		return "", err
+	}
+	return s.c.runParams(s.q, string(j))
+}
 
 func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
-	if len(args) > 0 {
-		return nil, errNoArgs
-	}
-	out, err := s.c.run(s.q)
+	out, err := s.run(args)
 	if err != nil {
 		return nil, err
 	}
@@ -96,10 +113,7 @@ func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
 }
 
 func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
-	if len(args) > 0 {
-		return nil, errNoArgs
-	}
-	out, err := s.c.run(s.q)
+	out, err := s.run(args)
 	if err != nil {
 		return nil, err
 	}

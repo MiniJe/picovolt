@@ -208,6 +208,93 @@ pub unsafe extern "C" fn pv_query(db: *mut PvDb, sql: *const c_char) -> *mut c_c
     })
 }
 
+/// Like [`pv_query`] but binds `?` placeholders to a JSON array of parameters,
+/// e.g. `[1, "alice", null]`. Each element maps to a PicoVolt value (null, a
+/// boolean as 0/1, an integer, a fractional number as a decimal, or a string)
+/// and is substituted as a safely-escaped SQL literal. Returns the same JSON
+/// result string (free with `pv_string_free`), or NULL on error.
+///
+/// # Safety
+/// `db` must be a live handle, and `sql` / `params_json` valid pointers to
+/// NUL-terminated UTF-8 strings.
+#[no_mangle]
+pub unsafe extern "C" fn pv_query_params(
+    db: *mut PvDb,
+    sql: *const c_char,
+    params_json: *const c_char,
+) -> *mut c_char {
+    guard(ptr::null_mut(), || {
+        clear_last_error();
+        let Some(db) = (unsafe { db.as_mut() }) else {
+            set_last_error("pv_query_params: db handle is NULL");
+            return ptr::null_mut();
+        };
+        let Some(sql) = (unsafe { cstr_to_str(sql) }) else {
+            set_last_error("pv_query_params: sql is NULL or not valid UTF-8");
+            return ptr::null_mut();
+        };
+        let Some(pj) = (unsafe { cstr_to_str(params_json) }) else {
+            set_last_error("pv_query_params: params is NULL or not valid UTF-8");
+            return ptr::null_mut();
+        };
+        let parsed: serde_json::Value = match serde_json::from_str(pj) {
+            Ok(v) => v,
+            Err(e) => {
+                set_last_error(format!("pv_query_params: invalid params JSON: {e}"));
+                return ptr::null_mut();
+            }
+        };
+        let serde_json::Value::Array(arr) = parsed else {
+            set_last_error("pv_query_params: params must be a JSON array");
+            return ptr::null_mut();
+        };
+        let mut values = Vec::with_capacity(arr.len());
+        for v in arr {
+            match json_to_value(v) {
+                Ok(val) => values.push(val),
+                Err(e) => {
+                    set_last_error(format!("pv_query_params: {e}"));
+                    return ptr::null_mut();
+                }
+            }
+        }
+        match db.inner.query_with(sql, &values) {
+            Ok(result) => match serde_json::to_string(&crate::json::result_to_json(&result)) {
+                Ok(s) => string_to_c(s),
+                Err(e) => {
+                    set_last_error(e.to_string());
+                    ptr::null_mut()
+                }
+            },
+            Err(e) => {
+                set_last_error(e.to_string());
+                ptr::null_mut()
+            }
+        }
+    })
+}
+
+/// Map one JSON parameter to a PicoVolt value.
+fn json_to_value(v: serde_json::Value) -> Result<crate::Value, String> {
+    use crate::Value;
+    use serde_json::Value as J;
+    match v {
+        J::Null => Ok(Value::Null),
+        J::Bool(b) => Ok(Value::Int(if b { 1 } else { 0 })),
+        J::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(Value::Int(i))
+            } else if let Some(f) = n.as_f64() {
+                Ok(Value::Decimal((f * 1_000_000.0).round() as i128))
+            } else {
+                Err("numeric parameter out of range".into())
+            }
+        }
+        J::String(s) => Ok(Value::Text(s)),
+        J::Array(_) | J::Object(_) => Err("array and object parameters are not supported".into()),
+    }
+}
+
 /// The most recently committed transaction id (the upper bound for a
 /// `... BEFORE tx` time-travel query). Returns `0` if `db` is NULL.
 ///
@@ -357,6 +444,26 @@ mod tests {
             let sel = run(db, "SELECT * FROM t").unwrap();
             assert!(sel.contains("\"columns\"") && sel.contains("alice"));
             assert!(pv_current_tx(db) > 0);
+            pv_close(db);
+        }
+    }
+
+    #[test]
+    fn params_bind_and_escape() {
+        unsafe {
+            let db = pv_open_memory();
+            run(db, "CREATE TABLE u (id, name)").unwrap();
+            let sql = CString::new("INSERT INTO u VALUES (?, ?)").unwrap();
+            let p1 = CString::new(r#"[1, "o'brien"]"#).unwrap();
+            let r1 = pv_query_params(db, sql.as_ptr(), p1.as_ptr());
+            assert!(!r1.is_null());
+            pv_string_free(r1);
+            // An injection attempt is escaped into one string value, not executed.
+            let p2 = CString::new(r#"[2, "x'); DROP TABLE u; --"]"#).unwrap();
+            let r2 = pv_query_params(db, sql.as_ptr(), p2.as_ptr());
+            assert!(!r2.is_null());
+            pv_string_free(r2);
+            assert!(run(db, "SELECT COUNT(*) FROM u").unwrap().contains("[[2]]"));
             pv_close(db);
         }
     }

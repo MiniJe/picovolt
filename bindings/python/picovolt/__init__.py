@@ -30,7 +30,7 @@ import sys
 from ctypes import POINTER, byref, c_char_p, c_size_t, c_uint8, c_uint64, c_void_p
 
 __all__ = ["Database", "PicoVoltError", "version", "__version__"]
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 
 class PicoVoltError(RuntimeError):
@@ -85,6 +85,8 @@ _lib.pv_open_prod.restype = c_void_p
 _lib.pv_open_prod.argtypes = [c_char_p]
 _lib.pv_query.restype = c_void_p  # char* we own and must free
 _lib.pv_query.argtypes = [c_void_p, c_char_p]
+_lib.pv_query_params.restype = c_void_p
+_lib.pv_query_params.argtypes = [c_void_p, c_char_p, c_char_p]
 _lib.pv_current_tx.restype = c_uint64
 _lib.pv_current_tx.argtypes = [c_void_p]
 _lib.pv_export.restype = c_void_p
@@ -150,8 +152,13 @@ class Database:
         return cls(ptr)
 
     # --- operations -------------------------------------------------------
-    def query(self, sql: str) -> object:
+    def query(self, sql: str, params: object = None) -> object:
         """Run one SQL statement; return the parsed JSON result.
+
+        With ``params`` (a sequence), ``?`` placeholders are bound to the values,
+        each substituted as a safely-escaped SQL literal::
+
+            db.query("SELECT * FROM t WHERE id = ?", [1])
 
         ``SELECT`` -> ``{"columns": [...], "rows": [[...]]}``;
         ``INSERT``/``UPDATE``/``DELETE`` -> ``{"mutated": n}``;
@@ -159,7 +166,11 @@ class Database:
         """
         if not self._ptr:
             raise PicoVoltError("database is closed")
-        ptr = _lib.pv_query(self._ptr, sql.encode("utf-8"))
+        if params is None:
+            ptr = _lib.pv_query(self._ptr, sql.encode("utf-8"))
+        else:
+            payload = json.dumps(list(params)).encode("utf-8")
+            ptr = _lib.pv_query_params(self._ptr, sql.encode("utf-8"), payload)
         if not ptr:
             raise _last_error()
         try:

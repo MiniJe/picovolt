@@ -56,6 +56,15 @@ PvDb *pv_open_prod(const char *path);
  */
 char *pv_query(PvDb *db, const char *sql);
 
+/*
+ * Like pv_query but binds `?` placeholders to a JSON array of parameters, e.g.
+ * "[1, \"alice\", null]". Each element maps to a value (null, boolean as 0/1,
+ * integer, fractional number as decimal, or string) and is substituted as a
+ * safely-escaped SQL literal. Returns the JSON result (free with
+ * pv_string_free), or NULL on error.
+ */
+char *pv_query_params(PvDb *db, const char *sql, const char *params_json);
+
 /* Most recently committed transaction id (the upper bound for BEFORE tx). */
 uint64_t pv_current_tx(const PvDb *db);
 
