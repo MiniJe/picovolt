@@ -1,7 +1,7 @@
 # PicoVolt (PVDB)
 
 [![CI](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml/badge.svg)](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.7.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.8.0-blue.svg)](CHANGELOG.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)
 
@@ -142,6 +142,15 @@ For native languages, the `capi` feature builds a shared library exposing a C AB
 [`bindings/`](bindings) directory wraps it for **Go** (cgo) and **Python**
 (ctypes); both return query results as the same JSON shape as the JavaScript
 binding. The bindings suit embedded use, not a concurrent server's primary store.
+
+All bindings accept positional `?` parameters
+(`db.query("... WHERE id = ?", [1])`), bound as safely-escaped SQL literals. For
+a familiar surface, drop-in adapters are provided: a `better-sqlite3`-style
+JavaScript API (`import Database from "picovolt/sqlite"`), a Python DB-API 2.0
+module (`import picovolt.dbapi2 as sqlite`), and the Go `database/sql` driver
+([`bindings/go/pvsql`](bindings/go/pvsql)). Shared limits across all of them:
+positional `?` only, no SQL transactions, no JOINs, and `CREATE TABLE` takes
+column names only.
 
 ## Extending PicoVolt
 

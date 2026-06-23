@@ -6,6 +6,25 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-23
+
+Drop-in adapters, so code written for other embedded SQL databases can use
+PicoVolt with little change.
+
+### Added
+- **better-sqlite3-style JavaScript API** ([`bindings/js/sqlite.js`](bindings/js/sqlite.js),
+  published as the `picovolt/sqlite` subpath). `new Database()`,
+  `prepare(sql).run/get/all/iterate(...params)`, and `exec(sql)`, returning rows
+  as objects keyed by column name.
+- **Python DB-API 2.0 (PEP 249)** ([`bindings/python/picovolt/dbapi2.py`](bindings/python/picovolt/dbapi2.py)).
+  `connect()`, `cursor()`, `execute(sql, params)`, `executemany`,
+  `fetchone`/`fetchmany`/`fetchall`, `description`, and `rowcount`; `paramstyle`
+  is `qmark` and `commit`/`rollback` are no-ops (the engine autocommits). Go users
+  already have the standard `database/sql` driver in `bindings/go/pvsql`.
+
+All adapters share PicoVolt's limits: positional `?` parameters only, no SQL
+transactions, no JOINs, and `CREATE TABLE` takes column names only.
+
 ## [0.7.0] - 2026-06-23
 
 Parameterized queries now reach every binding, not just JavaScript.
@@ -197,7 +216,8 @@ runs both natively and in the browser through WebAssembly.
   test plus a `cargo-fuzz` crate), and `cargo audit` reports no advisories. Both
   run in CI.
 
-[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/MiniJe/picovolt/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/MiniJe/picovolt/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/MiniJe/picovolt/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/MiniJe/picovolt/compare/v0.4.0...v0.5.0

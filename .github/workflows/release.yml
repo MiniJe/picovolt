@@ -92,6 +92,10 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: Build npm package
         run: wasm-pack build --target bundler --release --out-dir pkg -- --features wasm
+      - name: Add the better-sqlite3-style adapter to the package
+        run: |
+          cp bindings/js/sqlite.js pkg/sqlite.js
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('pkg/package.json'));p.files=Array.from(new Set([...(p.files||[]),'sqlite.js']));p.exports={'.':'./'+(p.module||'picovolt.js'),'./sqlite':'./sqlite.js'};fs.writeFileSync('pkg/package.json',JSON.stringify(p,null,2));"
       - name: npm publish
         working-directory: pkg
         env:
