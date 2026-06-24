@@ -21,6 +21,11 @@ use std::env;
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
+
+/// How long an HTTP worker waits for the engine before returning 504, so a slow
+/// statement cannot block a worker indefinitely.
+const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 
 use picovolt::{Database, QueryResult, Value};
 use serde_json::json;
@@ -56,10 +61,16 @@ fn main() {
         for cmd in rx {
             match cmd {
                 Command::Query { sql, params, reply } => {
-                    let result = db
-                        .query_with(&sql, &params)
-                        .map(|r| result_json(&r))
-                        .map_err(|e| e.to_string());
+                    // Catch a panicking statement so one bad query cannot take
+                    // down the engine thread (and with it every other client).
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        db.query_with(&sql, &params)
+                    }));
+                    let result = match outcome {
+                        Ok(Ok(r)) => Ok(result_json(&r)),
+                        Ok(Err(e)) => Err(e.to_string()),
+                        Err(_) => Err("internal error: the statement panicked".to_string()),
+                    };
                     let _ = reply.send(result);
                 }
                 Command::Tx { reply } => {
@@ -155,7 +166,7 @@ fn handle(request: Request, engine: &Sender<Command>) {
             if engine.send(Command::Tx { reply }).is_err() {
                 return respond(request, 503, json!({ "error": "engine unavailable" }));
             }
-            match rx.recv() {
+            match rx.recv_timeout(QUERY_TIMEOUT) {
                 Ok(tx) => respond(request, 200, json!({ "tx": tx })),
                 Err(_) => respond(request, 503, json!({ "error": "engine unavailable" })),
             }
@@ -166,9 +177,20 @@ fn handle(request: Request, engine: &Sender<Command>) {
 }
 
 fn handle_query(mut request: Request, engine: &Sender<Command>) {
+    use std::io::Read;
+    // Cap request bodies so a huge POST cannot exhaust memory.
+    const MAX_BODY: u64 = 1 << 20; // 1 MiB
     let mut body = String::new();
-    if std::io::Read::read_to_string(request.as_reader(), &mut body).is_err() {
+    if request
+        .as_reader()
+        .take(MAX_BODY + 1)
+        .read_to_string(&mut body)
+        .is_err()
+    {
         return respond(request, 400, json!({ "error": "could not read body" }));
+    }
+    if body.len() as u64 > MAX_BODY {
+        return respond(request, 413, json!({ "error": "request body too large" }));
     }
     let parsed: serde_json::Value = match serde_json::from_str(&body) {
         Ok(v) => v,
@@ -193,10 +215,15 @@ fn handle_query(mut request: Request, engine: &Sender<Command>) {
     if engine.send(Command::Query { sql, params, reply }).is_err() {
         return respond(request, 503, json!({ "error": "engine unavailable" }));
     }
-    match rx.recv() {
+    match rx.recv_timeout(QUERY_TIMEOUT) {
         Ok(Ok(result)) => respond(request, 200, result),
         Ok(Err(msg)) => respond(request, 400, json!({ "error": msg })),
-        Err(_) => respond(request, 503, json!({ "error": "engine unavailable" })),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            respond(request, 504, json!({ "error": "query timed out" }))
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            respond(request, 503, json!({ "error": "engine unavailable" }))
+        }
     }
 }
 
@@ -216,8 +243,15 @@ fn json_to_value(v: &serde_json::Value) -> Result<Value, String> {
         J::Number(n) => {
             if let Some(i) = n.as_i64() {
                 Ok(Value::Int(i))
+            } else if n.as_u64().is_some() {
+                Err("integer parameter exceeds the i64 range".to_string())
             } else if let Some(f) = n.as_f64() {
-                Ok(Value::Decimal((f * 1_000_000.0).round() as i128))
+                let scaled = f * 1_000_000.0;
+                if !scaled.is_finite() || scaled.abs() >= 1.7e38 {
+                    Err("numeric parameter out of range".to_string())
+                } else {
+                    Ok(Value::Decimal(scaled.round() as i128))
+                }
             } else {
                 Err("numeric parameter out of range".to_string())
             }

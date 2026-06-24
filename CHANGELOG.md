@@ -6,6 +6,26 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-06-23
+
+Security and robustness fixes from an adversarial audit of the server, the C ABI,
+and the file decoders.
+
+### Fixed
+- **Server hardening (`server` feature).** Request bodies are capped at 1 MiB
+  (oversized returns `413`); a panicking statement is caught so it can no longer
+  take down the engine thread and with it every client; and a worker now waits on
+  the engine with a 30s timeout, returning `504`/`503` instead of blocking
+  indefinitely on a stuck or slow statement.
+- **Untrusted-input crash hardening.** A crafted `.pvdb` row-page header (an
+  inconsistent `slot_count`/`free_space_ptr`) is now rejected on load instead of
+  underflowing the free-space arithmetic and panicking on the next write; and a
+  record whose field count does not match its table's columns is rejected during a
+  scan instead of causing an out-of-bounds panic on the query and index paths.
+- **Parameter validation.** Numeric query parameters that are non-finite or
+  outside the representable range (including integers beyond `i64`) are rejected
+  with a clear error instead of being silently saturated.
+
 ## [0.10.0] - 2026-06-23
 
 An optional HTTP/JSON server, so the engine can be reached over a socket.
@@ -244,7 +264,8 @@ runs both natively and in the browser through WebAssembly.
   test plus a `cargo-fuzz` crate), and `cargo audit` reports no advisories. Both
   run in CI.
 
-[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/MiniJe/picovolt/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/MiniJe/picovolt/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/MiniJe/picovolt/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/MiniJe/picovolt/compare/v0.7.0...v0.8.0

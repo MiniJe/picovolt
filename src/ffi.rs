@@ -284,8 +284,15 @@ fn json_to_value(v: serde_json::Value) -> Result<crate::Value, String> {
         J::Number(n) => {
             if let Some(i) = n.as_i64() {
                 Ok(Value::Int(i))
+            } else if n.as_u64().is_some() {
+                Err("integer parameter exceeds the i64 range".into())
             } else if let Some(f) = n.as_f64() {
-                Ok(Value::Decimal((f * 1_000_000.0).round() as i128))
+                let scaled = f * 1_000_000.0;
+                if !scaled.is_finite() || scaled.abs() >= 1.7e38 {
+                    Err("numeric parameter out of range".into())
+                } else {
+                    Ok(Value::Decimal(scaled.round() as i128))
+                }
             } else {
                 Err("numeric parameter out of range".into())
             }

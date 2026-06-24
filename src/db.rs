@@ -1542,6 +1542,11 @@ fn scan(
             if let Some(tail) = &table.tail {
                 for slot in 0..tail.slot_count() {
                     let (env, row) = decode_record(tail.record(slot)?, cas)?;
+                    if row.len() != table.columns.len() {
+                        return Err(PvError::Corruption(
+                            "record field count does not match table columns".into(),
+                        ));
+                    }
                     visit(pack_addr(pid, slot), &env, &row)?;
                 }
                 next = tail.next_page();
@@ -1552,6 +1557,11 @@ fn scan(
             let page = RowPageRef::new(buf)?;
             for slot in 0..page.slot_count() {
                 let (env, row) = decode_record(page.record(slot)?, cas)?;
+                if row.len() != table.columns.len() {
+                    return Err(PvError::Corruption(
+                        "record field count does not match table columns".into(),
+                    ));
+                }
                 visit(pack_addr(pid, slot), &env, &row)?;
             }
             Ok(page.next_page())

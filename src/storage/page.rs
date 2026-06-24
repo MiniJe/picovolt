@@ -49,7 +49,17 @@ impl RowPage {
 
     /// Adopt an existing 4096-byte buffer, validating that it is a row page.
     pub fn from_bytes(buf: Box<[u8; PAGE_SIZE]>) -> Result<Self> {
-        RowPageHeader::decode(&buf[..])?; // validates type discriminant
+        let header = RowPageHeader::decode(&buf[..])?; // validates type discriminant
+                                                       // Validate the free-space invariant so a crafted header (from an
+                                                       // untrusted .pvdb) cannot underflow the arithmetic in `insert`/`free_space`.
+        let slot_array_end = PAGE_HEADER_SIZE + header.slot_count as usize * SLOT_SIZE;
+        let free = header.free_space_ptr as usize;
+        if free > PAGE_SIZE || slot_array_end > free {
+            return Err(PvError::Corruption(format!(
+                "row page header out of range: slot_count={}, free_space_ptr={}",
+                header.slot_count, header.free_space_ptr
+            )));
+        }
         Ok(Self { buf })
     }
 
