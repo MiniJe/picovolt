@@ -6,6 +6,43 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-06-25
+
+**Richer SQL.** A batch of the most-missed query features, plus a correctness fix
+for comparing and aggregating decimals. No on-disk format change — 0.11.0 files
+open unchanged.
+
+### Added
+- **`AS` column aliases** — `SELECT col AS name`, `COUNT(*) AS n`.
+- **`SELECT DISTINCT`** — drop duplicate output rows.
+- **More `WHERE` predicates** — `col [NOT] IN (...)`, `col [NOT] BETWEEN a AND b`
+  (inclusive), `col IS [NOT] NULL`, and `NOT LIKE`. NULL follows SQL three-valued
+  logic (a null column, or a null in an `IN` list, makes the row neither match nor
+  not-match).
+- **Multi-column `ORDER BY`** — `ORDER BY a ASC, b DESC`.
+- **`HAVING`** — filter grouped rows on a group column, an alias, or an aggregate.
+  The aggregate is computed per group, so `HAVING` can filter on one that is not in
+  the `SELECT` list (e.g. `... GROUP BY city HAVING SUM(amount) > 1000`).
+
+### Fixed
+- **`AVG` / `SUM` over `DECIMAL` columns.** These previously errored (`requires
+  integer values`); they now accumulate exactly in `i128` and return a `Decimal`
+  (a pure-integer `SUM` stays an integer; mixed integer/decimal columns are
+  handled), and an overflowing sum is a clean error rather than a panic.
+- **Cross-type numeric comparison.** A comparison or equality between an integer
+  and a decimal — e.g. `WHERE price > 16` on a decimal column, or `HAVING
+  AVG(x) > 16` — now compares by magnitude. Previously it compared by value-kind,
+  which made every such predicate silently return the wrong rows.
+
+### Notes
+- The new keywords are contextual, not reserved, so existing identifiers keep
+  working — with two refinements: a clause keyword (e.g. `from`, `where`) may no
+  longer be used as a bare `AS` alias, and `DISTINCT` is only treated as a keyword
+  when it leads a projection (a column literally named `distinct` still parses).
+- `ORDER BY`, `GROUP BY`, and `DISTINCT` keep a type-strict total order (so an
+  integer and a decimal of equal value remain distinct rows); only predicate
+  comparison is magnitude-based.
+
 ## [0.11.0] - 2026-06-25
 
 **The format freeze.** The on-disk `.pvdb` format is now self-describing,

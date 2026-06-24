@@ -31,7 +31,8 @@ use crate::core::value::{Row, Value, DECIMAL_DEN};
 use crate::engine::compliance::{ComplianceMonitor, RuntimeMetrics};
 use crate::engine::mvcc::{Snapshot, TxManager};
 use crate::engine::query::{
-    parse, AggFunc, Aggregate, CompareOp, OrderBy, Predicate, Projection, SelectItem, Statement,
+    agg_label, parse, AggFunc, Aggregate, CompareOp, HavingPred, HavingTerm, OrderBy, Predicate,
+    Projection, SelectExpr, SelectItem, Statement,
 };
 use crate::engine::wasm::WasmRuntime;
 use crate::storage::cache::{PageCache, DEFAULT_CACHE_PAGES};
@@ -374,33 +375,36 @@ impl Database {
             Statement::Select {
                 table,
                 projection,
+                distinct,
                 before,
                 filter,
                 group_by,
+                having,
                 order,
                 limit,
             } => {
-                // Fast path: `ORDER BY indexed_col` with no `WHERE`, grouping, or
-                // aggregates reads the ordered index in key order, skipping the
-                // sort and (with `LIMIT`) stopping early.
-                if group_by.is_empty()
-                    && filter.is_none()
-                    && !matches!(projection, Projection::Items(_))
-                {
-                    if let Some(ob) = &order {
-                        if self.has_index(&table, &ob.column) {
-                            let (columns, rows) =
-                                self.select_ordered_by_index(&table, ob, before, limit)?;
-                            return project_select(columns, rows, projection, None, None);
-                        }
+                let grouped = !group_by.is_empty()
+                    || projection_has_aggregate(&projection)
+                    || having.is_some();
+                // Fast path: a single-column `ORDER BY` on an indexed column with no
+                // `WHERE`, grouping, aggregate, or `DISTINCT` reads the ordered index
+                // in key order, skipping the sort and (with `LIMIT`) stopping early.
+                if !grouped && filter.is_none() && !distinct && order.len() == 1 {
+                    let ob = &order[0];
+                    if self.has_index(&table, &ob.column) {
+                        let (columns, rows) =
+                            self.select_ordered_by_index(&table, ob, before, limit)?;
+                        return project_select(columns, rows, projection, &[], false, None);
                     }
                 }
                 let (columns, rows) = self.select_filtered(&table, filter.as_ref(), before)?;
-                if !group_by.is_empty() || matches!(projection, Projection::Items(_)) {
+                if grouped {
                     let items = projection_to_items(projection)?;
-                    project_grouped(columns, rows, items, group_by, order, limit)
+                    project_grouped(
+                        columns, rows, items, group_by, having, order, distinct, limit,
+                    )
                 } else {
-                    project_select(columns, rows, projection, order, limit)
+                    project_select(columns, rows, projection, &order, distinct, limit)
                 }
             }
             Statement::Update { table, set, filter } => {
@@ -1061,24 +1065,12 @@ fn project_select(
     columns: Vec<String>,
     mut rows: Vec<Row>,
     projection: Projection,
-    order: Option<OrderBy>,
+    order: &[OrderBy],
+    distinct: bool,
     limit: Option<usize>,
 ) -> Result<QueryResult> {
-    // Sort on the full row, before projection can drop the sort column.
-    if let Some(ob) = &order {
-        let ix = columns
-            .iter()
-            .position(|c| c == &ob.column)
-            .ok_or_else(|| PvError::Schema(format!("no column `{}` to order by", ob.column)))?;
-        rows.sort_by(|a, b| {
-            let o = cmp_values(&a[ix], &b[ix]);
-            if ob.descending {
-                o.reverse()
-            } else {
-                o
-            }
-        });
-    }
+    // Sort on the full row, before projection can drop a sort column.
+    sort_rows(&mut rows, &columns, order)?;
 
     let (out_columns, mut out_rows) = match projection {
         Projection::All => (columns, rows),
@@ -1098,9 +1090,38 @@ fn project_select(
                 .collect();
             (cols, projected)
         }
-        Projection::Items(_) => unreachable!("items go through project_grouped"),
+        Projection::Items(items) => {
+            // Only non-aggregate items reach this path (aggregates and grouping go
+            // through `project_grouped`). Each item projects its source column and is
+            // named by its alias when present.
+            let mut idxs = Vec::with_capacity(items.len());
+            let mut names = Vec::with_capacity(items.len());
+            for it in &items {
+                match &it.expr {
+                    SelectExpr::Column(c) => {
+                        let ix = columns
+                            .iter()
+                            .position(|x| x == c)
+                            .ok_or_else(|| PvError::Schema(format!("no column `{c}`")))?;
+                        idxs.push(ix);
+                        names.push(it.alias.clone().unwrap_or_else(|| c.clone()));
+                    }
+                    SelectExpr::Aggregate(_) => {
+                        unreachable!("aggregates go through project_grouped")
+                    }
+                }
+            }
+            let projected = rows
+                .into_iter()
+                .map(|r| idxs.iter().map(|&i| r[i].clone()).collect())
+                .collect();
+            (names, projected)
+        }
     };
 
+    if distinct {
+        dedup_rows(&mut out_rows);
+    }
     if let Some(n) = limit {
         out_rows.truncate(n);
     }
@@ -1108,6 +1129,49 @@ fn project_select(
         columns: out_columns,
         rows: out_rows,
     })
+}
+
+/// Sort `rows` in place by `order` keys, applied left to right, resolving each
+/// key's column against `columns`. A no-op when `order` is empty.
+fn sort_rows(rows: &mut [Row], columns: &[String], order: &[OrderBy]) -> Result<()> {
+    if order.is_empty() {
+        return Ok(());
+    }
+    let keys: Vec<(usize, bool)> = order
+        .iter()
+        .map(|ob| {
+            columns
+                .iter()
+                .position(|c| c == &ob.column)
+                .map(|ix| (ix, ob.descending))
+                .ok_or_else(|| PvError::Schema(format!("no column `{}` to order by", ob.column)))
+        })
+        .collect::<Result<_>>()?;
+    rows.sort_by(|a, b| {
+        for &(ix, descending) in &keys {
+            let ord = cmp_values(&a[ix], &b[ix]);
+            let ord = if descending { ord.reverse() } else { ord };
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
+    Ok(())
+}
+
+/// Drop duplicate rows, preserving first-occurrence order (for `SELECT DISTINCT`).
+fn dedup_rows(rows: &mut Vec<Row>) {
+    let mut seen = std::collections::BTreeSet::new();
+    rows.retain(|r| seen.insert(r.clone()));
+}
+
+/// Whether a projection contains at least one aggregate term.
+fn projection_has_aggregate(projection: &Projection) -> bool {
+    matches!(
+        projection,
+        Projection::Items(items) if items.iter().any(|i| matches!(i.expr, SelectExpr::Aggregate(_)))
+    )
 }
 
 /// Total ordering over values (`Null` &lt; `Int` &lt; `Text` &lt; `Blob`), as
@@ -1137,12 +1201,17 @@ fn index_candidates(table: &Table, pred: &Predicate) -> Option<Vec<RecordAddr>> 
                 CompareOp::Le => Some(idx.range((Unbounded, Included(v())))),
                 CompareOp::Gt => Some(idx.range((Excluded(v()), Unbounded))),
                 CompareOp::Ge => Some(idx.range((Included(v()), Unbounded))),
-                // `!=` and `LIKE` aren't range-shaped, a scan is no worse.
-                CompareOp::Ne | CompareOp::Like => None,
+                // `!=` and `LIKE`/`NOT LIKE` aren't range-shaped, a scan is no worse.
+                CompareOp::Ne | CompareOp::Like | CompareOp::NotLike => None,
             }
         }
         Predicate::And(a, b) => index_candidates(table, a).or_else(|| index_candidates(table, b)),
-        Predicate::Or(_, _) => None,
+        // IN / BETWEEN / IS NULL aren't lowered to the index yet: a full scan is
+        // correct (the caller re-checks the full predicate), just not optimized.
+        Predicate::In { .. }
+        | Predicate::Between { .. }
+        | Predicate::IsNull { .. }
+        | Predicate::Or(_, _) => None,
     }
 }
 
@@ -1153,7 +1222,10 @@ fn check_predicate_columns(columns: &[String], pred: &Predicate) -> Result<()> {
             check_predicate_columns(columns, a)?;
             check_predicate_columns(columns, b)
         }
-        Predicate::Compare { column, .. } => {
+        Predicate::Compare { column, .. }
+        | Predicate::In { column, .. }
+        | Predicate::Between { column, .. }
+        | Predicate::IsNull { column, .. } => {
             if columns.iter().any(|c| c == column) {
                 Ok(())
             } else {
@@ -1169,31 +1241,120 @@ fn row_matches(pred: &Predicate, columns: &[String], row: &[Value]) -> Result<bo
         Predicate::And(a, b) => Ok(row_matches(a, columns, row)? && row_matches(b, columns, row)?),
         Predicate::Or(a, b) => Ok(row_matches(a, columns, row)? || row_matches(b, columns, row)?),
         Predicate::Compare { column, op, value } => {
-            let ix = columns
-                .iter()
-                .position(|c| c == column)
-                .ok_or_else(|| PvError::Schema(format!("no column `{column}`")))?;
-            Ok(eval_compare(&row[ix], *op, value))
+            Ok(eval_compare(&row[col_pos(columns, column)?], *op, value))
+        }
+        Predicate::In {
+            column,
+            values,
+            negated,
+        } => {
+            let x = &row[col_pos(columns, column)?];
+            // A null column value matches neither IN nor NOT IN.
+            if matches!(x, Value::Null) {
+                return Ok(false);
+            }
+            // SQL three-valued logic for a NULL inside the list: if nothing matches
+            // but the list contains a NULL, the result is UNKNOWN — neither IN nor
+            // NOT IN holds.
+            let mut matched = false;
+            let mut saw_null = false;
+            for v in values {
+                if matches!(v, Value::Null) {
+                    saw_null = true;
+                } else if values_equal(x, v) {
+                    matched = true;
+                }
+            }
+            if matched {
+                Ok(!negated)
+            } else if saw_null {
+                Ok(false)
+            } else {
+                Ok(*negated)
+            }
+        }
+        Predicate::Between {
+            column,
+            low,
+            high,
+            negated,
+        } => {
+            let x = &row[col_pos(columns, column)?];
+            // A null column value matches neither BETWEEN nor NOT BETWEEN.
+            if matches!(x, Value::Null) {
+                return Ok(false);
+            }
+            let in_range = numeric_cmp(x, low) != std::cmp::Ordering::Less
+                && numeric_cmp(x, high) != std::cmp::Ordering::Greater;
+            Ok(in_range != *negated)
+        }
+        Predicate::IsNull { column, negated } => {
+            let is_null = matches!(row[col_pos(columns, column)?], Value::Null);
+            Ok(is_null != *negated)
         }
     }
 }
 
-/// Apply one comparison. Ordering comparisons against `NULL` are never true
-/// (SQL three-valued logic); `=`/`!=` compare by value, `LIKE` needs two texts.
+/// Index of `column` within `columns`, or a schema error if it is absent.
+fn col_pos(columns: &[String], column: &str) -> Result<usize> {
+    columns
+        .iter()
+        .position(|c| c == column)
+        .ok_or_else(|| PvError::Schema(format!("no column `{column}`")))
+}
+
+/// Promote an integer to the decimal mantissa scale for cross-type comparison,
+/// saturating rather than panicking on the (unreachable for valid `i64`) overflow.
+fn promote_int(i: i64) -> i128 {
+    (i as i128).saturating_mul(DECIMAL_DEN)
+}
+
+/// Numeric-aware comparison used by **predicates** (`WHERE`/`BETWEEN`/`IN`/`HAVING`
+/// and `MIN`/`MAX`): an `Int` and a `Decimal` are compared by magnitude (the `Int`
+/// promoted to the decimal scale); every other type pairing uses the total
+/// [`cmp_values`] order. It is deliberately NOT used for `ORDER BY`, `GROUP BY`, or
+/// `DISTINCT`, which need a type-strict total order to stay consistent.
+fn numeric_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
+    match (a, b) {
+        (Value::Int(x), Value::Decimal(y)) => promote_int(*x).cmp(y),
+        (Value::Decimal(x), Value::Int(y)) => x.cmp(&promote_int(*y)),
+        _ => cmp_values(a, b),
+    }
+}
+
+/// Numeric-aware equality: `Int(n)` equals `Decimal(n * DECIMAL_DEN)`; otherwise
+/// structural equality (so a null only equals a null).
+fn values_equal(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Int(_), Value::Decimal(_)) | (Value::Decimal(_), Value::Int(_)) => {
+            numeric_cmp(a, b) == std::cmp::Ordering::Equal
+        }
+        _ => a == b,
+    }
+}
+
+/// Apply one comparison. Ordering comparisons against `NULL` are never true (SQL
+/// three-valued logic); `=`/`!=` and the ordering operators compare numerically
+/// across `Int`/`Decimal`; `LIKE`/`NOT LIKE` need two texts.
 fn eval_compare(lhs: &Value, op: CompareOp, rhs: &Value) -> bool {
     use std::cmp::Ordering;
     match op {
-        CompareOp::Eq => lhs == rhs,
-        CompareOp::Ne => lhs != rhs,
+        CompareOp::Eq => values_equal(lhs, rhs),
+        CompareOp::Ne => !values_equal(lhs, rhs),
         CompareOp::Like => match (lhs, rhs) {
             (Value::Text(t), Value::Text(p)) => like_match(t, p),
+            _ => false,
+        },
+        CompareOp::NotLike => match (lhs, rhs) {
+            (Value::Text(t), Value::Text(p)) => !like_match(t, p),
+            // A null or non-text value matches neither LIKE nor NOT LIKE.
             _ => false,
         },
         CompareOp::Lt | CompareOp::Le | CompareOp::Gt | CompareOp::Ge => {
             if matches!(lhs, Value::Null) || matches!(rhs, Value::Null) {
                 return false;
             }
-            let ord = cmp_values(lhs, rhs);
+            let ord = numeric_cmp(lhs, rhs);
             match op {
                 CompareOp::Lt => ord == Ordering::Less,
                 CompareOp::Le => ord != Ordering::Greater,
@@ -1239,7 +1400,13 @@ fn like_match(text: &str, pattern: &str) -> bool {
 fn projection_to_items(projection: Projection) -> Result<Vec<SelectItem>> {
     match projection {
         Projection::Items(items) => Ok(items),
-        Projection::Columns(cols) => Ok(cols.into_iter().map(SelectItem::Column).collect()),
+        Projection::Columns(cols) => Ok(cols
+            .into_iter()
+            .map(|c| SelectItem {
+                expr: SelectExpr::Column(c),
+                alias: None,
+            })
+            .collect()),
         Projection::All => Err(PvError::Query(
             "SELECT * cannot be combined with GROUP BY or aggregates".into(),
         )),
@@ -1249,17 +1416,20 @@ fn projection_to_items(projection: Projection) -> Result<Vec<SelectItem>> {
 /// Evaluate a grouped or whole-table aggregate query: partition `rows` by the
 /// `group_by` columns (a single group when `group_by` is empty), evaluate each
 /// select item per group, then apply `ORDER BY` and `LIMIT` to the result.
+#[allow(clippy::too_many_arguments)] // the grouped path genuinely needs each clause
 fn project_grouped(
     columns: Vec<String>,
     rows: Vec<Row>,
     items: Vec<SelectItem>,
     group_by: Vec<String>,
-    order: Option<OrderBy>,
+    having: Option<HavingPred>,
+    order: Vec<OrderBy>,
+    distinct: bool,
     limit: Option<usize>,
 ) -> Result<QueryResult> {
     // A bare column in the select list must be a grouping column.
     for item in &items {
-        if let SelectItem::Column(c) = item {
+        if let SelectExpr::Column(c) = &item.expr {
             if !group_by.iter().any(|g| g == c) {
                 return Err(PvError::Schema(format!(
                     "column `{c}` must appear in GROUP BY or inside an aggregate"
@@ -1289,11 +1459,14 @@ fn project_grouped(
         }
     }
 
+    // Output column names: the alias if present, else the column name or the
+    // aggregate label (e.g. `sum(amount)`).
     let out_columns: Vec<String> = items
         .iter()
-        .map(|it| match it {
-            SelectItem::Column(c) => c.clone(),
-            SelectItem::Aggregate(a) => agg_label(a),
+        .map(|it| match (&it.alias, &it.expr) {
+            (Some(a), _) => a.clone(),
+            (None, SelectExpr::Column(c)) => c.clone(),
+            (None, SelectExpr::Aggregate(a)) => agg_label(a),
         })
         .collect();
 
@@ -1301,35 +1474,33 @@ fn project_grouped(
     for (key, group_rows) in &groups {
         let mut out = Vec::with_capacity(items.len());
         for item in &items {
-            match item {
-                SelectItem::Column(c) => {
+            match &item.expr {
+                SelectExpr::Column(c) => {
                     let gi = group_by
                         .iter()
                         .position(|g| g == c)
                         .expect("validated above");
                     out.push(key[gi].clone());
                 }
-                SelectItem::Aggregate(a) => {
+                SelectExpr::Aggregate(a) => {
                     out.push(compute_one_aggregate(a, &columns, group_rows)?)
                 }
             }
         }
-        out_rows.push(out);
+        // HAVING filters groups: a column term resolves against this group's output
+        // row, an aggregate term is computed over the group's source rows.
+        let keep = match &having {
+            None => true,
+            Some(h) => eval_having(h, &out_columns, &out, &columns, group_rows)?,
+        };
+        if keep {
+            out_rows.push(out);
+        }
     }
 
-    if let Some(ob) = &order {
-        let ix = out_columns
-            .iter()
-            .position(|c| c == &ob.column)
-            .ok_or_else(|| PvError::Schema(format!("no column `{}` to order by", ob.column)))?;
-        out_rows.sort_by(|a, b| {
-            let o = cmp_values(&a[ix], &b[ix]);
-            if ob.descending {
-                o.reverse()
-            } else {
-                o
-            }
-        });
+    sort_rows(&mut out_rows, &out_columns, &order)?;
+    if distinct {
+        dedup_rows(&mut out_rows);
     }
     if let Some(n) = limit {
         out_rows.truncate(n);
@@ -1340,17 +1511,29 @@ fn project_grouped(
     })
 }
 
-fn agg_label(agg: &Aggregate) -> String {
-    let f = match agg.func {
-        AggFunc::Count => "count",
-        AggFunc::Sum => "sum",
-        AggFunc::Min => "min",
-        AggFunc::Max => "max",
-        AggFunc::Avg => "avg",
-    };
-    match &agg.column {
-        None => f.to_string(),
-        Some(c) => format!("{f}({c})"),
+/// Evaluate a `HAVING` predicate for one group. A column term resolves against the
+/// group's output row (`out_columns` / `out_row`); an aggregate term is computed
+/// over the group's source rows, so `HAVING` can filter on an aggregate that is not
+/// in the `SELECT` list.
+fn eval_having(
+    pred: &HavingPred,
+    out_columns: &[String],
+    out_row: &[Value],
+    columns: &[String],
+    group_rows: &[Row],
+) -> Result<bool> {
+    match pred {
+        HavingPred::And(a, b) => Ok(eval_having(a, out_columns, out_row, columns, group_rows)?
+            && eval_having(b, out_columns, out_row, columns, group_rows)?),
+        HavingPred::Or(a, b) => Ok(eval_having(a, out_columns, out_row, columns, group_rows)?
+            || eval_having(b, out_columns, out_row, columns, group_rows)?),
+        HavingPred::Compare { term, op, value } => {
+            let lhs = match term {
+                HavingTerm::Column(name) => out_row[col_pos(out_columns, name)?].clone(),
+                HavingTerm::Aggregate(agg) => compute_one_aggregate(agg, columns, group_rows)?,
+            };
+            Ok(eval_compare(&lhs, *op, value))
+        }
     }
 }
 
@@ -1377,29 +1560,19 @@ fn compute_one_aggregate(agg: &Aggregate, columns: &[String], rows: &[Row]) -> R
         }
         AggFunc::Sum => {
             let ix = col_ix.expect("SUM requires a column");
-            let mut sum: i128 = 0;
-            let mut saw = false;
-            for r in rows {
-                match &r[ix] {
-                    Value::Int(i) => {
-                        sum += *i as i128;
-                        saw = true;
-                    }
-                    Value::Null => {}
-                    other => {
-                        return Err(PvError::Schema(format!(
-                            "SUM requires integer values, found {other:?}"
-                        )))
-                    }
-                }
-            }
+            let (int_sum, dec_sum, any_decimal, count) = sum_numeric_column(rows, ix, "SUM")?;
             // An empty or all-null group sums to NULL, matching MIN/MAX/AVG and
-            // standard SQL (only COUNT returns 0 for an empty input).
-            if !saw {
+            // standard SQL (only COUNT returns 0 for an empty input). A column that
+            // holds any decimal sums to a decimal; a pure-integer column stays an
+            // integer (its historical type).
+            if count == 0 {
                 Value::Null
+            } else if any_decimal {
+                Value::Decimal(combine_mantissa(int_sum, dec_sum)?)
             } else {
                 Value::Int(
-                    i64::try_from(sum).map_err(|_| PvError::Schema("SUM overflowed i64".into()))?,
+                    i64::try_from(int_sum)
+                        .map_err(|_| PvError::Schema("SUM overflowed i64".into()))?,
                 )
             }
         }
@@ -1414,8 +1587,8 @@ fn compute_one_aggregate(agg: &Aggregate, columns: &[String], rows: &[Row]) -> R
                     None => &r[ix],
                     Some(cur) => {
                         let take = match agg.func {
-                            AggFunc::Min => cmp_values(&r[ix], cur).is_lt(),
-                            AggFunc::Max => cmp_values(&r[ix], cur).is_gt(),
+                            AggFunc::Min => numeric_cmp(&r[ix], cur).is_lt(),
+                            AggFunc::Max => numeric_cmp(&r[ix], cur).is_gt(),
                             _ => unreachable!(),
                         };
                         if take {
@@ -1430,51 +1603,86 @@ fn compute_one_aggregate(agg: &Aggregate, columns: &[String], rows: &[Row]) -> R
         }
         AggFunc::Avg => {
             let ix = col_ix.expect("AVG requires a column");
-            let mut sum: i128 = 0;
-            let mut count: i128 = 0;
-            for r in rows {
-                match &r[ix] {
-                    Value::Int(i) => {
-                        sum += *i as i128;
-                        count += 1;
-                    }
-                    Value::Null => {}
-                    other => {
-                        return Err(PvError::Schema(format!(
-                            "AVG requires integer values, found {other:?}"
-                        )))
-                    }
-                }
-            }
+            let (int_sum, dec_sum, _any, count) = sum_numeric_column(rows, ix, "AVG")?;
             // An empty or all-null group averages to NULL, matching MIN/MAX.
-            // Otherwise produce an exact fixed-point decimal (computed in i128,
-            // never f64), which is numeric and orderable unlike the old text form.
+            // Otherwise produce an exact fixed-point decimal, computed in i128 (never
+            // f64): scale the integer part, add the decimal mantissas, and round the
+            // average half away from zero. `AVG` always yields a decimal.
             if count == 0 {
                 Value::Null
             } else {
-                Value::Decimal(decimal_from_ratio(sum, count))
+                Value::Decimal(round_div_half_away(
+                    combine_mantissa(int_sum, dec_sum)?,
+                    count,
+                ))
             }
         }
     };
     Ok(value)
 }
 
-/// Round `sum / count` (with `count != 0`) to a scale-[`DECIMAL_SCALE`] decimal
-/// mantissa, half away from zero, in exact integer arithmetic. Avoiding `f64`
-/// keeps large integer averages exact (a value above 2^53 would otherwise be
-/// misrendered) and makes rounding deterministic.
-fn decimal_from_ratio(sum: i128, count: i128) -> i128 {
-    let negative = sum < 0;
-    let num = sum.unsigned_abs() * DECIMAL_DEN as u128; // |sum| * 10^scale
-    let c = count.unsigned_abs();
-    // round(num / c) with halves rounded up (away from zero).
-    let scaled = (num * 2 + c) / (c * 2);
-    let m = scaled as i128;
+/// Round `num / den` (`den != 0`) to the nearest integer, halves away from zero, in
+/// exact integer arithmetic — no `f64`, so large averages stay exact and rounding
+/// is deterministic. `den` is a row count, so the remainder doubling cannot
+/// overflow even when `num` is a near-`i128::MAX` mantissa.
+fn round_div_half_away(num: i128, den: i128) -> i128 {
+    let negative = (num < 0) ^ (den < 0);
+    let n = num.unsigned_abs();
+    let d = den.unsigned_abs();
+    let q = n / d;
+    let r = n % d;
+    let q = if r * 2 >= d { q + 1 } else { q };
+    let q = q as i128;
     if negative {
-        -m
+        -q
     } else {
-        m
+        q
     }
+}
+
+/// Accumulate a numeric column for `SUM`/`AVG`: integer values are summed into the
+/// first returned field, decimal mantissas into the second, `any_decimal` flags
+/// whether any decimal was seen, and `count` is the number of non-null values.
+/// Nulls are skipped; a non-numeric value is an error.
+fn sum_numeric_column(rows: &[Row], ix: usize, label: &str) -> Result<(i128, i128, bool, i128)> {
+    let mut int_sum: i128 = 0;
+    let mut dec_sum: i128 = 0;
+    let mut any_decimal = false;
+    let mut count: i128 = 0;
+    for r in rows {
+        match &r[ix] {
+            Value::Int(i) => {
+                int_sum = int_sum
+                    .checked_add(*i as i128)
+                    .ok_or_else(|| PvError::Schema(format!("{label} overflowed")))?;
+                count += 1;
+            }
+            Value::Decimal(m) => {
+                dec_sum = dec_sum
+                    .checked_add(*m)
+                    .ok_or_else(|| PvError::Schema(format!("{label} overflowed")))?;
+                any_decimal = true;
+                count += 1;
+            }
+            Value::Null => {}
+            other => {
+                return Err(PvError::Schema(format!(
+                    "{label} requires numeric values, found {other:?}"
+                )))
+            }
+        }
+    }
+    Ok((int_sum, dec_sum, any_decimal, count))
+}
+
+/// Combine an integer sum and a decimal-mantissa sum into one scale-`DECIMAL_SCALE`
+/// mantissa: the integer part is scaled up by `DECIMAL_DEN` and added to the
+/// mantissa part. Errors on i128 overflow.
+fn combine_mantissa(int_sum: i128, dec_sum: i128) -> Result<i128> {
+    int_sum
+        .checked_mul(DECIMAL_DEN)
+        .and_then(|s| s.checked_add(dec_sum))
+        .ok_or_else(|| PvError::Schema("numeric aggregate overflowed".into()))
 }
 
 // ---------------------------------------------------------------------------

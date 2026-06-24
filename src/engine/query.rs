@@ -43,14 +43,18 @@ pub enum Statement {
         /// What to return: `*`, a column list, or select items (columns and
         /// aggregates).
         projection: Projection,
+        /// `SELECT DISTINCT`: drop duplicate output rows.
+        distinct: bool,
         /// Optional time-travel snapshot id.
         before: Option<u64>,
         /// Optional `WHERE` predicate.
         filter: Option<Predicate>,
         /// Columns to group by; empty for a non-grouped query.
         group_by: Vec<String>,
-        /// Optional sort.
-        order: Option<OrderBy>,
+        /// Optional `HAVING` predicate, filtering grouped output rows.
+        having: Option<HavingPred>,
+        /// Sort keys, applied left to right; empty for no ordering.
+        order: Vec<OrderBy>,
         /// Optional cap on the number of rows returned.
         limit: Option<usize>,
     },
@@ -90,9 +94,19 @@ pub enum Projection {
     Items(Vec<SelectItem>),
 }
 
-/// One entry in a `SELECT` list when columns and aggregates are mixed.
+/// One entry in a `SELECT` list: a column or aggregate term, with an optional
+/// `AS` alias that names the output column.
 #[derive(Debug, Clone, PartialEq)]
-pub enum SelectItem {
+pub struct SelectItem {
+    /// The column or aggregate term.
+    pub expr: SelectExpr,
+    /// Output name from `AS`, if any.
+    pub alias: Option<String>,
+}
+
+/// The term inside a [`SelectItem`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum SelectExpr {
     /// A bare column reference (must be a grouping column under `GROUP BY`).
     Column(String),
     /// An aggregate term such as `SUM(amount)`.
@@ -142,6 +156,8 @@ pub enum CompareOp {
     Ge,
     /// `LIKE` (`%` = any run, `_` = any single char)
     Like,
+    /// `NOT LIKE`
+    NotLike,
 }
 
 /// A `WHERE` predicate: comparisons combined with `AND` / `OR`. `AND` binds
@@ -156,6 +172,36 @@ pub enum Predicate {
         op: CompareOp,
         /// Literal on the right.
         value: Value,
+    },
+    /// `column [NOT] IN (v1, v2, ...)`. A null column value matches neither form; a
+    /// null inside the list makes a non-match UNKNOWN (so `NOT IN` over a list that
+    /// contains a null returns no rows), per SQL three-valued logic.
+    In {
+        /// Column on the left.
+        column: String,
+        /// The set of candidate literals.
+        values: Vec<Value>,
+        /// `NOT IN` when true.
+        negated: bool,
+    },
+    /// `column [NOT] BETWEEN low AND high` — inclusive bounds. A null column value
+    /// matches neither form.
+    Between {
+        /// Column on the left.
+        column: String,
+        /// Inclusive lower bound.
+        low: Value,
+        /// Inclusive upper bound.
+        high: Value,
+        /// `NOT BETWEEN` when true.
+        negated: bool,
+    },
+    /// `column IS [NOT] NULL`.
+    IsNull {
+        /// Column tested for null.
+        column: String,
+        /// `IS NOT NULL` when true.
+        negated: bool,
     },
     /// `a AND b`
     And(Box<Predicate>, Box<Predicate>),
@@ -172,6 +218,35 @@ impl Predicate {
             value,
         }
     }
+}
+
+/// A `HAVING` predicate: like a `WHERE` predicate, but each comparison tests a
+/// grouped output column or an aggregate computed over the group, so it can filter
+/// on an aggregate that does not appear in the `SELECT` list.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HavingPred {
+    /// `term <op> value`
+    Compare {
+        /// A group column / alias, or an aggregate.
+        term: HavingTerm,
+        /// The comparison operator (`LIKE`/`NOT LIKE` are not allowed in `HAVING`).
+        op: CompareOp,
+        /// Literal on the right.
+        value: Value,
+    },
+    /// `a AND b`
+    And(Box<HavingPred>, Box<HavingPred>),
+    /// `a OR b`
+    Or(Box<HavingPred>, Box<HavingPred>),
+}
+
+/// The left-hand side of a `HAVING` comparison.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HavingTerm {
+    /// A grouped output column: a group column or a select-list alias.
+    Column(String),
+    /// An aggregate computed over each group, e.g. `COUNT(*)` or `SUM(amount)`.
+    Aggregate(Aggregate),
 }
 
 /// An `ORDER BY column [ASC|DESC]` clause.
@@ -669,6 +744,80 @@ fn agg_func(word: &str) -> Option<AggFunc> {
     }
 }
 
+/// The default output-column label for an aggregate, e.g. `count`, `sum(amount)`.
+/// Shared by the executor (to name aggregate result columns) and the `HAVING`
+/// parser (to resolve an aggregate reference to that same column).
+pub fn agg_label(agg: &Aggregate) -> String {
+    let f = match agg.func {
+        AggFunc::Count => "count",
+        AggFunc::Sum => "sum",
+        AggFunc::Min => "min",
+        AggFunc::Max => "max",
+        AggFunc::Avg => "avg",
+    };
+    match &agg.column {
+        None => f.to_string(),
+        Some(c) => format!("{f}({c})"),
+    }
+}
+
+/// Parse a `HAVING` predicate. Same grammar as a `WHERE` predicate, except a
+/// comparison's left side may be an aggregate term (e.g. `COUNT(*) > 5`), which is
+/// resolved to its output-column label and matched against the grouped result.
+fn parse_having(cur: &mut Cursor) -> Result<HavingPred> {
+    let mut left = parse_having_and(cur)?;
+    while peek_kw(cur, "or") {
+        cur.next()?;
+        let right = parse_having_and(cur)?;
+        left = HavingPred::Or(Box::new(left), Box::new(right));
+    }
+    Ok(left)
+}
+
+fn parse_having_and(cur: &mut Cursor) -> Result<HavingPred> {
+    let mut left = parse_having_compare(cur)?;
+    while peek_kw(cur, "and") {
+        cur.next()?;
+        let right = parse_having_compare(cur)?;
+        left = HavingPred::And(Box::new(left), Box::new(right));
+    }
+    Ok(left)
+}
+
+fn parse_having_compare(cur: &mut Cursor) -> Result<HavingPred> {
+    if matches!(cur.peek(), Some(Tok::LParen)) {
+        cur.next()?;
+        let inner = parse_having(cur)?;
+        cur.expect(Tok::RParen)?;
+        return Ok(inner);
+    }
+    // The left side is an aggregate term or a grouped output column / alias.
+    let is_agg = matches!(cur.peek(), Some(Tok::Word(w)) if agg_func(w).is_some())
+        && matches!(cur.peek2(), Some(Tok::LParen));
+    let term = if is_agg {
+        HavingTerm::Aggregate(parse_aggregate(cur)?)
+    } else {
+        HavingTerm::Column(cur.ident()?)
+    };
+    let op_at = cur.here();
+    let op = match cur.next()? {
+        Tok::Eq => CompareOp::Eq,
+        Tok::Ne => CompareOp::Ne,
+        Tok::Lt => CompareOp::Lt,
+        Tok::Le => CompareOp::Le,
+        Tok::Gt => CompareOp::Gt,
+        Tok::Ge => CompareOp::Ge,
+        other => {
+            return Err(cur.err_at(
+                op_at,
+                format!("expected a comparison operator, found {other:?}"),
+            ))
+        }
+    };
+    let value = cur.value()?;
+    Ok(HavingPred::Compare { term, op, value })
+}
+
 fn parse_projection(cur: &mut Cursor) -> Result<Projection> {
     if matches!(cur.peek(), Some(Tok::Star)) {
         cur.next()?;
@@ -679,13 +828,17 @@ fn parse_projection(cur: &mut Cursor) -> Result<Projection> {
         cur.next()?;
         items.push(parse_select_item(cur)?);
     }
-    // Keep the simpler Columns form when every item is a bare column.
-    if items.iter().all(|i| matches!(i, SelectItem::Column(_))) {
+    // Keep the simpler Columns form only when every item is a bare, unaliased
+    // column; an alias or an aggregate forces the richer Items form.
+    let all_plain = items
+        .iter()
+        .all(|i| matches!(i.expr, SelectExpr::Column(_)) && i.alias.is_none());
+    if all_plain {
         let cols = items
             .into_iter()
-            .map(|i| match i {
-                SelectItem::Column(c) => c,
-                SelectItem::Aggregate(_) => unreachable!("all items checked to be columns"),
+            .map(|i| match i.expr {
+                SelectExpr::Column(c) => c,
+                SelectExpr::Aggregate(_) => unreachable!("all items checked to be columns"),
             })
             .collect();
         Ok(Projection::Columns(cols))
@@ -698,11 +851,48 @@ fn parse_select_item(cur: &mut Cursor) -> Result<SelectItem> {
     // An aggregate is a known function name immediately followed by `(`.
     let is_agg = matches!(cur.peek(), Some(Tok::Word(w)) if agg_func(w).is_some())
         && matches!(cur.peek2(), Some(Tok::LParen));
-    if is_agg {
-        Ok(SelectItem::Aggregate(parse_aggregate(cur)?))
+    let expr = if is_agg {
+        SelectExpr::Aggregate(parse_aggregate(cur)?)
     } else {
-        Ok(SelectItem::Column(cur.ident()?))
-    }
+        SelectExpr::Column(cur.ident()?)
+    };
+    // Optional `AS alias`. The alias may not be a clause keyword, so a forgotten
+    // alias (`SELECT a AS FROM t`) is a clear error rather than silently eating FROM.
+    let alias = if peek_kw(cur, "as") {
+        cur.next()?; // consume AS
+        let at = cur.here();
+        let name = cur.ident()?;
+        if is_reserved_word(&name) {
+            return Err(cur.err_at(
+                at,
+                format!("expected an alias name after AS, found keyword `{name}`"),
+            ));
+        }
+        Some(name)
+    } else {
+        None
+    };
+    Ok(SelectItem { expr, alias })
+}
+
+/// Clause keywords that may not be used as a bare alias / output name.
+fn is_reserved_word(w: &str) -> bool {
+    matches!(
+        w.to_ascii_lowercase().as_str(),
+        "from"
+            | "where"
+            | "group"
+            | "having"
+            | "order"
+            | "before"
+            | "limit"
+            | "by"
+            | "as"
+            | "and"
+            | "or"
+            | "select"
+            | "distinct"
+    )
 }
 
 fn parse_aggregate(cur: &mut Cursor) -> Result<Aggregate> {
@@ -754,6 +944,49 @@ fn parse_comparison(cur: &mut Cursor) -> Result<Predicate> {
         return Ok(inner);
     }
     let column = cur.ident()?;
+
+    // Keyword-led predicate forms come before the binary operators: `[NOT] IN`,
+    // `[NOT] BETWEEN`, `IS [NOT] NULL`, and `NOT LIKE`.
+    if peek_kw(cur, "in") {
+        cur.next()?;
+        return parse_in(cur, column, false);
+    }
+    if peek_kw(cur, "between") {
+        cur.next()?;
+        return parse_between(cur, column, false);
+    }
+    if peek_kw(cur, "is") {
+        cur.next()?;
+        let negated = peek_kw(cur, "not");
+        if negated {
+            cur.next()?;
+        }
+        cur.keyword("null")?;
+        return Ok(Predicate::IsNull { column, negated });
+    }
+    if peek_kw(cur, "not") {
+        cur.next()?;
+        if peek_kw(cur, "in") {
+            cur.next()?;
+            return parse_in(cur, column, true);
+        }
+        if peek_kw(cur, "between") {
+            cur.next()?;
+            return parse_between(cur, column, true);
+        }
+        if peek_kw(cur, "like") {
+            cur.next()?;
+            let value = cur.value()?;
+            return Ok(Predicate::Compare {
+                column,
+                op: CompareOp::NotLike,
+                value,
+            });
+        }
+        let at = cur.here();
+        return Err(cur.err_at(at, "expected IN, BETWEEN, or LIKE after NOT"));
+    }
+
     let op_at = cur.here();
     let op = match cur.next()? {
         Tok::Eq => CompareOp::Eq,
@@ -774,7 +1007,72 @@ fn parse_comparison(cur: &mut Cursor) -> Result<Predicate> {
     Ok(Predicate::Compare { column, op, value })
 }
 
+/// Whether the next token is the given keyword (case-insensitive).
+fn peek_kw(cur: &Cursor, kw: &str) -> bool {
+    matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case(kw))
+}
+
+/// Parse the `(v1, v2, ...)` value list of an `IN` predicate (at least one value).
+fn parse_in(cur: &mut Cursor, column: String, negated: bool) -> Result<Predicate> {
+    cur.expect(Tok::LParen)?;
+    let mut values = Vec::new();
+    loop {
+        values.push(cur.value()?);
+        let sep = cur.here();
+        match cur.next()? {
+            Tok::Comma => continue,
+            Tok::RParen => break,
+            other => return Err(cur.err_at(sep, format!("expected `,` or `)`, found {other:?}"))),
+        }
+    }
+    Ok(Predicate::In {
+        column,
+        values,
+        negated,
+    })
+}
+
+/// Parse the `low AND high` bounds of a `BETWEEN` predicate.
+fn parse_between(cur: &mut Cursor, column: String, negated: bool) -> Result<Predicate> {
+    let low = cur.value()?;
+    cur.keyword("and")?;
+    let high = cur.value()?;
+    Ok(Predicate::Between {
+        column,
+        low,
+        high,
+        negated,
+    })
+}
+
+/// Parse one `ORDER BY` key: a column with an optional `ASC`/`DESC` direction.
+fn parse_order_key(cur: &mut Cursor) -> Result<OrderBy> {
+    let column = cur.ident()?;
+    let descending = match cur.peek() {
+        Some(Tok::Word(w)) if w.eq_ignore_ascii_case("desc") => {
+            cur.next()?;
+            true
+        }
+        Some(Tok::Word(w)) if w.eq_ignore_ascii_case("asc") => {
+            cur.next()?;
+            false
+        }
+        _ => false,
+    };
+    Ok(OrderBy { column, descending })
+}
+
 fn parse_select(cur: &mut Cursor) -> Result<Statement> {
+    // `distinct` is the DISTINCT keyword only when it leads a real projection — not
+    // when it is itself the selected column, e.g. `SELECT distinct FROM t` or
+    // `SELECT distinct, a FROM t` (mirrors how an aggregate name only counts when
+    // followed by `(`).
+    let distinct = peek_kw(cur, "distinct")
+        && !matches!(cur.peek2(), Some(Tok::Comma))
+        && !matches!(cur.peek2(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("from"));
+    if distinct {
+        cur.next()?; // consume DISTINCT
+    }
     let projection = parse_projection(cur)?;
     cur.keyword("from")?;
     let table = cur.ident()?;
@@ -799,6 +1097,13 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
         Vec::new()
     };
 
+    let having = if peek_kw(cur, "having") {
+        cur.next()?; // consume HAVING
+        Some(parse_having(cur)?)
+    } else {
+        None
+    };
+
     let before = if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("before")) {
         cur.next()?; // consume BEFORE
         let at = cur.here();
@@ -818,21 +1123,14 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
     let order = if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("order")) {
         cur.next()?; // ORDER
         cur.keyword("by")?;
-        let column = cur.ident()?;
-        let descending = match cur.peek() {
-            Some(Tok::Word(w)) if w.eq_ignore_ascii_case("desc") => {
-                cur.next()?;
-                true
-            }
-            Some(Tok::Word(w)) if w.eq_ignore_ascii_case("asc") => {
-                cur.next()?;
-                false
-            }
-            _ => false,
-        };
-        Some(OrderBy { column, descending })
+        let mut keys = vec![parse_order_key(cur)?];
+        while matches!(cur.peek(), Some(Tok::Comma)) {
+            cur.next()?; // consume `,`
+            keys.push(parse_order_key(cur)?);
+        }
+        keys
     } else {
-        None
+        Vec::new()
     };
 
     let limit = if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("limit")) {
@@ -854,9 +1152,11 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
     Ok(Statement::Select {
         table,
         projection,
+        distinct,
         before,
         filter,
         group_by,
+        having,
         order,
         limit,
     })
@@ -924,10 +1224,12 @@ mod tests {
             Statement::Select {
                 table: "users".into(),
                 projection: Projection::All,
+                distinct: false,
                 before: None,
                 filter: None,
                 group_by: vec![],
-                order: None,
+                having: None,
+                order: vec![],
                 limit: None,
             }
         );
@@ -936,10 +1238,12 @@ mod tests {
             Statement::Select {
                 table: "users".into(),
                 projection: Projection::All,
+                distinct: false,
                 before: Some(7),
                 filter: None,
                 group_by: vec![],
-                order: None,
+                having: None,
+                order: vec![],
                 limit: None,
             }
         );
@@ -952,10 +1256,12 @@ mod tests {
             Statement::Select {
                 table: "users".into(),
                 projection: Projection::All,
+                distinct: false,
                 before: None,
                 filter: Some(Predicate::eq("status", Value::Text("active".into()))),
                 group_by: vec![],
-                order: None,
+                having: None,
+                order: vec![],
                 limit: None,
             }
         );
@@ -964,10 +1270,12 @@ mod tests {
             Statement::Select {
                 table: "users".into(),
                 projection: Projection::All,
+                distinct: false,
                 before: Some(9),
                 filter: Some(Predicate::eq("id", Value::Int(5))),
                 group_by: vec![],
-                order: None,
+                having: None,
+                order: vec![],
                 limit: Some(10),
             }
         );
@@ -981,10 +1289,12 @@ mod tests {
             Statement::Select {
                 table: "users".into(),
                 projection: Projection::Columns(vec!["id".into(), "name".into()]),
+                distinct: false,
                 before: None,
                 filter: None,
                 group_by: vec![],
-                order: None,
+                having: None,
+                order: vec![],
                 limit: None,
             }
         );
@@ -993,14 +1303,19 @@ mod tests {
             parse("SELECT COUNT(*) FROM users").unwrap(),
             Statement::Select {
                 table: "users".into(),
-                projection: Projection::Items(vec![SelectItem::Aggregate(Aggregate {
-                    func: AggFunc::Count,
-                    column: None,
-                })]),
+                projection: Projection::Items(vec![SelectItem {
+                    expr: SelectExpr::Aggregate(Aggregate {
+                        func: AggFunc::Count,
+                        column: None,
+                    }),
+                    alias: None,
+                }]),
+                distinct: false,
                 before: None,
                 filter: None,
                 group_by: vec![],
-                order: None,
+                having: None,
+                order: vec![],
                 limit: None,
             }
         );
@@ -1010,13 +1325,15 @@ mod tests {
             Statement::Select {
                 table: "users".into(),
                 projection: Projection::All,
+                distinct: false,
                 before: None,
                 filter: None,
                 group_by: vec![],
-                order: Some(OrderBy {
+                having: None,
+                order: vec![OrderBy {
                     column: "name".into(),
                     descending: true,
-                }),
+                }],
                 limit: None,
             }
         );
@@ -1132,23 +1449,34 @@ mod tests {
             Statement::Select {
                 table: "t".into(),
                 projection: Projection::Items(vec![
-                    SelectItem::Aggregate(Aggregate {
-                        func: AggFunc::Sum,
-                        column: Some("amount".into())
-                    }),
-                    SelectItem::Aggregate(Aggregate {
-                        func: AggFunc::Max,
-                        column: Some("id".into())
-                    }),
-                    SelectItem::Aggregate(Aggregate {
-                        func: AggFunc::Count,
-                        column: Some("id".into())
-                    }),
+                    SelectItem {
+                        expr: SelectExpr::Aggregate(Aggregate {
+                            func: AggFunc::Sum,
+                            column: Some("amount".into())
+                        }),
+                        alias: None,
+                    },
+                    SelectItem {
+                        expr: SelectExpr::Aggregate(Aggregate {
+                            func: AggFunc::Max,
+                            column: Some("id".into())
+                        }),
+                        alias: None,
+                    },
+                    SelectItem {
+                        expr: SelectExpr::Aggregate(Aggregate {
+                            func: AggFunc::Count,
+                            column: Some("id".into())
+                        }),
+                        alias: None,
+                    },
                 ]),
+                distinct: false,
                 before: None,
                 filter: None,
                 group_by: vec![],
-                order: None,
+                having: None,
+                order: vec![],
                 limit: None,
             }
         );
@@ -1159,14 +1487,19 @@ mod tests {
             parse("SELECT AVG(amount) FROM t").unwrap(),
             Statement::Select {
                 table: "t".into(),
-                projection: Projection::Items(vec![SelectItem::Aggregate(Aggregate {
-                    func: AggFunc::Avg,
-                    column: Some("amount".into()),
-                })]),
+                projection: Projection::Items(vec![SelectItem {
+                    expr: SelectExpr::Aggregate(Aggregate {
+                        func: AggFunc::Avg,
+                        column: Some("amount".into()),
+                    }),
+                    alias: None,
+                }]),
+                distinct: false,
                 before: None,
                 filter: None,
                 group_by: vec![],
-                order: None,
+                having: None,
+                order: vec![],
                 limit: None,
             }
         );
@@ -1180,16 +1513,24 @@ mod tests {
             Statement::Select {
                 table: "users".into(),
                 projection: Projection::Items(vec![
-                    SelectItem::Column("tier".into()),
-                    SelectItem::Aggregate(Aggregate {
-                        func: AggFunc::Count,
-                        column: None,
-                    }),
+                    SelectItem {
+                        expr: SelectExpr::Column("tier".into()),
+                        alias: None,
+                    },
+                    SelectItem {
+                        expr: SelectExpr::Aggregate(Aggregate {
+                            func: AggFunc::Count,
+                            column: None,
+                        }),
+                        alias: None,
+                    },
                 ]),
+                distinct: false,
                 before: None,
                 filter: None,
                 group_by: vec!["tier".into()],
-                order: None,
+                having: None,
+                order: vec![],
                 limit: None,
             }
         );
@@ -1199,13 +1540,123 @@ mod tests {
             Statement::Select {
                 table: "t".into(),
                 projection: Projection::Columns(vec!["sum".into()]),
+                distinct: false,
                 before: None,
                 filter: None,
                 group_by: vec![],
-                order: None,
+                having: None,
+                order: vec![],
                 limit: None,
             }
         );
+    }
+
+    #[test]
+    fn parses_distinct_alias_and_multi_order() {
+        match parse("SELECT DISTINCT id AS uid FROM t").unwrap() {
+            Statement::Select {
+                distinct,
+                projection: Projection::Items(items),
+                ..
+            } => {
+                assert!(distinct);
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].alias.as_deref(), Some("uid"));
+                assert!(matches!(&items[0].expr, SelectExpr::Column(c) if c == "id"));
+            }
+            other => panic!("expected a distinct, aliased select, got {other:?}"),
+        }
+        match parse("SELECT * FROM t ORDER BY a ASC, b DESC").unwrap() {
+            Statement::Select { order, .. } => {
+                assert_eq!(order.len(), 2);
+                assert_eq!(order[0].column, "a");
+                assert!(!order[0].descending);
+                assert_eq!(order[1].column, "b");
+                assert!(order[1].descending);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_in_between_isnull_not() {
+        use CompareOp::*;
+        let f = |sql: &str| match parse(sql).unwrap() {
+            Statement::Select {
+                filter: Some(p), ..
+            } => p,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            f("SELECT * FROM t WHERE x IN (1, 2)"),
+            Predicate::In {
+                column: "x".into(),
+                values: vec![Value::Int(1), Value::Int(2)],
+                negated: false,
+            }
+        );
+        assert_eq!(
+            f("SELECT * FROM t WHERE x NOT IN (1)"),
+            Predicate::In {
+                column: "x".into(),
+                values: vec![Value::Int(1)],
+                negated: true,
+            }
+        );
+        assert_eq!(
+            f("SELECT * FROM t WHERE x NOT BETWEEN 1 AND 5"),
+            Predicate::Between {
+                column: "x".into(),
+                low: Value::Int(1),
+                high: Value::Int(5),
+                negated: true,
+            }
+        );
+        assert_eq!(
+            f("SELECT * FROM t WHERE x IS NOT NULL"),
+            Predicate::IsNull {
+                column: "x".into(),
+                negated: true,
+            }
+        );
+        assert_eq!(
+            f("SELECT * FROM t WHERE name NOT LIKE 'a%'"),
+            Predicate::Compare {
+                column: "name".into(),
+                op: NotLike,
+                value: Value::Text("a%".into()),
+            }
+        );
+        // BETWEEN's inner AND must not swallow a following conjunct.
+        assert!(matches!(
+            f("SELECT * FROM t WHERE x BETWEEN 1 AND 5 AND y = 2"),
+            Predicate::And(_, _)
+        ));
+        // An IN list needs at least one value, and a bare NOT is a parse error.
+        assert!(parse("SELECT * FROM t WHERE x IN ()").is_err());
+        assert!(parse("SELECT * FROM t WHERE x NOT = 1").is_err());
+    }
+
+    #[test]
+    fn parses_having_aggregate_and_column_terms() {
+        match parse("SELECT city, COUNT(*) FROM t GROUP BY city HAVING COUNT(*) > 1").unwrap() {
+            Statement::Select {
+                having: Some(HavingPred::Compare { term, op, value }),
+                ..
+            } => {
+                assert!(matches!(term, HavingTerm::Aggregate(_)));
+                assert_eq!(op, CompareOp::Gt);
+                assert_eq!(value, Value::Int(1));
+            }
+            other => panic!("{other:?}"),
+        }
+        match parse("SELECT city, COUNT(*) AS n FROM t GROUP BY city HAVING n >= 2").unwrap() {
+            Statement::Select {
+                having: Some(HavingPred::Compare { term, .. }),
+                ..
+            } => assert!(matches!(term, HavingTerm::Column(c) if c == "n")),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

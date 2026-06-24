@@ -1,7 +1,7 @@
 # PicoVolt (PVDB)
 
 [![CI](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml/badge.svg)](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.11.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.12.0-blue.svg)](CHANGELOG.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)
 [![GitHub stars](https://img.shields.io/github/stars/MiniJe/picovolt?style=social)](https://github.com/MiniJe/picovolt)
@@ -55,7 +55,7 @@ Linux and Windows. Changes are tracked in [CHANGELOG.md](CHANGELOG.md).
 | [`engine/mvcc.rs`](src/engine/mvcc.rs) | transaction clock and snapshot visibility |
 | [`engine/wasm.rs`](src/engine/wasm.rs) | sandboxed `wasmi` extension runtime and the `WasmExec` backend trait |
 | [`engine/interp.rs`](src/engine/interp.rs) | `pv-wasm`: a from-scratch WASM interpreter (integer subset) |
-| [`engine/query.rs`](src/engine/query.rs) | SQL front-end (CREATE/INSERT/UPDATE/DELETE/DROP, `SELECT` with projection and aggregates, `WHERE` predicates, `BEFORE`, `ORDER BY`, `LIMIT`) |
+| [`engine/query.rs`](src/engine/query.rs) | SQL front-end (CREATE/INSERT/UPDATE/DELETE/DROP, `SELECT` with projection, `AS` aliases, `DISTINCT`, aggregates, `GROUP BY`/`HAVING`, `WHERE` predicates incl. `IN`/`BETWEEN`/`IS NULL`/`LIKE`, `BEFORE`, multi-column `ORDER BY`, `LIMIT`) |
 | [`engine/compliance.rs`](src/engine/compliance.rs) | optional, app-driven usage-policy hook (not a license requirement) |
 | [`db.rs`](src/db.rs) | the `Database` surface that ties it together |
 | [`ffi.rs`](src/ffi.rs) | C ABI (the `capi` feature): a panic-safe, C-callable surface wrapping the engine for Go, Python, and C bindings |
@@ -110,10 +110,12 @@ cargo run --release --example bench    # evaluation harness across modes and wor
 
 SQL supported: `CREATE TABLE`, `CREATE INDEX ON t (col)`, `INSERT`,
 `UPDATE ... SET ... WHERE`, `DELETE ... WHERE`, `DROP TABLE`, and
-`SELECT {* | col, ... | COUNT/SUM/MIN/MAX/AVG(...)} FROM t [WHERE <pred>]
-[GROUP BY cols] [BEFORE tx] [ORDER BY col [ASC|DESC]] [LIMIT n]`, where `<pred>`
-combines `col <op> value` (`=`, `!=`, `<`, `<=`, `>`, `>=`, `LIKE`) with `AND`,
-`OR`, and parentheses.
+`SELECT [DISTINCT] {* | col [AS alias], ... | COUNT/SUM/MIN/MAX/AVG(...) [AS alias]}
+FROM t [WHERE <pred>] [GROUP BY cols] [HAVING <pred>] [BEFORE tx]
+[ORDER BY col [ASC|DESC], ...] [LIMIT n]`, where `<pred>` combines
+`col <op> value` (`=`, `!=`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`),
+`col [NOT] IN (...)`, `col [NOT] BETWEEN a AND b`, and `col IS [NOT] NULL` with
+`AND`, `OR`, and parentheses. Integer and decimal values compare by magnitude.
 Durability is selectable via `Database::set_durability` (`Fast` OS-cache default,
 or crash-safe `Sync` with fsync and an atomic manifest).
 

@@ -85,3 +85,38 @@ fn decoders_never_panic_on_garbage_or_mutation() {
         let _ = Interpreter::new().load(&rng.mutate(&wasm));
     }
 }
+
+#[test]
+fn sql_parser_never_panics_on_garbage_or_mutation() {
+    use picovolt::Database;
+    let mut rng = Lcg(0xfeed_face_dead_beef);
+
+    // Valid seeds spanning the 0.12.0 SQL surface; bit-flipping these reaches deep
+    // parser states (mid-clause, mid-predicate) that random ASCII rarely forms.
+    let seeds = [
+        "SELECT DISTINCT id AS uid FROM t WHERE x IN (1,2) AND y BETWEEN 3 AND 9 ORDER BY a ASC, b DESC LIMIT 5",
+        "SELECT city, COUNT(*) AS n FROM t GROUP BY city HAVING AVG(score) > 1 OR SUM(x) <= 10",
+        "SELECT * FROM t WHERE name NOT LIKE 'a%' AND age IS NOT NULL AND z NOT IN (1, NULL)",
+        "INSERT INTO t VALUES (1, 'a', 2.50, 3, 4, 5, 6, 'c', 7, 8, 9)",
+        "UPDATE t SET v = 3 WHERE id = 1",
+    ];
+
+    let mut db = Database::open_memory();
+    let _ = db.query("CREATE TABLE t (id, name, score, x, y, a, b, city, age, z, v)");
+
+    for _ in 0..3000 {
+        // Printable-ASCII garbage.
+        let g: String = (0..rng.below(40))
+            .map(|_| (0x20 + (rng.byte() % 0x5f)) as char)
+            .collect();
+        let _ = db.query(&g); // must return Err, never panic
+
+        // Bit-flipped valid SQL (only when the mutation stays valid UTF-8).
+        for seed in seeds {
+            let mutated = rng.mutate(seed.as_bytes());
+            if let Ok(s) = std::str::from_utf8(&mutated) {
+                let _ = db.query(s);
+            }
+        }
+    }
+}
