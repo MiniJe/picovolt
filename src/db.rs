@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::errors::{PvError, Result};
 use crate::core::types::{
     pack_addr, unpack_addr, FileHeader, PageId, RecordAddr, RecordEnvelope, TxId, FILE_HEADER_SIZE,
-    PAGE_HEADER_SIZE, PAGE_SIZE,
+    FORMAT_VERSION, PAGE_HEADER_SIZE, PAGE_SIZE,
 };
 use crate::core::value::{Row, Value, DECIMAL_DEN};
 use crate::engine::compliance::{ComplianceMonitor, RuntimeMetrics};
@@ -39,7 +39,9 @@ use crate::storage::cas::CasStore;
 use crate::storage::index::SecondaryIndex;
 use crate::storage::page::{RowPage, RowPageRef, SLOT_SIZE};
 use crate::storage::record::{decode_record, encode_record};
-use crate::storage::vle::{bake_monolith_bytes, Backend, DevStore, MemStore, Monolith};
+use crate::storage::vle::{
+    bake_monolith_bytes, verify_page_checksum, Backend, DevStore, MemStore, Monolith,
+};
 
 /// Manifest file name within a development workspace.
 pub const MANIFEST_FILE: &str = "pv_manifest.json";
@@ -67,12 +69,30 @@ struct Table {
 
 #[derive(Serialize, Deserialize, Default)]
 struct Manifest {
+    /// On-disk format version of this catalog (see [`FORMAT_VERSION`]). Pre-freeze
+    /// (0.10.x) workspaces have no such field, so they deserialize as `0` and are
+    /// rejected by [`check_manifest_version`].
+    #[serde(default)]
+    format_version: u16,
     clock: u64,
     page_count: u64,
     tables: Vec<TableMeta>,
     cas_hashes: Vec<String>,
     #[serde(default)]
     cas_dir: Vec<(u64, u64)>,
+}
+
+/// Reject a manifest whose format version this build cannot read: `0` (a
+/// pre-freeze workspace) or any value newer than [`FORMAT_VERSION`]. This is the
+/// only version gate for development workspaces, which have no file header.
+fn check_manifest_version(m: &Manifest) -> Result<()> {
+    if m.format_version == 0 || m.format_version > FORMAT_VERSION {
+        return Err(PvError::Corruption(format!(
+            "unsupported workspace format version {}; this build reads up to {FORMAT_VERSION}",
+            m.format_version
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Serialize, Deserialize)]
@@ -163,6 +183,7 @@ impl Database {
 
         if manifest_path.exists() {
             let manifest: Manifest = serde_json::from_slice(&fs::read(&manifest_path)?)?;
+            check_manifest_version(&manifest)?;
             let dev = DevStore::open(&root, manifest.page_count)?;
             let mut cache = PageCache::new(Backend::Dev(dev), DEFAULT_CACHE_PAGES);
             let cas = CasStore::load_dev(&root, &manifest.cas_hashes)?;
@@ -198,6 +219,7 @@ impl Database {
     pub fn open_prod(path: impl AsRef<Path>) -> Result<Self> {
         let mono = Monolith::open(path)?;
         let manifest: Manifest = serde_json::from_slice(mono.manifest_bytes())?;
+        check_manifest_version(&manifest)?;
         let cas = CasStore::from_mapped(
             mono.mmap(),
             mono.cas_offset(),
@@ -261,6 +283,7 @@ impl Database {
             return Err(PvError::Corruption("import: inconsistent offsets".into()));
         }
         let manifest: Manifest = serde_json::from_slice(&bytes[manifest_offset..])?;
+        check_manifest_version(&manifest)?;
 
         // Copy the page-data block into an in-memory store.
         let mem = MemStore::new();
@@ -999,6 +1022,7 @@ impl Database {
             .collect();
         let page_count = self.cache.borrow().backend().page_count();
         Ok(Manifest {
+            format_version: FORMAT_VERSION,
             clock: self.txm.current(),
             page_count,
             tables,
@@ -1607,6 +1631,7 @@ fn build_tables(
         if writable {
             if let Some(id) = meta.tail_id {
                 let buf = cache.backend().read_page(id)?;
+                verify_page_checksum(id, &buf)?;
                 table.tail = Some(RowPage::from_bytes(buf)?);
             }
         }

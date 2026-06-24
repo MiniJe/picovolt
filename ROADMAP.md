@@ -113,12 +113,17 @@ Bigger, still-exploratory pieces, listed so the direction is visible.
 Version 1.0 is the point at which the public API and the `.pvdb` on-disk format
 are considered stable. Before that:
 
-- **Freeze the on-disk format** behind a versioned header with a documented
-  migration path, so future readers can open files written by older versions.
+- **Freeze the on-disk format** — **done in 0.11.0.** The format is versioned
+  (file header and manifest), per-page checksummed, specified byte-for-byte in
+  [docs/FORMAT.md](docs/FORMAT.md), and guarded by a committed golden fixture and
+  corruption-injection tests. A forward migration path (reading older versions
+  in place, rather than re-baking) is the remaining piece.
 - **Stabilize the extension contract,** the crate-root re-exports documented in
   [docs/EXTENDING.md](docs/EXTENDING.md).
-- **Specify durability precisely:** document exactly what `Fast` and `Sync`
-  guarantee, with crash-injection tests behind the claims.
+- **Specify durability precisely:** what `Fast` and `Sync` guarantee is now
+  documented in [docs/FORMAT.md](docs/FORMAT.md) §9, and read-side corruption is
+  covered by injection tests. Still wanted: true power-loss crash-injection
+  (killing a process mid-flush) behind the durability claims.
 - **Longer fuzzing and external review:** the decoders are fuzzed in CI. Version
   1.0 calls for sustained fuzzing and an independent security pass (see
   [SECURITY.md](SECURITY.md)).

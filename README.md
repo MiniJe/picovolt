@@ -1,13 +1,17 @@
 # PicoVolt (PVDB)
 
 [![CI](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml/badge.svg)](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.10.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.11.0-blue.svg)](CHANGELOG.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)
+[![GitHub stars](https://img.shields.io/github/stars/MiniJe/picovolt?style=social)](https://github.com/MiniJe/picovolt)
 
 PicoVolt is an embedded database engine written from scratch in Rust. It is
 experimental software. It has not been audited or hardened for production, so use
 it to learn from and prototype with rather than to store data you cannot lose.
+
+If PicoVolt is useful to you, consider starring the repository on GitHub. It is
+the simplest way to help others discover the project.
 
 The engine decouples query logic from storage representation through a
 Virtualization Layer Engine (VLE) that shifts between two on-disk shapes:

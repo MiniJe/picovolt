@@ -23,14 +23,28 @@ use crate::core::errors::{PvError, Result};
 /// of this size.
 pub const PAGE_SIZE: usize = 4096;
 
-/// Fixed header size shared by both the row and columnar page layouts.
-pub const PAGE_HEADER_SIZE: usize = 24;
+/// Fixed header size shared by both the row and columnar page layouts. The
+/// trailing 4 bytes (at [`PAGE_CHECKSUM_OFFSET`]) hold the per-page integrity
+/// checksum, written and verified by the storage layer rather than by the header
+/// codecs, so the page body begins after them.
+pub const PAGE_HEADER_SIZE: usize = 28;
+
+/// Byte offset of the per-page `u32` integrity checksum within a page. The
+/// checksum covers the whole page except its own 4 bytes; a stored value of `0`
+/// means the page has not been stamped (a blank or directly-written page) and is
+/// accepted without verification.
+pub const PAGE_CHECKSUM_OFFSET: usize = 24;
 
 /// Magic bytes identifying a baked monolithic `.pvdb` file: ASCII `"PVDB"`.
 pub const MAGIC_BYTES: [u8; 4] = [0x50, 0x56, 0x44, 0x42];
 
-/// Size of the `.pvdb` file header: `magic(4) + manifest_offset(8) + cas_offset(8)`.
-pub const FILE_HEADER_SIZE: usize = 20;
+/// The on-disk `.pvdb` format version this build writes, and the newest it can
+/// read. A file whose version is greater is rejected rather than mis-parsed.
+pub const FORMAT_VERSION: u16 = 1;
+
+/// Size of the `.pvdb` file header:
+/// `magic(4) + format_version(2) + flags(2) + manifest_offset(8) + cas_offset(8)`.
+pub const FILE_HEADER_SIZE: usize = 24;
 
 /// Hard cap on a development-mode append-only chunk file: 64 MiB.
 pub const CHUNK_CAP_BYTES: u64 = 67_108_864;
@@ -348,15 +362,19 @@ impl ColumnarPageHeader {
 // Monolithic `.pvdb` file header (spec §2.B)
 // ---------------------------------------------------------------------------
 
-/// The 20-byte header at the start of a baked monolithic `.pvdb` file.
+/// The 24-byte header at the start of a baked monolithic `.pvdb` file.
 ///
-/// | Offset | Size | Field             |
-/// |-------:|-----:|-------------------|
-/// | 0      | 4    | [`MAGIC_BYTES`]   |
-/// | 4      | 8    | `manifest_offset` |
-/// | 12     | 8    | `cas_offset`      |
+/// | Offset | Size | Field              |
+/// |-------:|-----:|--------------------|
+/// | 0      | 4    | [`MAGIC_BYTES`]    |
+/// | 4      | 2    | `format_version`   |
+/// | 6      | 2    | flags (reserved)   |
+/// | 8      | 8    | `manifest_offset`  |
+/// | 16     | 8    | `cas_offset`       |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileHeader {
+    /// On-disk format version of this file (see [`FORMAT_VERSION`]).
+    pub format_version: u16,
     /// Absolute byte offset of the manifest (catalog) block.
     pub manifest_offset: u64,
     /// Absolute byte offset of the CAS blob pool.
@@ -367,28 +385,37 @@ impl FileHeader {
     /// Serialized length, in bytes.
     pub const ENCODED_LEN: usize = FILE_HEADER_SIZE;
 
-    /// Construct a header from its two offsets.
+    /// Construct a header from its two offsets, stamped with the current
+    /// [`FORMAT_VERSION`].
     #[inline]
     pub const fn new(manifest_offset: u64, cas_offset: u64) -> Self {
         Self {
+            format_version: FORMAT_VERSION,
             manifest_offset,
             cas_offset,
         }
     }
 
-    /// Encode to the fixed 20-byte little-endian wire form, including magic bytes.
+    /// Encode to the fixed 24-byte little-endian wire form, including the magic
+    /// bytes and format version. The two flag bytes are reserved and written as
+    /// zero.
     pub fn encode(&self) -> [u8; FILE_HEADER_SIZE] {
         let mut buf = [0u8; FILE_HEADER_SIZE];
         buf[0..4].copy_from_slice(&MAGIC_BYTES);
-        buf[4..12].copy_from_slice(&self.manifest_offset.to_le_bytes());
-        buf[12..20].copy_from_slice(&self.cas_offset.to_le_bytes());
+        buf[4..6].copy_from_slice(&self.format_version.to_le_bytes());
+        // bytes 6..8 are reserved flags, left zero.
+        buf[8..16].copy_from_slice(&self.manifest_offset.to_le_bytes());
+        buf[16..24].copy_from_slice(&self.cas_offset.to_le_bytes());
         buf
     }
 
-    /// Decode and validate the magic signature.
+    /// Decode and validate the magic signature and format version.
     ///
     /// Returns [`PvError::SignatureMismatch`] if the leading bytes are not
-    /// [`MAGIC_BYTES`].
+    /// [`MAGIC_BYTES`], or [`PvError::Corruption`] if the file's format version
+    /// is zero or newer than this build can read ([`FORMAT_VERSION`]). Rejecting
+    /// an unknown version is what stops a future on-disk change from being
+    /// silently mis-parsed by an older reader.
     pub fn decode(buf: &[u8]) -> Result<Self> {
         ensure_len(buf, FILE_HEADER_SIZE)?;
         let found: [u8; 4] = [buf[0], buf[1], buf[2], buf[3]];
@@ -398,9 +425,16 @@ impl FileHeader {
                 found,
             });
         }
+        let format_version = read_u16_le(buf, 4);
+        if format_version == 0 || format_version > FORMAT_VERSION {
+            return Err(PvError::Corruption(format!(
+                "unsupported .pvdb format version {format_version}; this build reads up to {FORMAT_VERSION}"
+            )));
+        }
         Ok(Self {
-            manifest_offset: read_u64_le(buf, 4),
-            cas_offset: read_u64_le(buf, 12),
+            format_version,
+            manifest_offset: read_u64_le(buf, 8),
+            cas_offset: read_u64_le(buf, 16),
         })
     }
 }
@@ -450,8 +484,9 @@ fn expect_page_type(byte: u8, want: PageType) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 const _: () = assert!(std::mem::size_of::<RecordEnvelope>() == RecordEnvelope::ENCODED_LEN);
-const _: () = assert!(PAGE_HEADER_SIZE == 24);
-const _: () = assert!(FILE_HEADER_SIZE == 20);
+const _: () = assert!(PAGE_HEADER_SIZE == 28);
+const _: () = assert!(PAGE_CHECKSUM_OFFSET + 4 == PAGE_HEADER_SIZE);
+const _: () = assert!(FILE_HEADER_SIZE == 24);
 const _: () = assert!(CHUNK_CAP_BYTES == 64 * 1024 * 1024);
 const _: () = assert!(PAGE_SIZE <= u16::MAX as usize + 1);
 
@@ -589,5 +624,33 @@ mod tests {
             }
             other => panic!("expected SignatureMismatch, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn file_header_stamps_current_format_version() {
+        let h = FileHeader::new(0x1000, 0x2000);
+        assert_eq!(h.format_version, FORMAT_VERSION);
+        let bytes = h.encode();
+        assert_eq!(read_u16_le(&bytes, 4), FORMAT_VERSION);
+    }
+
+    #[test]
+    fn file_header_decode_rejects_unknown_version() {
+        // A version newer than this build can read must be refused, not
+        // mis-parsed against a layout it does not match.
+        let mut newer = FileHeader::new(0x10, 0x20).encode();
+        newer[4..6].copy_from_slice(&(FORMAT_VERSION + 1).to_le_bytes());
+        assert!(matches!(
+            FileHeader::decode(&newer),
+            Err(PvError::Corruption(_))
+        ));
+
+        // Version 0 is reserved (it tags pre-freeze files) and also rejected.
+        let mut zero = FileHeader::new(0x10, 0x20).encode();
+        zero[4..6].copy_from_slice(&0u16.to_le_bytes());
+        assert!(matches!(
+            FileHeader::decode(&zero),
+            Err(PvError::Corruption(_))
+        ));
     }
 }

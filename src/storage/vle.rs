@@ -19,13 +19,68 @@ use std::sync::Arc;
 use memmap2::Mmap;
 
 use crate::core::errors::{PvError, Result};
-use crate::core::types::{FileHeader, CHUNK_CAP_BYTES, FILE_HEADER_SIZE, PAGE_SIZE};
+use crate::core::types::{
+    FileHeader, CHUNK_CAP_BYTES, FILE_HEADER_SIZE, PAGE_CHECKSUM_OFFSET, PAGE_SIZE,
+};
 
 /// Pages per 64 MiB chunk file: 16 384.
 pub const PAGES_PER_CHUNK: u64 = CHUNK_CAP_BYTES / PAGE_SIZE as u64;
 
 /// A boxed 4096-byte page buffer.
 pub type PageBuf = Box<[u8; PAGE_SIZE]>;
+
+// ---------------------------------------------------------------------------
+// Per-page integrity checksum
+// ---------------------------------------------------------------------------
+
+/// Compute a page's integrity checksum: a 32-bit truncation of BLAKE3 over every
+/// byte except the 4-byte checksum field itself (at [`PAGE_CHECKSUM_OFFSET`]).
+///
+/// BLAKE3 is already a dependency and builds cleanly on wasm, so this needs no
+/// new crate. The checksum guards against torn writes and bit-rot, not an
+/// adversary, so 32 bits is ample. It never returns `0`: that value is reserved
+/// to mean "unstamped" (see [`verify_page_checksum`]).
+pub fn page_checksum(page: &[u8; PAGE_SIZE]) -> u32 {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&page[..PAGE_CHECKSUM_OFFSET]);
+    hasher.update(&page[PAGE_CHECKSUM_OFFSET + 4..]);
+    let bytes = hasher.finalize();
+    let bytes = bytes.as_bytes();
+    let value = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    if value == 0 {
+        1
+    } else {
+        value
+    }
+}
+
+/// Stamp the freshly-computed checksum into a page's checksum field. Call this on
+/// every page immediately before it is handed to a backend to be written.
+pub fn stamp_page_checksum(page: &mut [u8; PAGE_SIZE]) {
+    let checksum = page_checksum(page);
+    page[PAGE_CHECKSUM_OFFSET..PAGE_CHECKSUM_OFFSET + 4].copy_from_slice(&checksum.to_le_bytes());
+}
+
+/// Verify a page's stored checksum, returning [`PvError::Corruption`] on
+/// mismatch. A stored value of `0` marks a page that was never stamped (blank, or
+/// written outside the cache) and is accepted as-is.
+pub fn verify_page_checksum(id: u64, page: &[u8; PAGE_SIZE]) -> Result<()> {
+    let stored = u32::from_le_bytes(
+        page[PAGE_CHECKSUM_OFFSET..PAGE_CHECKSUM_OFFSET + 4]
+            .try_into()
+            .expect("4-byte checksum field"),
+    );
+    if stored == 0 {
+        return Ok(());
+    }
+    let computed = page_checksum(page);
+    if stored != computed {
+        return Err(PvError::Corruption(format!(
+            "page {id} checksum mismatch (stored {stored:#010x}, computed {computed:#010x})"
+        )));
+    }
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Development Mode: directory of append-only chunk files
@@ -441,8 +496,9 @@ impl Backend {
 /// **byte image** (no filesystem). Used directly for in-memory/wasm export and
 /// by [`bake_monolith`] for the file path.
 ///
-/// Layout: `header(20) | pages | cas_pool | manifest`, with `cas_offset` and
-/// `manifest_offset` recorded in the header.
+/// Layout: `header(FILE_HEADER_SIZE) | pages | cas_pool | manifest`, with
+/// `cas_offset` and `manifest_offset` recorded in the header. Each page already
+/// carries its own integrity checksum (see [`stamp_page_checksum`]).
 pub fn bake_monolith_bytes(
     pages: &[PageBuf],
     cas_pool: &[u8],
@@ -557,5 +613,57 @@ mod tests {
         dev.sync_data().unwrap();
         assert!(tmp.path().join("chunks").join("chunk_00000.pvd").exists());
         assert!(tmp.path().join("chunks").join("chunk_00001.pvd").exists());
+    }
+
+    #[test]
+    fn page_checksum_excludes_its_own_field_and_is_nonzero() {
+        let mut page: PageBuf = Box::new([0u8; PAGE_SIZE]);
+        page[0] = 0xAB;
+        page[100] = 0xCD;
+        let c1 = page_checksum(&page);
+        assert_ne!(c1, 0);
+        // Overwriting the checksum field must not change the computed checksum.
+        page[PAGE_CHECKSUM_OFFSET..PAGE_CHECKSUM_OFFSET + 4].copy_from_slice(&[1, 2, 3, 4]);
+        assert_eq!(page_checksum(&page), c1);
+    }
+
+    #[test]
+    fn stamp_then_verify_round_trips() {
+        let mut page: PageBuf = Box::new([0u8; PAGE_SIZE]);
+        page[42] = 0x7F;
+        stamp_page_checksum(&mut page);
+        assert!(verify_page_checksum(7, &page).is_ok());
+    }
+
+    #[test]
+    fn verify_detects_a_flipped_body_byte() {
+        let mut page: PageBuf = Box::new([0u8; PAGE_SIZE]);
+        page[42] = 0x7F;
+        stamp_page_checksum(&mut page);
+        page[42] ^= 0x01; // simulate bit-rot in the page body
+        assert!(matches!(
+            verify_page_checksum(7, &page),
+            Err(PvError::Corruption(_))
+        ));
+    }
+
+    #[test]
+    fn verify_detects_a_corrupt_checksum_field() {
+        let mut page: PageBuf = Box::new([0u8; PAGE_SIZE]);
+        page[42] = 0x7F;
+        stamp_page_checksum(&mut page);
+        page[PAGE_CHECKSUM_OFFSET] ^= 0xFF; // corrupt the stored checksum itself
+        assert!(matches!(
+            verify_page_checksum(7, &page),
+            Err(PvError::Corruption(_))
+        ));
+    }
+
+    #[test]
+    fn verify_accepts_an_unstamped_blank_page() {
+        // A zeroed (allocated-but-never-written) page has a zero checksum field and
+        // is accepted without verification.
+        let page: PageBuf = Box::new([0u8; PAGE_SIZE]);
+        assert!(verify_page_checksum(0, &page).is_ok());
     }
 }

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use crate::core::errors::Result;
 use crate::core::types::{PageId, PAGE_SIZE};
 use crate::storage::page::RowPage;
-use crate::storage::vle::{Backend, PageBuf};
+use crate::storage::vle::{stamp_page_checksum, verify_page_checksum, Backend, PageBuf};
 
 /// Default buffer-pool size in pages (4096 pages = 16 MiB).
 pub const DEFAULT_CACHE_PAGES: usize = 4096;
@@ -82,6 +82,7 @@ impl PageCache {
             return Ok(());
         }
         let page = self.backend.read_page(id)?;
+        verify_page_checksum(id, &page)?;
         self.evict_if_needed()?;
         let last_used = self.tick();
         self.entries.insert(
@@ -103,8 +104,9 @@ impl PageCache {
                 .min_by_key(|(_, e)| e.last_used)
                 .map(|(id, _)| *id);
             let Some(id) = victim else { break };
-            let entry = self.entries.remove(&id).expect("victim exists");
+            let mut entry = self.entries.remove(&id).expect("victim exists");
             if entry.dirty {
+                stamp_page_checksum(&mut entry.page);
                 self.backend.write_page(id, &entry.page)?;
             }
         }
@@ -175,6 +177,14 @@ impl PageCache {
             .map(|(id, _)| *id)
             .collect();
         ids.sort_unstable();
+
+        // Stamp every dirty page's integrity checksum before it is written back,
+        // so the on-disk image is always self-verifying.
+        for id in &ids {
+            if let Some(e) = self.entries.get_mut(id) {
+                stamp_page_checksum(&mut e.page);
+            }
+        }
 
         let mut i = 0;
         while i < ids.len() {
@@ -253,5 +263,37 @@ mod tests {
             })
             .unwrap();
         assert_eq!(tx_deleted_byte, 7);
+    }
+
+    #[test]
+    fn detects_backend_corruption_on_reload() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Capacity 1, so making a second page resident forces page 0 out.
+        let mut cache = dev_cache(tmp.path(), 1);
+
+        let id = cache.alloc_page().unwrap();
+        let mut page = RowPage::new(id);
+        page.insert(b"important record").unwrap();
+        cache.write(id, page.into_bytes()).unwrap();
+        cache.flush().unwrap(); // stamps the integrity checksum into the chunk file
+
+        // Corrupt one body byte directly in the chunk file, beneath the cache.
+        let chunk = tmp.path().join("chunks").join("chunk_00000.pvd");
+        let mut bytes = std::fs::read(&chunk).unwrap();
+        bytes[crate::core::types::PAGE_HEADER_SIZE + 1] ^= 0xFF;
+        std::fs::write(&chunk, &bytes).unwrap();
+
+        // Evict the (clean) page 0 by making a second page resident.
+        let other = cache.alloc_page().unwrap();
+        cache
+            .write(other, RowPage::new(other).into_bytes())
+            .unwrap();
+
+        // Reloading page 0 from the corrupted backend must be rejected.
+        let result = cache.with_page(id, |_| Ok(()));
+        assert!(
+            matches!(result, Err(crate::core::errors::PvError::Corruption(_))),
+            "expected corruption, got {result:?}"
+        );
     }
 }

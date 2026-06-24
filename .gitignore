@@ -10,6 +10,8 @@ Cargo.lock
 # PicoVolt runtime artifacts
 .pv/
 *.pvdb
+# ...except the committed golden fixtures, which are the format-stability corpus.
+!tests/fixtures/*.pvdb
 
 # cargo-fuzz artifacts
 /fuzz/target
@@ -23,6 +25,11 @@ node_modules/
 
 # Local Claude Code tooling
 /.claude/
+
+# Secrets that must never be committed (recovery codes, tokens, ...)
+npm_recovery_codes.txt
+*recovery_codes*
+*.secret
 
 # Python binding cache and build artifacts
 __pycache__/
