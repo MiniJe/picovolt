@@ -1,14 +1,15 @@
 # PicoVolt (PVDB)
 
 [![CI](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml/badge.svg)](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.12.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](CHANGELOG.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)
+![Status: 1.0 stable](https://img.shields.io/badge/status-1.0%20stable-brightgreen.svg)
 [![GitHub stars](https://img.shields.io/github/stars/MiniJe/picovolt?style=social)](https://github.com/MiniJe/picovolt)
 
-PicoVolt is an embedded database engine written from scratch in Rust. It is
-experimental software. It has not been audited or hardened for production, so use
-it to learn from and prototype with rather than to store data you cannot lose.
+PicoVolt is an embedded database engine written from scratch in Rust. As of 1.0
+its public API and on-disk format are stable under Semantic Versioning. It is
+young software and has not had an external security audit, so review it and keep
+backups before trusting it with data you cannot regenerate.
 
 If PicoVolt is useful to you, consider starring the repository on GitHub. It is
 the simplest way to help others discover the project.

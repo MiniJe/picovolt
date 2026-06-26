@@ -108,10 +108,10 @@ Bigger, still-exploratory pieces, listed so the direction is visible.
 - **Local-first sync.** Operation-log or CRDT sync between an in-browser PicoVolt
   and a server.
 
-## Toward 1.0
+## 1.0 and beyond
 
-Version 1.0 is the point at which the public API and the `.pvdb` on-disk format
-are considered stable. Before that:
+**1.0 is released:** the public API and the `.pvdb` on-disk format are stable
+under SemVer. Work that continues past 1.0:
 
 - **Freeze the on-disk format** — **done in 0.11.0.** The format is versioned
   (file header and manifest), per-page checksummed, specified byte-for-byte in

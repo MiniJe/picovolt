@@ -6,6 +6,32 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-06-26
+
+**1.0.** The public API and the on-disk `.pvdb` format are now stable under
+Semantic Versioning: within the 1.x series neither changes in a
+backward-incompatible way, and a file written by any 1.x build opens in any later
+1.x build.
+
+This release makes no functional code changes beyond the version itself; it is the
+commitment to the surface built over 0.1–0.12 — a page-backed MVCC engine with
+time-travel queries, a versioned and per-page-checksummed single-file format (see
+[docs/FORMAT.md](docs/FORMAT.md)), a SQL front-end (see the README), an optional
+HTTP/JSON server, and bindings for Rust, JavaScript/WASM, Go, Python, and C.
+
+### Stability guarantees
+- The crate-root public API (the re-exports in `lib.rs`) follows SemVer: additions
+  are minor, removals and signature changes are major.
+- The `.pvdb` format is `FORMAT_VERSION` 1 and is forward-compatible across 1.x;
+  any future format change ships a new `FORMAT_VERSION` and a migration path, with
+  the golden-file corpus guarding compatibility.
+
+### Honest scope
+1.0 is a stability commitment, not a claim of exhaustive hardening. PicoVolt is
+young and has not had an external audit; continued fuzzing and an independent
+security review remain on the roadmap. For data you cannot regenerate, keep
+backups.
+
 ## [0.12.0] - 2026-06-25
 
 **Richer SQL.** A batch of the most-missed query features, plus a correctness fix
