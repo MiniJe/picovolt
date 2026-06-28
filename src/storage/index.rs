@@ -75,6 +75,26 @@ impl SecondaryIndex {
     pub fn distinct_keys(&self) -> usize {
         self.map.len()
     }
+
+    /// Dump the index as `(key, addresses)` pairs in key order, for persistence.
+    pub fn to_pairs(&self) -> Vec<(Value, Vec<RecordAddr>)> {
+        self.map
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
+    /// Rebuild an index from persisted `(key, addresses)` pairs, so it can be
+    /// loaded from a `.pvdb` instead of rebuilt by a full table scan.
+    pub fn from_pairs(pairs: Vec<(Value, Vec<RecordAddr>)>) -> Self {
+        let mut map: BTreeMap<Value, Vec<RecordAddr>> = BTreeMap::new();
+        let mut entries = 0;
+        for (k, addrs) in pairs {
+            entries += addrs.len();
+            map.entry(k).or_default().extend(addrs);
+        }
+        Self { map, entries }
+    }
 }
 
 #[cfg(test)]

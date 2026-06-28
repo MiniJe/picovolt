@@ -44,8 +44,20 @@ fn main() {
         iters,
     );
 
+    // With a secondary index on `downloads`, the top-N scrub walks the ordered
+    // index and stops at the limit instead of scanning + selecting every row.
+    db.query("CREATE INDEX ON crates (downloads)").unwrap();
+    let indexed = avg_ms(
+        &mut db,
+        |tx| {
+            format!("SELECT name, category, downloads FROM crates BEFORE {tx} ORDER BY downloads DESC LIMIT 50")
+        },
+        iters,
+    );
+
     println!("scrub (ORDER BY downloads DESC LIMIT 50): {scrub:.2} ms/query");
     println!("scan+materialize (SELECT downloads, no sort): {scan_only:.2} ms/query");
     println!("count (COUNT(*)): {count:.2} ms/query");
     println!("=> approx sort cost: {:.2} ms/query", scrub - scan_only);
+    println!("scrub WITH index on downloads: {indexed:.2} ms/query");
 }

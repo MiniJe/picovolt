@@ -106,6 +106,19 @@ struct TableMeta {
     row_versions: u64,
     #[serde(default)]
     indexed_columns: Vec<String>,
+    /// Secondary indexes serialized into the manifest, loaded on open instead of
+    /// rebuilt by a full table scan. Absent in pre-1.2 files, which fall back to
+    /// rebuilding from `indexed_columns`.
+    #[serde(default)]
+    indexes: Vec<PersistedIndex>,
+}
+
+/// One secondary index serialized into the manifest: a column and its
+/// `(key, addresses)` pairs in key order.
+#[derive(Serialize, Deserialize)]
+struct PersistedIndex {
+    column: String,
+    pairs: Vec<(Value, Vec<RecordAddr>)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1120,6 +1133,14 @@ impl Database {
                 tail_id: t.tail_id,
                 row_versions: t.row_versions,
                 indexed_columns: t.indexes.keys().cloned().collect(),
+                indexes: t
+                    .indexes
+                    .iter()
+                    .map(|(col, idx)| PersistedIndex {
+                        column: col.clone(),
+                        pairs: idx.to_pairs(),
+                    })
+                    .collect(),
             })
             .collect();
         let page_count = self.cache.borrow().backend().page_count();
@@ -2035,21 +2056,33 @@ fn build_tables(
         tables.insert(meta.name.clone(), table);
     }
 
-    // Rebuild indexes via streaming scans (bounded memory).
+    // Load persisted indexes where present; otherwise (pre-1.2 files) rebuild them
+    // from a streaming scan. Loading avoids re-reading every page on open, which is
+    // what lets a large or streamed database open quickly with indexes intact.
     for meta in &manifest.tables {
-        for column in &meta.indexed_columns {
-            let table = tables.get(&meta.name).expect("just inserted");
-            let col_ix = column_index(table, column)?;
-            let mut index = SecondaryIndex::new();
-            scan(cache, table, cas, |addr, _env, row| {
-                index.insert(&row[col_ix], addr);
-                Ok(())
-            })?;
-            tables
-                .get_mut(&meta.name)
-                .expect("just inserted")
-                .indexes
-                .insert(column.clone(), index);
+        if meta.indexes.is_empty() {
+            for column in &meta.indexed_columns {
+                let table = tables.get(&meta.name).expect("just inserted");
+                let col_ix = column_index(table, column)?;
+                let mut index = SecondaryIndex::new();
+                scan(cache, table, cas, |addr, _env, row| {
+                    index.insert(&row[col_ix], addr);
+                    Ok(())
+                })?;
+                tables
+                    .get_mut(&meta.name)
+                    .expect("just inserted")
+                    .indexes
+                    .insert(column.clone(), index);
+            }
+        } else {
+            let table = tables.get_mut(&meta.name).expect("just inserted");
+            for pi in &meta.indexes {
+                table.indexes.insert(
+                    pi.column.clone(),
+                    SecondaryIndex::from_pairs(pi.pairs.clone()),
+                );
+            }
         }
     }
     Ok(tables)

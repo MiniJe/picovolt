@@ -6,19 +6,27 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+The 1.2 performance release.
+
+### Added
+- **Persisted secondary indexes.** A secondary index is now stored in the `.pvdb`
+  (and dev-workspace) manifest and loaded on open, instead of rebuilt by a full
+  table scan. So a database opens with its indexes intact without re-reading the
+  pages (a streamed open stays cheap), and an indexed `ORDER BY col ... LIMIT k`
+  — including a `BEFORE tx` time-travel query — reads about k records instead of
+  the whole table. On the 213k-row benchmark the top-50 scrub query drops from
+  ~220 ms to ~8 ms with an index on the sort column. The manifest field is additive
+  (`serde(default)`): older files without it transparently fall back to rebuilding
+  the index, and pre-1.2 readers ignore it, so there is no format-version change.
+
 ### Changed
 - **Faster `ORDER BY ... LIMIT` (top-N).** A `LIMIT k` query with `ORDER BY` now
   selects the k rows in a single partition over lightweight indices instead of
   sorting every matched row, so the heavy rows are never moved during selection.
-  On a 213k-row benchmark, a top-50 query's sort cost dropped from ~99 ms to ~9 ms
-  (whole query ~263 ms to ~165 ms).
+  On a 213k-row benchmark, a top-50 query's sort cost dropped from ~99 ms to ~9 ms.
 - **Faster bare `COUNT(*)`.** `SELECT COUNT(*) FROM t [BEFORE tx]` (no
   `WHERE`/`GROUP BY`) now counts MVCC envelopes without decoding any row bodies; on
   the same 213k-row benchmark it dropped from ~140 ms to ~9 ms.
-
-The remaining cost of a top-N-over-a-large-table query is the full scan; broader
-scan and index performance work (including persisted indexes) is the focus for the
-1.2 release.
 
 ## [1.1.0] - 2026-06-28
 
