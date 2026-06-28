@@ -442,6 +442,25 @@ impl Database {
                 order,
                 limit,
             } => {
+                // Fast path: a bare `COUNT(*)` (no WHERE/GROUP BY/HAVING/ORDER/LIMIT)
+                // only needs record visibility, so count envelopes without decoding
+                // any row bodies.
+                if filter.is_none()
+                    && group_by.is_empty()
+                    && having.is_none()
+                    && order.is_empty()
+                    && limit.is_none()
+                    && !distinct
+                {
+                    if let Some(alias) = count_star_only(&projection) {
+                        let n = self.count_visible(&table, before)?;
+                        return Ok(QueryResult::Rows {
+                            columns: vec![alias.unwrap_or_else(|| "count".into())],
+                            rows: vec![vec![Value::Int(n as i64)]],
+                        });
+                    }
+                }
+
                 let grouped = !group_by.is_empty()
                     || projection_has_aggregate(&projection)
                     || having.is_some();
@@ -755,6 +774,26 @@ impl Database {
             }
         }
         Ok((columns, rows))
+    }
+
+    /// Count records visible as of `before` (or the latest tx) by reading only the
+    /// MVCC envelopes, skipping all row-body decoding. Powers the bare `COUNT(*)`
+    /// fast path.
+    fn count_visible(&self, table_name: &str, before: Option<u64>) -> Result<u64> {
+        let table = self
+            .tables
+            .get(table_name)
+            .ok_or_else(|| PvError::TableNotFound(table_name.into()))?;
+        let snapshot = Snapshot::as_of(before.unwrap_or_else(|| self.txm.current()));
+        let mut count = 0u64;
+        let mut cache = self.cache.borrow_mut();
+        scan_envelopes(&mut cache, table, |env| {
+            if snapshot.sees(env) {
+                count += 1;
+            }
+            Ok(())
+        })?;
+        Ok(count)
     }
 
     /// Whether `column` of `table` has a secondary index.
@@ -1269,6 +1308,22 @@ fn projection_has_aggregate(projection: &Projection) -> bool {
         projection,
         Projection::Items(items) if items.iter().any(|i| matches!(i.expr, SelectExpr::Aggregate(_)))
     )
+}
+
+/// If the projection is exactly one bare `COUNT(*)`, return its optional alias.
+fn count_star_only(projection: &Projection) -> Option<Option<String>> {
+    if let Projection::Items(items) = projection {
+        if items.len() == 1 {
+            if let SelectExpr::Aggregate(Aggregate {
+                func: AggFunc::Count,
+                column: None,
+            }) = &items[0].expr
+            {
+                return Some(items[0].alias.clone());
+            }
+        }
+    }
+    None
 }
 
 /// Total ordering over values (`Null` &lt; `Int` &lt; `Text` &lt; `Blob`), as
@@ -1892,6 +1947,43 @@ fn scan(
                     ));
                 }
                 visit(pack_addr(pid, slot), &env, &row)?;
+            }
+            Ok(page.next_page())
+        })?;
+    }
+    Ok(())
+}
+
+/// Like [`scan`] but decodes only each record's MVCC envelope, not its body, for
+/// consumers (the bare `COUNT(*)` path) that need visibility but no column values.
+fn scan_envelopes(
+    cache: &mut PageCache,
+    table: &Table,
+    mut visit: impl FnMut(&RecordEnvelope) -> Result<()>,
+) -> Result<()> {
+    let max_hops = cache.backend().page_count().saturating_add(1);
+    let mut hops = 0u64;
+    let mut next = table.first_page;
+    while let Some(pid) = next {
+        hops += 1;
+        if hops > max_hops {
+            return Err(PvError::Corruption(
+                "page chain longer than total page count (cycle?)".into(),
+            ));
+        }
+        if Some(pid) == table.tail_id {
+            if let Some(tail) = &table.tail {
+                for slot in 0..tail.slot_count() {
+                    visit(&RecordEnvelope::decode(tail.record(slot)?)?)?;
+                }
+                next = tail.next_page();
+                continue;
+            }
+        }
+        next = cache.with_page(pid, |buf| {
+            let page = RowPageRef::new(buf)?;
+            for slot in 0..page.slot_count() {
+                visit(&RecordEnvelope::decode(page.record(slot)?)?)?;
             }
             Ok(page.next_page())
         })?;

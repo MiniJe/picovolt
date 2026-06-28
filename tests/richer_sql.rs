@@ -448,3 +448,30 @@ fn large_decimal_sum_errors_rather_than_panicking() {
     assert!(db.query("SELECT SUM(v) FROM big").is_err());
     assert!(db.query("SELECT AVG(v) FROM big").is_err());
 }
+
+#[test]
+fn count_star_fast_path_matches_scan_including_time_travel() {
+    let mut db = fixture(); // 5 rows, each inserted in its own transaction
+                            // The bare-COUNT(*) fast path must agree with a full scan's visible-row count,
+                            // at the latest snapshot and at every past transaction.
+    for tx in [0u64, 1, 2, 3, 4, 5, 99] {
+        let fast = match rows(&mut db, &format!("SELECT COUNT(*) FROM t BEFORE {tx}"))[0][0] {
+            Value::Int(i) => i,
+            ref v => panic!("expected int count, got {v:?}"),
+        };
+        let scanned = rows(&mut db, &format!("SELECT id FROM t BEFORE {tx}")).len() as i64;
+        assert_eq!(
+            fast, scanned,
+            "COUNT(*) fast path != scan count at BEFORE {tx}"
+        );
+    }
+    // Current count and alias still work.
+    assert_eq!(
+        rows(&mut db, "SELECT COUNT(*) FROM t"),
+        vec![vec![Value::Int(5)]]
+    );
+    assert_eq!(
+        cols(&mut db, "SELECT COUNT(*) AS n FROM t"),
+        vec!["n".to_string()]
+    );
+}

@@ -11,8 +11,14 @@ All notable changes to PicoVolt are documented here. The format is based on
   selects the k rows in a single partition over lightweight indices instead of
   sorting every matched row, so the heavy rows are never moved during selection.
   On a 213k-row benchmark, a top-50 query's sort cost dropped from ~99 ms to ~9 ms
-  (whole query ~263 ms to ~165 ms). The remaining cost is the full table scan,
-  which secondary indexes address; broader scan/index performance work is ongoing.
+  (whole query ~263 ms to ~165 ms).
+- **Faster bare `COUNT(*)`.** `SELECT COUNT(*) FROM t [BEFORE tx]` (no
+  `WHERE`/`GROUP BY`) now counts MVCC envelopes without decoding any row bodies; on
+  the same 213k-row benchmark it dropped from ~140 ms to ~9 ms.
+
+The remaining cost of a top-N-over-a-large-table query is the full scan; broader
+scan and index performance work (including persisted indexes) is the focus for the
+1.2 release.
 
 ## [1.1.0] - 2026-06-28
 
