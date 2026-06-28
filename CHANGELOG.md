@@ -6,7 +6,9 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
-The 1.2 performance release.
+## [1.2.0] - 2026-06-28
+
+The performance release.
 
 ### Added
 - **Persisted secondary indexes.** A secondary index is now stored in the `.pvdb`
