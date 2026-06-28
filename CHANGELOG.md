@@ -6,6 +6,8 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-28
+
 ### Added
 - **Streamed (range-request) reads.** `Database::open_streamed(reader, total_size)`
   opens a baked `.pvdb` through a `RangeReader` (a new trait), fetching only the

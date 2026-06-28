@@ -1,6 +1,6 @@
 [package]
 name = "picovolt"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 rust-version = "1.74"
 description = "PicoVolt (PVDB): a polymorphic embedded database engine in Rust."
