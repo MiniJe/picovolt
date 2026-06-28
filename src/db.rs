@@ -1128,8 +1128,15 @@ fn project_select(
     distinct: bool,
     limit: Option<usize>,
 ) -> Result<QueryResult> {
-    // Sort on the full row, before projection can drop a sort column.
-    sort_rows(&mut rows, &columns, order)?;
+    // Sort on the full row, before projection can drop a sort column. For
+    // `ORDER BY ... LIMIT k` without DISTINCT, only the top-k rows are needed, so
+    // select them in one pass instead of sorting every matched row.
+    match limit {
+        Some(k) if !distinct && !order.is_empty() => {
+            rows = take_top_n(rows, &columns, order, k)?;
+        }
+        _ => sort_rows(&mut rows, &columns, order)?,
+    }
 
     let (out_columns, mut out_rows) = match projection {
         Projection::All => (columns, rows),
@@ -1190,13 +1197,9 @@ fn project_select(
     })
 }
 
-/// Sort `rows` in place by `order` keys, applied left to right, resolving each
-/// key's column against `columns`. A no-op when `order` is empty.
-fn sort_rows(rows: &mut [Row], columns: &[String], order: &[OrderBy]) -> Result<()> {
-    if order.is_empty() {
-        return Ok(());
-    }
-    let keys: Vec<(usize, bool)> = order
+/// Resolve `order` into `(column index, descending)` keys against `columns`.
+fn order_keys(columns: &[String], order: &[OrderBy]) -> Result<Vec<(usize, bool)>> {
+    order
         .iter()
         .map(|ob| {
             columns
@@ -1205,17 +1208,52 @@ fn sort_rows(rows: &mut [Row], columns: &[String], order: &[OrderBy]) -> Result<
                 .map(|ix| (ix, ob.descending))
                 .ok_or_else(|| PvError::Schema(format!("no column `{}` to order by", ob.column)))
         })
-        .collect::<Result<_>>()?;
-    rows.sort_by(|a, b| {
-        for &(ix, descending) in &keys {
-            let ord = cmp_values(&a[ix], &b[ix]);
-            let ord = if descending { ord.reverse() } else { ord };
-            if ord != std::cmp::Ordering::Equal {
-                return ord;
-            }
+        .collect()
+}
+
+/// Compare two rows by resolved order keys (left to right, with per-key descending).
+fn cmp_by_keys(a: &Row, b: &Row, keys: &[(usize, bool)]) -> std::cmp::Ordering {
+    for &(ix, descending) in keys {
+        let ord = cmp_values(&a[ix], &b[ix]);
+        let ord = if descending { ord.reverse() } else { ord };
+        if ord != std::cmp::Ordering::Equal {
+            return ord;
         }
-        std::cmp::Ordering::Equal
-    });
+    }
+    std::cmp::Ordering::Equal
+}
+
+/// Return the `k` rows that come first under `order`, sorted, without sorting the
+/// whole input. It partitions an array of light indices (so the heavy `Row`s are
+/// never moved during selection), turning an `ORDER BY ... LIMIT k` over many rows
+/// from an O(n log n) sort of full rows into an O(n) partition plus a k-row sort.
+fn take_top_n(rows: Vec<Row>, columns: &[String], order: &[OrderBy], k: usize) -> Result<Vec<Row>> {
+    if order.is_empty() {
+        let mut rows = rows;
+        rows.truncate(k);
+        return Ok(rows);
+    }
+    if k >= rows.len() {
+        let mut rows = rows;
+        sort_rows(&mut rows, columns, order)?;
+        return Ok(rows);
+    }
+    let keys = order_keys(columns, order)?;
+    let mut idx: Vec<usize> = (0..rows.len()).collect();
+    idx.select_nth_unstable_by(k, |&a, &b| cmp_by_keys(&rows[a], &rows[b], &keys));
+    idx.truncate(k);
+    idx.sort_by(|&a, &b| cmp_by_keys(&rows[a], &rows[b], &keys));
+    Ok(idx.into_iter().map(|i| rows[i].clone()).collect())
+}
+
+/// Sort `rows` in place by `order` keys, applied left to right, resolving each
+/// key's column against `columns`. A no-op when `order` is empty.
+fn sort_rows(rows: &mut [Row], columns: &[String], order: &[OrderBy]) -> Result<()> {
+    if order.is_empty() {
+        return Ok(());
+    }
+    let keys = order_keys(columns, order)?;
+    rows.sort_by(|a, b| cmp_by_keys(a, b, &keys));
     Ok(())
 }
 

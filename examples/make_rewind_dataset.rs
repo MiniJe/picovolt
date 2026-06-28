@@ -75,7 +75,9 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(1400);
     let mut used: HashSet<String> = HashSet::new();
-    let mut versions: Vec<(String, u64)> = Vec::with_capacity(months);
+    // (label, tx after the month, cumulative crate count) per month.
+    let mut versions: Vec<(String, u64, u64)> = Vec::with_capacity(months);
+    let mut cumulative: u64 = 0;
 
     for m in 0..months {
         let year = start_year + m / 12;
@@ -132,16 +134,18 @@ fn main() {
             .unwrap();
         }
         // The transaction id after this month's inserts is the time-travel bound
-        // for "the registry as of <label>".
-        versions.push((label, db.current_tx()));
+        // for "the registry as of <label>"; the cumulative count lets the demo show
+        // the registry size at each month without a query.
+        cumulative += count;
+        versions.push((label, db.current_tx(), cumulative));
     }
 
     db.bake(out.join("rewind.pvdb")).expect("bake");
 
     let mut json = String::from("[\n");
-    for (i, (label, tx)) in versions.iter().enumerate() {
+    for (i, (label, tx, count)) in versions.iter().enumerate() {
         json.push_str(&format!(
-            "  {{\"i\":{i},\"label\":\"{label}\",\"tx\":{tx}}}"
+            "  {{\"i\":{i},\"label\":\"{label}\",\"tx\":{tx},\"count\":{count}}}"
         ));
         json.push_str(if i + 1 < versions.len() { ",\n" } else { "\n" });
     }

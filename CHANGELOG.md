@@ -6,6 +6,14 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+- **Faster `ORDER BY ... LIMIT` (top-N).** A `LIMIT k` query with `ORDER BY` now
+  selects the k rows in a single partition over lightweight indices instead of
+  sorting every matched row, so the heavy rows are never moved during selection.
+  On a 213k-row benchmark, a top-50 query's sort cost dropped from ~99 ms to ~9 ms
+  (whole query ~263 ms to ~165 ms). The remaining cost is the full table scan,
+  which secondary indexes address; broader scan/index performance work is ongoing.
+
 ## [1.1.0] - 2026-06-28
 
 ### Added
