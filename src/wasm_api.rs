@@ -74,6 +74,50 @@ impl Db {
     pub fn current_tx(&self) -> u32 {
         self.inner.current_tx() as u32
     }
+
+    /// A JSON array of the table names in this database (for introspecting an
+    /// uploaded `.pvdb` whose schema is unknown).
+    pub fn tables(&self) -> Result<String, JsValue> {
+        serde_json::to_string(&self.inner.table_names())
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Open a baked `.pvdb` served over HTTP **without downloading it whole**:
+    /// `read(offset, len)` must synchronously return a `Uint8Array` of that byte
+    /// range (e.g. a synchronous range request). Pages are then fetched on demand
+    /// as queries touch them. `totalSize` is the image's byte length.
+    #[wasm_bindgen(js_name = openRemote)]
+    pub fn open_remote(read: js_sys::Function, total_size: f64) -> Result<Db, JsValue> {
+        console_error_panic_hook::set_once();
+        let reader = Box::new(JsRangeReader { read });
+        Database::open_streamed(reader, total_size as u64)
+            .map(|inner| Db { inner })
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+}
+
+/// Bridges the engine's [`RangeReader`](crate::storage::vle::RangeReader) to a
+/// JavaScript callback that returns a `Uint8Array` for a byte range.
+struct JsRangeReader {
+    read: js_sys::Function,
+}
+
+impl crate::storage::vle::RangeReader for JsRangeReader {
+    fn read_at(&self, offset: u64, len: usize) -> crate::Result<Vec<u8>> {
+        use wasm_bindgen::JsCast;
+        let res = self
+            .read
+            .call2(
+                &JsValue::NULL,
+                &JsValue::from_f64(offset as f64),
+                &JsValue::from_f64(len as f64),
+            )
+            .map_err(|e| crate::PvError::Corruption(format!("range read failed: {e:?}")))?;
+        let arr: js_sys::Uint8Array = res.dyn_into().map_err(|_| {
+            crate::PvError::Corruption("range reader did not return a Uint8Array".into())
+        })?;
+        Ok(arr.to_vec())
+    }
 }
 
 /// Convert a JavaScript parameter into a PicoVolt `Value`: null/undefined to

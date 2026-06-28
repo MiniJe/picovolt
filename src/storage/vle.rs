@@ -406,10 +406,62 @@ impl MemStore {
 }
 
 // ---------------------------------------------------------------------------
+// Remote / streamed backend: pages fetched on demand by byte range
+// ---------------------------------------------------------------------------
+
+/// Reads arbitrary byte ranges of a baked `.pvdb` image from some backing store
+/// (an HTTP server over range requests, a file, ...). It lets a database be
+/// opened and queried without holding the whole image in memory: the header,
+/// CAS pool, and manifest are read once on open, and pages are fetched on demand.
+pub trait RangeReader {
+    /// Read exactly `len` bytes starting at `offset`.
+    fn read_at(&self, offset: u64, len: usize) -> Result<Vec<u8>>;
+}
+
+/// A read-only page store that fetches each page through a [`RangeReader`].
+pub struct RemoteStore {
+    reader: Box<dyn RangeReader>,
+    page_count: u64,
+}
+
+impl RemoteStore {
+    /// Wrap a reader serving a baked monolith whose page-data block holds
+    /// `page_count` pages.
+    pub fn new(reader: Box<dyn RangeReader>, page_count: u64) -> Self {
+        Self { reader, page_count }
+    }
+
+    /// Number of pages in the page-data block.
+    pub fn page_count(&self) -> u64 {
+        self.page_count
+    }
+
+    /// Fetch a single page by id.
+    pub fn read_page(&self, id: u64) -> Result<PageBuf> {
+        if id >= self.page_count {
+            return Err(PvError::PageFault { page_id: id });
+        }
+        let offset = FILE_HEADER_SIZE as u64 + id * PAGE_SIZE as u64;
+        let bytes = self.reader.read_at(offset, PAGE_SIZE)?;
+        let arr: [u8; PAGE_SIZE] = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| PvError::Corruption("streamed page has the wrong length".into()))?;
+        Ok(Box::new(arr))
+    }
+
+    /// Fetch every page (used only if a streamed db is re-baked; normal queries
+    /// fetch pages lazily through the buffer pool).
+    pub fn read_all_pages(&self) -> Result<Vec<PageBuf>> {
+        (0..self.page_count).map(|id| self.read_page(id)).collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Backend router
 // ---------------------------------------------------------------------------
 
-/// Uniform access over the three backends, used by the buffer pool and engine.
+/// Uniform access over the backends, used by the buffer pool and engine.
 pub enum Backend {
     /// Mutable development workspace (filesystem).
     Dev(DevStore),
@@ -417,6 +469,8 @@ pub enum Backend {
     Mem(MemStore),
     /// Read-only production monolith (mmap).
     Prod(Monolith),
+    /// Read-only streamed monolith (pages fetched on demand by byte range).
+    Remote(RemoteStore),
 }
 
 impl Backend {
@@ -426,6 +480,7 @@ impl Backend {
             Backend::Dev(d) => d.page_count(),
             Backend::Mem(m) => m.page_count(),
             Backend::Prod(m) => m.page_count(),
+            Backend::Remote(r) => r.page_count(),
         }
     }
 
@@ -435,6 +490,7 @@ impl Backend {
             Backend::Dev(d) => d.read_page(id),
             Backend::Mem(m) => m.read_page(id),
             Backend::Prod(m) => m.read_page(id),
+            Backend::Remote(r) => r.read_page(id),
         }
     }
 
@@ -448,7 +504,7 @@ impl Backend {
         match self {
             Backend::Dev(d) => Ok(d.alloc_page()),
             Backend::Mem(m) => Ok(m.alloc_page()),
-            Backend::Prod(_) => Err(PvError::ReadOnly),
+            Backend::Prod(_) | Backend::Remote(_) => Err(PvError::ReadOnly),
         }
     }
 
@@ -457,7 +513,7 @@ impl Backend {
         match self {
             Backend::Dev(d) => d.write_page(id, page),
             Backend::Mem(m) => m.write_page(id, page),
-            Backend::Prod(_) => Err(PvError::ReadOnly),
+            Backend::Prod(_) | Backend::Remote(_) => Err(PvError::ReadOnly),
         }
     }
 
@@ -466,7 +522,7 @@ impl Backend {
         match self {
             Backend::Dev(d) => d.write_pages_from(start_id, pages),
             Backend::Mem(m) => m.write_pages_from(start_id, pages),
-            Backend::Prod(_) => Err(PvError::ReadOnly),
+            Backend::Prod(_) | Backend::Remote(_) => Err(PvError::ReadOnly),
         }
     }
 
@@ -484,6 +540,7 @@ impl Backend {
             Backend::Dev(d) => d.read_all_pages(),
             Backend::Mem(m) => m.read_all_pages(),
             Backend::Prod(m) => (0..m.page_count()).map(|id| m.read_page(id)).collect(),
+            Backend::Remote(r) => r.read_all_pages(),
         }
     }
 }

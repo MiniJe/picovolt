@@ -4,8 +4,10 @@ This describes the direction of the project, not a commitment. Priorities shift
 with what users need, and dates are deliberately omitted. Items are grouped by
 horizon. Changes that have landed are recorded in [CHANGELOG.md](CHANGELOG.md).
 
-PicoVolt is experimental and pre-1.0, so the public API and on-disk format may
-still change between minor versions.
+PicoVolt reached **1.0**: the public API and the `.pvdb` on-disk format are stable
+under SemVer. Features arrive in minor releases, and breaking changes wait for a
+major. The near-term, versioned plan is under **Planned 1.x releases** below;
+bigger, breaking ideas are under **2.0 candidates**.
 
 ## Shipped in 0.1.0
 
@@ -51,16 +53,55 @@ and a compile-to-`.pvdb` path; they do not add JOINs, transactions, or concurren
 writers, so they suit embedded use rather than a concurrent server's primary
 store.
 
-## Next
+## Planned 1.x releases
 
-- **Decimals in the columnar layout:** decimal values became storable in row form,
-  and as SQL literals such as `12.50`, in 0.5.0. Extending the packed columnar
-  layout to encode them (today such pages stay in row form) is the remaining piece.
-- **Persisted indexes:** indexes are currently rebuilt by a scan on open.
-  Persisting them in the `.pvdb` file and workspace would let large tables open
-  quickly.
-- **Background columnar compaction:** promote the on-demand row-to-columnar
+Versioned, non-breaking targets: features land in minor releases, and nothing here
+changes the public API or breaks 1.x file compatibility (a newer build always reads
+an older 1.x file). Order is by impact (informed by where evaluators say the engine
+is weakest) and is direction, not a schedule.
+
+### 1.1: Persistent secondary indexes
+
+Indexes are rebuilt by a full scan on every open today. Persist them in the
+workspace and the baked `.pvdb` (a new `FORMAT_VERSION` that newer builds read
+alongside v1), so a large table opens in roughly constant time instead of scanning
+every row. This is the single biggest "is this production-real?" gap.
+
+### 1.2: Explicit transactions
+
+`BEGIN` / `COMMIT` / `ROLLBACK` across the engine API and every binding, built on
+the MVCC machinery that already exists: multi-statement atomicity and rollback, not
+just per-statement autocommit. The most-requested correctness feature.
+
+### 1.3: JOINs
+
+`INNER JOIN` and `LEFT JOIN` in `SELECT`: nested-loop first, an index/hash join
+when a join key is indexed. The largest single piece and the most-cited missing SQL
+feature; two-table joins first, then N-table.
+
+### 1.4: Server hardening
+
+Bearer-token authentication and optional TLS for `picovolt-server` (it already caps
+body size and times out slow statements). Turns the demonstration server into
+something that can safely sit on a network.
+
+### 1.5: SQL ergonomics
+
+`OFFSET`, `CASE WHEN`, more scalar functions (string / number), and simple scalar
+subqueries in `WHERE` / `IN`. Incremental polish that closes the gap with everyday
+SQL.
+
+### Smaller items, any release
+
+- **Decimals in the columnar layout.** Decimal values are storable in row form;
+  encoding them in the packed columnar layout (today such pages stay in row form) is
+  the remaining piece.
+- **Background columnar compaction.** Promote the on-demand row-to-columnar
   transposition ([`storage/page.rs`](src/storage/page.rs)) to a background worker.
+- **Forward format migration.** Read older `FORMAT_VERSION`s in place rather than
+  requiring a re-bake.
+- **A `pv` CLI.** Promote the `repl` example into a real binary for import/export,
+  inspection, and time-travel diffs.
 
 ## Bindings and extensions
 
@@ -86,47 +127,36 @@ The C ABI opens two directions that grow independently of the core engine.
   - import and export adapters for CSV, Parquet, JSON, and SQLite;
   - alternative compression codecs.
 
-## Larger directions
+## 2.0 candidates (breaking)
 
-Bigger, still-exploratory pieces, listed so the direction is visible.
+Bigger pieces that would change the public API or the concurrency model, so they
+wait for a major version. (The HTTP/JSON **server mode** that was once the big next
+step shipped in 0.10.0.)
 
-- **A server mode** (the next major direction). An optional `picovolt-server`
-  binary that speaks HTTP and JSON, so clients in any language connect over a
-  socket without `cgo`. HTTP and JSON are chosen over gRPC and the PostgreSQL wire
-  protocol because the query result already serializes to the same JSON every
-  binding speaks, and no new client toolchain is needed. A single dedicated thread
-  owns the engine, which keeps the single-threaded core unchanged: HTTP workers
-  hand each request to that thread over a channel and receive the result back.
-  Read-heavy and time-travel queries fan out to read-only replicas built from
-  periodic snapshots. It targets a single virtual server behind a TLS proxy.
-- **Write concurrency.** The engine is single-writer today; concurrent writers
-  are the prerequisite for multi-client use.
-- **Encryption at rest** and **replication** for confidentiality and for keeping a
-  warm copy of the data.
-- **A `pv` command-line tool.** Promote the `repl` example into a real binary for
-  import and export, inspection, and time-travel diffs.
+- **Concurrent writers.** The engine is single-writer today: one thread owns it,
+  and the server serializes requests through that thread. True multi-writer
+  concurrency is the prerequisite for a general multi-client store and almost
+  certainly an API change.
+- **Encryption at rest** and **replication** for confidentiality and a warm copy.
+- **A durable in-browser backend (OPFS)** so the WebAssembly build persists instead
+  of being in-memory only. A 2.0 item only if it changes the open/init API.
 - **Local-first sync.** Operation-log or CRDT sync between an in-browser PicoVolt
   and a server.
 
-## 1.0 and beyond
+## Maturity track (runs alongside every version)
 
-**1.0 is released:** the public API and the `.pvdb` on-disk format are stable
-under SemVer. Work that continues past 1.0:
+Trust in a database is earned over time, not declared at a version bump. These run
+in parallel to the feature releases above and are what actually gate production
+confidence:
 
-- **Freeze the on-disk format** — **done in 0.11.0.** The format is versioned
-  (file header and manifest), per-page checksummed, specified byte-for-byte in
-  [docs/FORMAT.md](docs/FORMAT.md), and guarded by a committed golden fixture and
-  corruption-injection tests. A forward migration path (reading older versions
-  in place, rather than re-baking) is the remaining piece.
-- **Stabilize the extension contract,** the crate-root re-exports documented in
+- **External security audit.** None yet; the highest-value trust item.
+- **Sustained fuzzing.** The decoders and the SQL parser are fuzzed per commit;
+  1.x calls for a long-running soak, not just CI runs (see [SECURITY.md](SECURITY.md)).
+- **Crash-injection.** Read-side corruption is covered by injection tests; still
+  wanted is true power-loss injection (killing a process mid-flush) behind the
+  `Sync` durability claims, plus index crash-consistency once indexes persist (1.1).
+- **Extension contract.** Stabilize the crate-root seams documented in
   [docs/EXTENDING.md](docs/EXTENDING.md).
-- **Specify durability precisely:** what `Fast` and `Sync` guarantee is now
-  documented in [docs/FORMAT.md](docs/FORMAT.md) §9, and read-side corruption is
-  covered by injection tests. Still wanted: true power-loss crash-injection
-  (killing a process mid-flush) behind the durability claims.
-- **Longer fuzzing and external review:** the decoders are fuzzed in CI. Version
-  1.0 calls for sustained fuzzing and an independent security pass (see
-  [SECURITY.md](SECURITY.md)).
 
 ## Out of scope
 

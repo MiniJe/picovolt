@@ -41,7 +41,8 @@ use crate::storage::index::SecondaryIndex;
 use crate::storage::page::{RowPage, RowPageRef, SLOT_SIZE};
 use crate::storage::record::{decode_record, encode_record};
 use crate::storage::vle::{
-    bake_monolith_bytes, verify_page_checksum, Backend, DevStore, MemStore, Monolith,
+    bake_monolith_bytes, verify_page_checksum, Backend, DevStore, MemStore, Monolith, RangeReader,
+    RemoteStore,
 };
 
 /// Manifest file name within a development workspace.
@@ -228,6 +229,64 @@ impl Database {
             &manifest.cas_hashes,
         )?;
         let mut cache = PageCache::new(Backend::Prod(mono), DEFAULT_CACHE_PAGES);
+        let tables = build_tables(&mut cache, &cas, &manifest, false)?;
+        Ok(Self {
+            cache: RefCell::new(cache),
+            cas,
+            txm: TxManager::with_clock(manifest.clock),
+            tables,
+            compliance: ComplianceMonitor::new(),
+            root: None,
+            autocommit: false,
+            durability: Durability::Fast,
+            manifest_file: RefCell::new(None),
+        })
+    }
+
+    /// Open a baked `.pvdb` monolith through a [`RangeReader`], fetching pages on
+    /// demand instead of holding the whole image in memory. The header, CAS pool,
+    /// and manifest are read once up front; pages stream in as queries touch them.
+    /// Read-only, with full time-travel history intact. `total_size` is the byte
+    /// length of the image (e.g. an HTTP `Content-Length`).
+    pub fn open_streamed(reader: Box<dyn RangeReader>, total_size: u64) -> Result<Self> {
+        let header_bytes = reader.read_at(0, FILE_HEADER_SIZE)?;
+        let header = FileHeader::decode(&header_bytes)?; // validates magic + version
+        let cas_offset = header.cas_offset as usize;
+        let manifest_offset = header.manifest_offset as usize;
+        if cas_offset < FILE_HEADER_SIZE
+            || manifest_offset < cas_offset
+            || manifest_offset as u64 > total_size
+            || (cas_offset - FILE_HEADER_SIZE) % PAGE_SIZE != 0
+        {
+            return Err(PvError::Corruption("streamed: inconsistent offsets".into()));
+        }
+        let page_count = ((cas_offset - FILE_HEADER_SIZE) / PAGE_SIZE) as u64;
+
+        // The tail (CAS pool + manifest) is small relative to the pages and is read
+        // once on open; the pages themselves are fetched lazily through the cache.
+        let tail = reader.read_at(cas_offset as u64, (total_size as usize) - cas_offset)?;
+        let split = manifest_offset - cas_offset;
+        let pool = &tail[..split];
+        let manifest: Manifest = serde_json::from_slice(&tail[split..])?;
+        check_manifest_version(&manifest)?;
+
+        if manifest.cas_dir.len() != manifest.cas_hashes.len() {
+            return Err(PvError::Corruption(
+                "streamed: CAS dir/hash length mismatch".into(),
+            ));
+        }
+        let mut cas = CasStore::new_memory();
+        for &(off, len) in &manifest.cas_dir {
+            let off = off as usize;
+            let end = off
+                .checked_add(len as usize)
+                .filter(|&e| e <= pool.len())
+                .ok_or_else(|| PvError::Corruption("streamed: CAS blob out of bounds".into()))?;
+            cas.put(&pool[off..end])?;
+        }
+
+        let backend = Backend::Remote(RemoteStore::new(reader, page_count));
+        let mut cache = PageCache::new(backend, DEFAULT_CACHE_PAGES);
         let tables = build_tables(&mut cache, &cas, &manifest, false)?;
         Ok(Self {
             cache: RefCell::new(cache),

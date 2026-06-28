@@ -6,6 +6,21 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- **Streamed (range-request) reads.** `Database::open_streamed(reader, total_size)`
+  opens a baked `.pvdb` through a `RangeReader` (a new trait), fetching only the
+  header and tail (CAS pool + manifest) up front and then streaming pages on demand
+  through the buffer pool. A new read-only `Backend::Remote` backs it. This lets a
+  large file be opened and queried without holding the whole image in memory. The
+  WebAssembly build exposes it as `Db.openRemote(read, totalSize)`, where `read`
+  is a JS callback returning a byte range (e.g. an HTTP range request). All
+  additive and non-breaking.
+- **`Db.tables()`** in the WebAssembly build returns the table names of a database
+  (a JSON array), for introspecting an uploaded `.pvdb` of unknown schema.
+
+These power the "Rewind" browser demo (query and time-travel a baked dataset
+client-side, bake a CSV to a `.pvdb`, or stream a large file by range requests).
+
 ## [1.0.0] - 2026-06-26
 
 **1.0.** The public API and the on-disk `.pvdb` format are now stable under
