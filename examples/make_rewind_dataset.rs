@@ -64,6 +64,10 @@ fn main() {
     let mut db = Database::open_memory();
     db.query("CREATE TABLE crates (name, category, downloads, version)")
         .unwrap();
+    // Index the column the demo sorts by, so the baked file carries a binary index
+    // region (format version 2) and the time-travel "top by downloads" scrub reads
+    // a few records via the index instead of scanning every row.
+    db.query("CREATE INDEX ON crates (downloads)").unwrap();
 
     let mut rng = Lcg(0xC0FF_EE12_3456_789A);
     let months = 96usize; // 2017-01 .. 2024-12

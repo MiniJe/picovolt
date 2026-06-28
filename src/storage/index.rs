@@ -13,8 +13,18 @@
 use std::collections::BTreeMap;
 use std::ops::RangeBounds;
 
+use crate::core::errors::{PvError, Result};
 use crate::core::types::RecordAddr;
 use crate::core::value::Value;
+
+// Tags for the self-contained index-region value codec. They mirror the record
+// body tags for familiarity, but this codec always stores payloads inline (it
+// never reaches into CAS) so a decoded index needs nothing but its own bytes.
+const IV_NULL: u8 = 0x00;
+const IV_INT: u8 = 0x01;
+const IV_TEXT: u8 = 0x02;
+const IV_BLOB: u8 = 0x03;
+const IV_DECIMAL: u8 = 0x06;
 
 /// An ordered index over one column.
 #[derive(Default)]
@@ -95,6 +105,143 @@ impl SecondaryIndex {
         }
         Self { map, entries }
     }
+
+    /// Serialize the index to a compact, self-contained binary blob for the
+    /// `.pvdb` index region. Layout (little-endian):
+    ///
+    /// ```text
+    /// key_count: u32
+    /// repeated key_count times, in ascending key order:
+    ///   key: tagged value (see IV_* tags)
+    ///   addr_count: u32
+    ///   addrs: u64 * addr_count
+    /// ```
+    ///
+    /// This is far smaller and faster to parse than the JSON `pairs` form, and
+    /// carries no external references, so a reader reconstructs the index from
+    /// these bytes alone.
+    pub fn encode_binary(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&(self.map.len() as u32).to_le_bytes());
+        for (key, addrs) in &self.map {
+            encode_index_value(&mut out, key);
+            out.extend_from_slice(&(addrs.len() as u32).to_le_bytes());
+            for &addr in addrs {
+                out.extend_from_slice(&addr.to_le_bytes());
+            }
+        }
+        out
+    }
+
+    /// Reconstruct an index from the bytes written by [`encode_binary`]. The
+    /// input is untrusted (it comes straight off disk / the network), so every
+    /// length and extent is bounds-checked and a malformed blob yields an error,
+    /// never a panic.
+    pub fn decode_binary(bytes: &[u8]) -> Result<Self> {
+        let mut pos = 0usize;
+        let key_count = rd_u32(bytes, &mut pos)? as usize;
+        let mut map: BTreeMap<Value, Vec<RecordAddr>> = BTreeMap::new();
+        let mut entries = 0usize;
+        for _ in 0..key_count {
+            let key = decode_index_value(bytes, &mut pos)?;
+            let addr_count = rd_u32(bytes, &mut pos)? as usize;
+            let mut addrs = Vec::with_capacity(addr_count.min(1024));
+            for _ in 0..addr_count {
+                addrs.push(rd_u64(bytes, &mut pos)?);
+            }
+            entries += addrs.len();
+            map.entry(key).or_default().extend(addrs);
+        }
+        Ok(Self { map, entries })
+    }
+}
+
+fn encode_index_value(out: &mut Vec<u8>, value: &Value) {
+    match value {
+        Value::Null => out.push(IV_NULL),
+        Value::Int(i) => {
+            out.push(IV_INT);
+            out.extend_from_slice(&i.to_le_bytes());
+        }
+        Value::Decimal(m) => {
+            out.push(IV_DECIMAL);
+            out.extend_from_slice(&m.to_le_bytes());
+        }
+        Value::Text(s) => {
+            out.push(IV_TEXT);
+            let b = s.as_bytes();
+            out.extend_from_slice(&(b.len() as u32).to_le_bytes());
+            out.extend_from_slice(b);
+        }
+        Value::Blob(b) => {
+            out.push(IV_BLOB);
+            out.extend_from_slice(&(b.len() as u32).to_le_bytes());
+            out.extend_from_slice(b);
+        }
+    }
+}
+
+fn decode_index_value(buf: &[u8], pos: &mut usize) -> Result<Value> {
+    let tag = *buf
+        .get(*pos)
+        .ok_or_else(|| PvError::Corruption("index: truncated at value tag".into()))?;
+    *pos += 1;
+    Ok(match tag {
+        IV_NULL => Value::Null,
+        IV_INT => Value::Int(rd_u64(buf, pos)? as i64),
+        IV_DECIMAL => Value::Decimal(rd_i128(buf, pos)?),
+        IV_TEXT => {
+            let bytes = rd_bytes(buf, pos)?;
+            Value::Text(
+                String::from_utf8(bytes.to_vec())
+                    .map_err(|_| PvError::Corruption("index: invalid utf-8 key".into()))?,
+            )
+        }
+        IV_BLOB => Value::Blob(rd_bytes(buf, pos)?.to_vec()),
+        other => {
+            return Err(PvError::Corruption(format!(
+                "index: bad value tag 0x{other:02X}"
+            )))
+        }
+    })
+}
+
+fn rd_bytes<'a>(buf: &'a [u8], pos: &mut usize) -> Result<&'a [u8]> {
+    // `len` is an untrusted u32; add it with a checked op so a hostile value cannot
+    // overflow `pos` (which would panic in debug and could slip a bounds check on a
+    // 32-bit target such as wasm32).
+    let len = rd_u32(buf, pos)? as usize;
+    let end = pos
+        .checked_add(len)
+        .filter(|&e| e <= buf.len())
+        .ok_or_else(|| PvError::Corruption("index: truncated payload".into()))?;
+    let slice = &buf[*pos..end];
+    *pos = end;
+    Ok(slice)
+}
+
+fn rd_u32(buf: &[u8], pos: &mut usize) -> Result<u32> {
+    let slice = buf
+        .get(*pos..*pos + 4)
+        .ok_or_else(|| PvError::Corruption("index: truncated u32".into()))?;
+    *pos += 4;
+    Ok(u32::from_le_bytes(slice.try_into().unwrap()))
+}
+
+fn rd_u64(buf: &[u8], pos: &mut usize) -> Result<u64> {
+    let slice = buf
+        .get(*pos..*pos + 8)
+        .ok_or_else(|| PvError::Corruption("index: truncated u64".into()))?;
+    *pos += 8;
+    Ok(u64::from_le_bytes(slice.try_into().unwrap()))
+}
+
+fn rd_i128(buf: &[u8], pos: &mut usize) -> Result<i128> {
+    let slice = buf
+        .get(*pos..*pos + 16)
+        .ok_or_else(|| PvError::Corruption("index: truncated i128".into()))?;
+    *pos += 16;
+    Ok(i128::from_le_bytes(slice.try_into().unwrap()))
 }
 
 #[cfg(test)]
@@ -164,5 +311,46 @@ mod tests {
         assert_eq!(idx.ordered_addrs(false), vec![2, 4, 3, 1]);
         // Descending keys: 30 (a1), 20 (a3), 10 (a2, a4).
         assert_eq!(idx.ordered_addrs(true), vec![1, 3, 2, 4]);
+    }
+
+    #[test]
+    fn binary_round_trips_every_value_kind() {
+        let mut idx = SecondaryIndex::new();
+        idx.insert(&Value::Null, 1);
+        idx.insert(&Value::Int(-42), 2);
+        idx.insert(&Value::Int(-42), 3); // duplicate key, two addrs
+        idx.insert(&Value::Decimal(1_500_000), 4);
+        idx.insert(&Value::from("crate"), 5);
+        idx.insert(&Value::Blob(vec![0xDE, 0xAD, 0xBE, 0xEF]), 6);
+
+        let blob = idx.encode_binary();
+        let back = SecondaryIndex::decode_binary(&blob).unwrap();
+
+        assert_eq!(back.len(), idx.len());
+        assert_eq!(back.distinct_keys(), idx.distinct_keys());
+        assert_eq!(back.lookup(&Value::Int(-42)), &[2, 3]);
+        assert_eq!(back.lookup(&Value::Null), &[1]);
+        assert_eq!(back.lookup(&Value::Decimal(1_500_000)), &[4]);
+        assert_eq!(back.lookup(&Value::from("crate")), &[5]);
+        assert_eq!(
+            back.lookup(&Value::Blob(vec![0xDE, 0xAD, 0xBE, 0xEF])),
+            &[6]
+        );
+        // Ordered traversal survives the round trip identically.
+        assert_eq!(back.ordered_addrs(false), idx.ordered_addrs(false));
+    }
+
+    #[test]
+    fn binary_decode_rejects_truncation() {
+        let mut idx = SecondaryIndex::new();
+        idx.insert(&Value::Int(7), 100);
+        idx.insert(&Value::from("hello"), 200);
+        let blob = idx.encode_binary();
+        // Any prefix shorter than the whole must error, never panic.
+        for cut in 0..blob.len() {
+            assert!(SecondaryIndex::decode_binary(&blob[..cut]).is_err());
+        }
+        // The full blob still decodes.
+        assert!(SecondaryIndex::decode_binary(&blob).is_ok());
     }
 }

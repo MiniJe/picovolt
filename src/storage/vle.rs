@@ -20,7 +20,8 @@ use memmap2::Mmap;
 
 use crate::core::errors::{PvError, Result};
 use crate::core::types::{
-    FileHeader, CHUNK_CAP_BYTES, FILE_HEADER_SIZE, PAGE_CHECKSUM_OFFSET, PAGE_SIZE,
+    FileHeader, CHUNK_CAP_BYTES, FILE_HEADER_SIZE, FORMAT_VERSION_BASE, PAGE_CHECKSUM_OFFSET,
+    PAGE_SIZE,
 };
 
 /// Pages per 64 MiB chunk file: 16 384.
@@ -561,19 +562,41 @@ pub fn bake_monolith_bytes(
     cas_pool: &[u8],
     manifest_json: &[u8],
 ) -> Result<Vec<u8>> {
+    bake_monolith_bytes_with_index(pages, cas_pool, &[], manifest_json, FORMAT_VERSION_BASE)
+}
+
+/// Like [`bake_monolith_bytes`] but inserts a binary secondary-index region
+/// between the CAS pool and the manifest, and stamps an explicit format version.
+///
+/// Layout: `header | pages | cas_pool | index_region | manifest`. The manifest's
+/// `cas_offset` points at the CAS pool and `manifest_offset` at the trailing
+/// manifest, so the region occupies `[cas_offset + cas_pool.len(), manifest_offset)`
+/// and its exact extent is recorded inside the manifest. Pass an empty
+/// `index_region` and [`FORMAT_VERSION_BASE`] to reproduce the version-1 layout.
+pub fn bake_monolith_bytes_with_index(
+    pages: &[PageBuf],
+    cas_pool: &[u8],
+    index_region: &[u8],
+    manifest_json: &[u8],
+    format_version: u16,
+) -> Result<Vec<u8>> {
     let overflow = || PvError::Corruption("monolith size overflows address space".into());
     let cas_offset = pages
         .len()
         .checked_mul(PAGE_SIZE)
         .and_then(|n| n.checked_add(FILE_HEADER_SIZE))
         .ok_or_else(overflow)?;
-    let manifest_offset = cas_offset
+    let index_offset = cas_offset
         .checked_add(cas_pool.len())
+        .ok_or_else(overflow)?;
+    let manifest_offset = index_offset
+        .checked_add(index_region.len())
         .ok_or_else(overflow)?;
     let total = manifest_offset
         .checked_add(manifest_json.len())
         .ok_or_else(overflow)?;
-    let header = FileHeader::new(manifest_offset as u64, cas_offset as u64);
+    let header =
+        FileHeader::new_versioned(manifest_offset as u64, cas_offset as u64, format_version);
 
     let mut out = Vec::with_capacity(total);
     out.extend_from_slice(&header.encode());
@@ -581,6 +604,7 @@ pub fn bake_monolith_bytes(
         out.extend_from_slice(&page[..]);
     }
     out.extend_from_slice(cas_pool);
+    out.extend_from_slice(index_region);
     out.extend_from_slice(manifest_json);
     Ok(out)
 }

@@ -6,6 +6,33 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-06-29
+
+Compact, binary persisted indexes.
+
+### Added
+- **Binary secondary-index region (on-disk format version 2).** A baked `.pvdb`
+  that carries a secondary index now stores it as a compact binary region between
+  the CAS pool and the manifest, instead of as JSON `pairs` inside the manifest.
+  The manifest keeps only small per-index descriptors (`column`, `offset`, `len`)
+  plus the region's `(offset, length)`. The region is roughly half the size of the
+  JSON form and far faster to parse, so an indexed file is smaller and a streamed
+  open fetches less. The new self-contained value codec carries no CAS references,
+  so an index reconstructs from the region bytes alone. See `docs/FORMAT.md` §6.1.
+
+### Changed
+- **`FORMAT_VERSION` is now 2.** A 1.3 build reads versions 1 and 2; a file is
+  stamped version 2 **only when it carries a binary index region**, so index-less
+  files and development workspaces stay version 1 and remain readable by 1.1/1.2
+  builds. A 1.1/1.2 build cleanly rejects a version-2 file rather than mis-parsing
+  it. Files written by 1.2 (JSON `pairs`) and earlier are still read.
+
+### Notes
+- Untrusted-input hardening: the index-region decoder bounds-checks every length
+  and extent (including a checked add that is safe on 32-bit / wasm32), and the
+  fuzz suite now mutates a version-2 image through the region parser. A version-2
+  golden fixture (`tests/fixtures/golden_v1_3_0.pvdb`) locks the format.
+
 ## [1.2.0] - 2026-06-28
 
 The performance release.

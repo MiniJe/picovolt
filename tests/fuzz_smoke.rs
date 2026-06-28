@@ -87,6 +87,30 @@ fn decoders_never_panic_on_garbage_or_mutation() {
 }
 
 #[test]
+fn importing_a_mutated_indexed_image_never_panics() {
+    use picovolt::Database;
+    let mut rng = Lcg(0x00c0_ffee_1234_5678);
+
+    // A valid version-2 image: a table carrying a binary secondary-index region.
+    let mut db = Database::open_memory();
+    db.query("CREATE TABLE t (id, v)").unwrap();
+    db.query("CREATE INDEX ON t (v)").unwrap();
+    for i in 0..60u64 {
+        db.query(&format!("INSERT INTO t VALUES ({i}, {})", i % 7))
+            .unwrap();
+    }
+    let image = db.bake_to_bytes().unwrap();
+
+    for _ in 0..4000 {
+        // Bit-flipped v2 image: mutations that keep the header valid but corrupt the
+        // region or its descriptors drive slice_index_region + decode_binary on
+        // hostile bytes. Must return Err (or open), never panic / read out of bounds.
+        let _ = Database::import_bytes(&rng.mutate(&image));
+        let _ = Database::import_bytes(&rng.garbage(image.len().min(512)));
+    }
+}
+
+#[test]
 fn sql_parser_never_panics_on_garbage_or_mutation() {
     use picovolt::Database;
     let mut rng = Lcg(0xfeed_face_dead_beef);

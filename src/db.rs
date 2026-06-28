@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::errors::{PvError, Result};
 use crate::core::types::{
     pack_addr, unpack_addr, FileHeader, PageId, RecordAddr, RecordEnvelope, TxId, FILE_HEADER_SIZE,
-    FORMAT_VERSION, PAGE_HEADER_SIZE, PAGE_SIZE,
+    FORMAT_VERSION, FORMAT_VERSION_BASE, PAGE_HEADER_SIZE, PAGE_SIZE,
 };
 use crate::core::value::{Row, Value, DECIMAL_DEN};
 use crate::engine::compliance::{ComplianceMonitor, RuntimeMetrics};
@@ -41,8 +41,8 @@ use crate::storage::index::SecondaryIndex;
 use crate::storage::page::{RowPage, RowPageRef, SLOT_SIZE};
 use crate::storage::record::{decode_record, encode_record};
 use crate::storage::vle::{
-    bake_monolith_bytes, verify_page_checksum, Backend, DevStore, MemStore, Monolith, RangeReader,
-    RemoteStore,
+    bake_monolith_bytes_with_index, verify_page_checksum, Backend, DevStore, MemStore, Monolith,
+    RangeReader, RemoteStore,
 };
 
 /// Manifest file name within a development workspace.
@@ -82,6 +82,12 @@ struct Manifest {
     cas_hashes: Vec<String>,
     #[serde(default)]
     cas_dir: Vec<(u64, u64)>,
+    /// `(absolute offset, length)` of the binary secondary-index region within the
+    /// monolith, present only in version-2 files that carry one. Absent for
+    /// version-1 files and development workspaces (which persist indexes as JSON
+    /// `pairs` instead).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    index_region: Option<(u64, u64)>,
 }
 
 /// Reject a manifest whose format version this build cannot read: `0` (a
@@ -106,19 +112,36 @@ struct TableMeta {
     row_versions: u64,
     #[serde(default)]
     indexed_columns: Vec<String>,
-    /// Secondary indexes serialized into the manifest, loaded on open instead of
-    /// rebuilt by a full table scan. Absent in pre-1.2 files, which fall back to
-    /// rebuilding from `indexed_columns`.
-    #[serde(default)]
+    /// Secondary indexes serialized as JSON `(key, addresses)` pairs directly in
+    /// the manifest. Used by development workspaces (which have no file region).
+    /// Version-2 monoliths leave this empty and use `binary_indexes` instead;
+    /// pre-1.2 files leave it empty and the index is rebuilt from
+    /// `indexed_columns`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     indexes: Vec<PersistedIndex>,
+    /// Descriptors for secondary indexes stored in the monolith's binary index
+    /// region. Each `offset` is relative to the region start (see
+    /// [`Manifest::index_region`]). Present only in version-2 files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    binary_indexes: Vec<BinIndexDesc>,
 }
 
-/// One secondary index serialized into the manifest: a column and its
-/// `(key, addresses)` pairs in key order.
+/// One secondary index serialized into the manifest as JSON: a column and its
+/// `(key, addresses)` pairs in key order. Dev-workspace persistence.
 #[derive(Serialize, Deserialize)]
 struct PersistedIndex {
     column: String,
     pairs: Vec<(Value, Vec<RecordAddr>)>,
+}
+
+/// Locates one secondary index inside the monolith's binary index region:
+/// the column it covers and the `[offset, offset + len)` byte slice (relative to
+/// the region start) holding its [`SecondaryIndex::encode_binary`] blob.
+#[derive(Serialize, Deserialize, Clone)]
+struct BinIndexDesc {
+    column: String,
+    offset: u64,
+    len: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -202,7 +225,8 @@ impl Database {
             let dev = DevStore::open(&root, manifest.page_count)?;
             let mut cache = PageCache::new(Backend::Dev(dev), DEFAULT_CACHE_PAGES);
             let cas = CasStore::load_dev(&root, &manifest.cas_hashes)?;
-            let tables = build_tables(&mut cache, &cas, &manifest, true)?;
+            // Development workspaces persist indexes as JSON pairs, not a region.
+            let tables = build_tables(&mut cache, &cas, &manifest, true, &[])?;
             Ok(Self {
                 cache: RefCell::new(cache),
                 cas,
@@ -241,8 +265,12 @@ impl Database {
             &manifest.cas_dir,
             &manifest.cas_hashes,
         )?;
+        // Slice the binary index region out of the mapping. The `Arc<Mmap>` handle
+        // keeps the mapping alive past the move of `mono` into the cache below.
+        let map = mono.mmap();
+        let region = slice_index_region(&map, &manifest, mono.cas_offset() as u64)?;
         let mut cache = PageCache::new(Backend::Prod(mono), DEFAULT_CACHE_PAGES);
-        let tables = build_tables(&mut cache, &cas, &manifest, false)?;
+        let tables = build_tables(&mut cache, &cas, &manifest, false, region)?;
         Ok(Self {
             cache: RefCell::new(cache),
             cas,
@@ -298,9 +326,28 @@ impl Database {
             cas.put(&pool[off..end])?;
         }
 
+        // The binary index region (if any) was fetched as part of the tail; it sits
+        // between the CAS pool and the manifest, so its tail-relative offset is
+        // `absolute offset - cas_offset`.
+        let region: &[u8] = match manifest.index_region {
+            None => &[],
+            Some((off, len)) => {
+                let rel = (off as usize).checked_sub(cas_offset).ok_or_else(|| {
+                    PvError::Corruption("streamed: index region before CAS pool".into())
+                })?;
+                let end = rel
+                    .checked_add(len as usize)
+                    .filter(|&e| e <= tail.len())
+                    .ok_or_else(|| {
+                        PvError::Corruption("streamed: index region out of bounds".into())
+                    })?;
+                &tail[rel..end]
+            }
+        };
+
         let backend = Backend::Remote(RemoteStore::new(reader, page_count));
         let mut cache = PageCache::new(backend, DEFAULT_CACHE_PAGES);
-        let tables = build_tables(&mut cache, &cas, &manifest, false)?;
+        let tables = build_tables(&mut cache, &cas, &manifest, false, region)?;
         Ok(Self {
             cache: RefCell::new(cache),
             cas,
@@ -387,8 +434,9 @@ impl Database {
             cas.put(&pool[off..end])?;
         }
 
+        let region = slice_index_region(bytes, &manifest, cas_offset as u64)?;
         let mut cache = PageCache::new(Backend::Mem(mem), DEFAULT_CACHE_PAGES);
-        let tables = build_tables(&mut cache, &cas, &manifest, true)?;
+        let tables = build_tables(&mut cache, &cas, &manifest, true, region)?;
         Ok(Self {
             cache: RefCell::new(cache),
             cas,
@@ -409,9 +457,54 @@ impl Database {
         self.flush()?;
         let pages = self.cache.borrow().backend().read_all_pages()?;
         let (cas_pool, _dir) = self.cas.pack()?;
-        let manifest = self.build_manifest(true)?;
+
+        // Serialize secondary indexes into a compact binary region that sits
+        // between the CAS pool and the manifest; its absolute offset is fixed once
+        // the page block and CAS pool are sized.
+        let (region, descs) = self.build_index_region();
+        let region_offset = (FILE_HEADER_SIZE + pages.len() * PAGE_SIZE + cas_pool.len()) as u64;
+        let format_version = if region.is_empty() {
+            FORMAT_VERSION_BASE
+        } else {
+            FORMAT_VERSION
+        };
+
+        let manifest = self.build_manifest(
+            true,
+            &IndexPlan::Binary {
+                descs,
+                offset: region_offset,
+                len: region.len() as u64,
+            },
+        )?;
         let json = serde_json::to_vec(&manifest)?;
-        bake_monolith_bytes(&pages, &cas_pool, &json)
+        bake_monolith_bytes_with_index(&pages, &cas_pool, &region, &json, format_version)
+    }
+
+    /// Encode every table's secondary indexes into one contiguous binary blob,
+    /// returning the blob and, per table, the descriptors locating each column's
+    /// index within it (offsets relative to the blob start).
+    fn build_index_region(&self) -> (Vec<u8>, Vec<(String, Vec<BinIndexDesc>)>) {
+        let mut region = Vec::new();
+        let mut all = Vec::new();
+        for (name, t) in &self.tables {
+            let mut descs = Vec::new();
+            for (col, idx) in &t.indexes {
+                let blob = idx.encode_binary();
+                let offset = region.len() as u64;
+                let len = blob.len() as u64;
+                region.extend_from_slice(&blob);
+                descs.push(BinIndexDesc {
+                    column: col.clone(),
+                    offset,
+                    len,
+                });
+            }
+            if !descs.is_empty() {
+                all.push((name.clone(), descs));
+            }
+        }
+        (region, all)
     }
 
     /// Compile the current database into a `.pvdb` monolith at `out_path`.
@@ -1068,7 +1161,7 @@ impl Database {
         let Some(root) = self.root.clone() else {
             return Ok(());
         };
-        let manifest = self.build_manifest(false)?;
+        let manifest = self.build_manifest(false, &IndexPlan::Json)?;
         let json = serde_json::to_vec_pretty(&manifest)?;
         if self.durability == Durability::Sync {
             self.write_manifest_atomic(&root, &json)
@@ -1113,7 +1206,7 @@ impl Database {
         Ok(())
     }
 
-    fn build_manifest(&self, include_cas_dir: bool) -> Result<Manifest> {
+    fn build_manifest(&self, include_cas_dir: bool, plan: &IndexPlan) -> Result<Manifest> {
         let mut cas_hashes = Vec::with_capacity(self.cas.len());
         for id in 0..self.cas.len() as u64 {
             cas_hashes.push(self.cas.hash_hex(id)?);
@@ -1126,33 +1219,73 @@ impl Database {
         let tables = self
             .tables
             .iter()
-            .map(|(name, t)| TableMeta {
-                name: name.clone(),
-                columns: t.columns.clone(),
-                first_page: t.first_page,
-                tail_id: t.tail_id,
-                row_versions: t.row_versions,
-                indexed_columns: t.indexes.keys().cloned().collect(),
-                indexes: t
-                    .indexes
-                    .iter()
-                    .map(|(col, idx)| PersistedIndex {
-                        column: col.clone(),
-                        pairs: idx.to_pairs(),
-                    })
-                    .collect(),
+            .map(|(name, t)| {
+                let (indexes, binary_indexes) = match plan {
+                    IndexPlan::Json => (
+                        t.indexes
+                            .iter()
+                            .map(|(col, idx)| PersistedIndex {
+                                column: col.clone(),
+                                pairs: idx.to_pairs(),
+                            })
+                            .collect(),
+                        Vec::new(),
+                    ),
+                    IndexPlan::Binary { descs, .. } => (
+                        Vec::new(),
+                        descs
+                            .iter()
+                            .find(|(n, _)| n == name)
+                            .map(|(_, d)| d.clone())
+                            .unwrap_or_default(),
+                    ),
+                };
+                TableMeta {
+                    name: name.clone(),
+                    columns: t.columns.clone(),
+                    first_page: t.first_page,
+                    tail_id: t.tail_id,
+                    row_versions: t.row_versions,
+                    indexed_columns: t.indexes.keys().cloned().collect(),
+                    indexes,
+                    binary_indexes,
+                }
             })
             .collect();
         let page_count = self.cache.borrow().backend().page_count();
+        let (format_version, index_region) = match plan {
+            // Dev workspaces and region-less files stay at the base version so an
+            // older build can still read them.
+            IndexPlan::Json => (FORMAT_VERSION_BASE, None),
+            IndexPlan::Binary { offset, len, .. } if *len > 0 => {
+                (FORMAT_VERSION, Some((*offset, *len)))
+            }
+            IndexPlan::Binary { .. } => (FORMAT_VERSION_BASE, None),
+        };
         Ok(Manifest {
-            format_version: FORMAT_VERSION,
+            format_version,
             clock: self.txm.current(),
             page_count,
             tables,
             cas_hashes,
             cas_dir,
+            index_region,
         })
     }
+}
+
+/// How a [`Manifest`] should persist secondary indexes.
+enum IndexPlan {
+    /// JSON `(key, addresses)` pairs inline in the manifest (development
+    /// workspaces, which have no monolith region).
+    Json,
+    /// Descriptors into a binary index region at absolute file `offset` spanning
+    /// `len` bytes. `descs` maps each table name to its per-column descriptors.
+    Binary {
+        descs: Vec<(String, Vec<BinIndexDesc>)>,
+        offset: u64,
+        len: u64,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -2028,12 +2161,45 @@ fn patch_delete_at(
     cache.with_page_mut(pid, |page| page.patch_envelope_deleted(slot, tx))
 }
 
+/// Slice the binary index region out of a full `.pvdb` byte image (an mmap or an
+/// imported buffer, both starting at file offset 0). Returns an empty slice for a
+/// version-1 file that carries no region. The region must sit at or after
+/// `cas_offset` and within the image; descriptors and the index decoder do the
+/// finer-grained bounds checks.
+fn slice_index_region<'a>(
+    image: &'a [u8],
+    manifest: &Manifest,
+    cas_offset: u64,
+) -> Result<&'a [u8]> {
+    match manifest.index_region {
+        None => Ok(&[]),
+        Some((off, len)) => {
+            if off < cas_offset {
+                return Err(PvError::Corruption(
+                    "index region overlaps the CAS pool".into(),
+                ));
+            }
+            let off = off as usize;
+            let end = off
+                .checked_add(len as usize)
+                .filter(|&e| e <= image.len())
+                .ok_or_else(|| PvError::Corruption("index region out of bounds".into()))?;
+            Ok(&image[off..end])
+        }
+    }
+}
+
 /// Reconstruct in-memory table metadata (and indexes) from a manifest.
+///
+/// `index_region` is the raw bytes of the monolith's binary index region (empty
+/// for version-1 files and development workspaces); descriptors in the manifest
+/// slice into it.
 fn build_tables(
     cache: &mut PageCache,
     cas: &CasStore,
     manifest: &Manifest,
     writable: bool,
+    index_region: &[u8],
 ) -> Result<BTreeMap<String, Table>> {
     let mut tables = BTreeMap::new();
     for meta in &manifest.tables {
@@ -2059,8 +2225,33 @@ fn build_tables(
     // Load persisted indexes where present; otherwise (pre-1.2 files) rebuild them
     // from a streaming scan. Loading avoids re-reading every page on open, which is
     // what lets a large or streamed database open quickly with indexes intact.
+    // Precedence: a binary index region (v2) wins over JSON `pairs` (dev / v1)
+    // which wins over a from-scratch rebuild (pre-1.2 files).
     for meta in &manifest.tables {
-        if meta.indexes.is_empty() {
+        if !meta.binary_indexes.is_empty() {
+            let table = tables.get_mut(&meta.name).expect("just inserted");
+            for desc in &meta.binary_indexes {
+                let start = desc.offset as usize;
+                let end = start
+                    .checked_add(desc.len as usize)
+                    .filter(|&e| e <= index_region.len())
+                    .ok_or_else(|| {
+                        PvError::Corruption("index region descriptor out of bounds".into())
+                    })?;
+                table.indexes.insert(
+                    desc.column.clone(),
+                    SecondaryIndex::decode_binary(&index_region[start..end])?,
+                );
+            }
+        } else if !meta.indexes.is_empty() {
+            let table = tables.get_mut(&meta.name).expect("just inserted");
+            for pi in &meta.indexes {
+                table.indexes.insert(
+                    pi.column.clone(),
+                    SecondaryIndex::from_pairs(pi.pairs.clone()),
+                );
+            }
+        } else {
             for column in &meta.indexed_columns {
                 let table = tables.get(&meta.name).expect("just inserted");
                 let col_ix = column_index(table, column)?;
@@ -2074,14 +2265,6 @@ fn build_tables(
                     .expect("just inserted")
                     .indexes
                     .insert(column.clone(), index);
-            }
-        } else {
-            let table = tables.get_mut(&meta.name).expect("just inserted");
-            for pi in &meta.indexes {
-                table.indexes.insert(
-                    pi.column.clone(),
-                    SecondaryIndex::from_pairs(pi.pairs.clone()),
-                );
             }
         }
     }

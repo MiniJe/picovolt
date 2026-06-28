@@ -47,4 +47,32 @@ fn main() {
 
     let size = std::fs::metadata(&out).unwrap().len();
     println!("wrote {} ({size} bytes)", out.display());
+
+    // A version-2 golden: a table carrying a secondary index, so the baked file
+    // exercises the binary index region (format §6.1) and stays at version 2.
+    let ws2 = dir.join("_golden_ws2");
+    let _ = std::fs::remove_dir_all(&ws2);
+    let mut db2 = Database::open_dev(&ws2).unwrap();
+    db2.query("CREATE TABLE crates (id, name, downloads)")
+        .unwrap();
+    db2.query("CREATE INDEX ON crates (downloads)").unwrap();
+    for (id, name, dl) in [
+        (1, "serde", 90_000),
+        (2, "tokio", 80_000),
+        (3, "rand", 70_000),
+        (4, "clap", 60_000),
+        (5, "log", 50_000),
+    ] {
+        db2.query(&format!("INSERT INTO crates VALUES ({id}, '{name}', {dl})"))
+            .unwrap();
+    }
+    // An UPDATE leaves MVCC history behind so the fixture also covers time-travel.
+    db2.query("UPDATE crates SET downloads = 95000 WHERE id = 1")
+        .unwrap();
+    let out2 = dir.join("golden_v1_3_0.pvdb");
+    db2.bake(&out2).unwrap();
+    let _ = std::fs::remove_dir_all(&ws2);
+
+    let size2 = std::fs::metadata(&out2).unwrap().len();
+    println!("wrote {} ({size2} bytes)", out2.display());
 }

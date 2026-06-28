@@ -38,9 +38,19 @@ pub const PAGE_CHECKSUM_OFFSET: usize = 24;
 /// Magic bytes identifying a baked monolithic `.pvdb` file: ASCII `"PVDB"`.
 pub const MAGIC_BYTES: [u8; 4] = [0x50, 0x56, 0x44, 0x42];
 
-/// The on-disk `.pvdb` format version this build writes, and the newest it can
-/// read. A file whose version is greater is rejected rather than mis-parsed.
-pub const FORMAT_VERSION: u16 = 1;
+/// The newest on-disk `.pvdb` format version this build can read. A file whose
+/// version is greater is rejected rather than mis-parsed.
+///
+/// - Version 1: `header | pages | CAS pool | manifest`.
+/// - Version 2: adds a binary secondary-index region between the CAS pool and the
+///   manifest (`header | pages | CAS pool | index region | manifest`). A file is
+///   only stamped version 2 when it actually carries that region; an index-less
+///   monolith stays version 1 and remains readable by version-1 builds.
+pub const FORMAT_VERSION: u16 = 2;
+
+/// The version stamped on a file that carries no binary index region, kept at 1
+/// so such files stay readable by older builds.
+pub const FORMAT_VERSION_BASE: u16 = 1;
 
 /// Size of the `.pvdb` file header:
 /// `magic(4) + format_version(2) + flags(2) + manifest_offset(8) + cas_offset(8)`.
@@ -391,6 +401,18 @@ impl FileHeader {
     pub const fn new(manifest_offset: u64, cas_offset: u64) -> Self {
         Self {
             format_version: FORMAT_VERSION,
+            manifest_offset,
+            cas_offset,
+        }
+    }
+
+    /// Construct a header stamped with an explicit `format_version`, so a baker
+    /// can write the lowest version a file actually needs (see
+    /// [`FORMAT_VERSION_BASE`]).
+    #[inline]
+    pub const fn new_versioned(manifest_offset: u64, cas_offset: u64, format_version: u16) -> Self {
+        Self {
+            format_version,
             manifest_offset,
             cas_offset,
         }
