@@ -1,181 +1,152 @@
-# Roadmap
+# Roadmap to PicoVolt 2.0
 
-This describes the direction of the project, not a commitment. Priorities shift
-with what users need, and dates are deliberately omitted. Items are grouped by
-horizon. Changes that have landed are recorded in [CHANGELOG.md](CHANGELOG.md).
-The distribution and adoption plan behind the one-million-download goal lives in
-[docs/ROADMAP_1M_DOWNLOADS.md](docs/ROADMAP_1M_DOWNLOADS.md).
+This roadmap describes intended outcomes, not release dates. A feature moves into
+a release only when its correctness work, documentation, compatibility tests, and
+upgrade path are ready. Shipped work is recorded in [CHANGELOG.md](CHANGELOG.md).
+The adoption plan lives in
+[docs/ROADMAP_1M_DOWNLOADS.md](docs/ROADMAP_1M_DOWNLOADS.md), and the business
+model hypothesis lives in [docs/MONETIZATION.md](docs/MONETIZATION.md).
 
-PicoVolt reached **1.0**: the public API and the `.pvdb` on-disk format are stable
-under SemVer. Features arrive in minor releases, and breaking changes wait for a
-major. The near-term, versioned plan is under **Planned 1.x releases** below;
-bigger, breaking ideas are under **2.0 candidates**.
+## Where PicoVolt is now
 
-## Shipped in 0.1.0
+Version **1.5.0** is published on crates.io, npm, and PyPI. The current engine
+includes page-backed storage, MVCC time-travel queries, persisted secondary
+indexes, a stable 1.x file format, Rust/JavaScript/Python/Go/C bindings, a CLI,
+an optional bounded HTTP server, and a durable browser path using OPFS and a Web
+Worker.
 
-The core engine: VLE development, production, and in-memory backends; page-backed
-storage with O(1) appends; a bounded buffer pool; MVCC time-travel; CAS dedup;
-columnar compression; secondary indexes; selectable durability; the WebAssembly
-extension sandbox; an SQL front-end; and the WebAssembly and npm bindings.
+PicoVolt is still deliberately narrow:
 
-## Recently added (on main)
+- the filesystem engine is single-writer;
+- filesystem workspaces do not yet support multi-statement transactions;
+- SQL is a practical subset, not a compatibility claim;
+- the project has extensive automated hardening but no independent security
+  audit yet.
 
-- **Persisted binary secondary indexes:** baked version-2 images store compact
-  index regions and reopen without rebuilding every index from table scans.
-- **Bounded server execution:** network binds require bearer authentication, and
-  server queries now have queue, scan, memory, result, response, and time limits.
-- **First-class CLI and distribution:** `pv` imports/exports common text formats,
-  queries and inspects databases, and bakes production images; releases attach
-  native tools, SBOMs, checksums, and provenance attestations.
-- **Compatibility foundations:** reusable prepared statements, column constraints,
-  equality `INNER`/`LEFT JOIN`, and atomic in-memory transaction wrappers.
-- **Everyday SQL and inspection:** multi-row inserts, `LIMIT`/`OFFSET`, projected
-  and distinct equality joins, and `pv history` snapshot inspection.
-- **Durable browser path:** an OPFS wrapper and Web Worker RPC entry point keep
-  storage durable and queries off the UI thread.
+Those constraints determine the order below.
 
-- **Richer WHERE predicates:** comparison operators (`<`, `<=`, `>`, `>=`, `!=`,
-  `<>`), `AND` and `OR` with parentheses, and `LIKE` (`%` and `_`) for `SELECT`,
-  `UPDATE`, and `DELETE`.
-- **Whole-table aggregates:** `COUNT`, `SUM`, `MIN`, and `MAX`, over the full or
-  `WHERE`-filtered result.
-- **Ordered, range-capable secondary indexes:** `CREATE INDEX` builds a
-  `BTreeMap`-backed index. Range predicates such as `col > v` use it for an
-  ordered scan instead of a full scan, alongside the existing point lookups.
-- **Index-accelerated `ORDER BY`:** a `SELECT ... ORDER BY indexed_col` with no
-  `WHERE` reads the index in key order and skips the sort, and a `LIMIT` stops the
-  read early.
-- **`GROUP BY`:** group rows by one or more columns and evaluate `COUNT`, `SUM`,
-  `MIN`, and `MAX` per group.
-- **Fixed-point decimal values:** a storable `Value::Decimal` type (exact, totally
-  ordered) with SQL literals; `AVG` returns it instead of text. Packed columnar
-  pages still fall back to row storage when a decimal is present.
-- **`AVG`:** averages an integer column, on its own or under `GROUP BY`, returning
-  an exact decimal.
-- **Positioned parse errors:** parse and tokenizer errors report the line and
-  column of the offending token and draw a caret under the source.
-- **Streaming reads:** `Database::for_each_row` visits visible rows one at a time
-  instead of materializing the full result, for bounded-memory processing of large
-  tables.
+## 1.6 — Crash-safe transactions
 
-## Native language bindings (shipped in 0.4.0)
+**Outcome:** an application can group filesystem writes and trust that an
+interrupted commit is either fully visible or not visible at all.
 
-PicoVolt exposes a C ABI (the `capi` feature, [`src/ffi.rs`](src/ffi.rs), header
-[`include/picovolt.h`](include/picovolt.h)) so it can be embedded from any
-language with a C FFI. Two bindings ship on top of it in
-[`bindings/`](bindings): **Go** (cgo) and **Python** (ctypes). They surface the
-engine's strengths, an embedded single-writer engine with SQL, MVCC time-travel,
-and a compile-to-`.pvdb` path; they do not add JOINs, transactions, or concurrent
-writers, so they suit embedded use rather than a concurrent server's primary
-store.
+Planned scope:
 
-## Planned 1.x releases
+- explicit `BEGIN`, `COMMIT`, and `ROLLBACK` for filesystem workspaces;
+- a write-ahead or copy-on-write commit protocol with deterministic recovery;
+- transaction parity across Rust, JavaScript, Python, Go, C, CLI, and server
+  entry points;
+- process-kill and torn-write injection tests for every durability mode;
+- documented behavior for nesting, errors, and read-your-writes.
 
-Versioned, non-breaking targets: features land in minor releases, and nothing here
-changes the public API or breaks 1.x file compatibility (a newer build always reads
-an older 1.x file). Order is by impact (informed by where evaluators say the engine
-is weakest) and is direction, not a schedule.
+Release gate: 10,000 randomized crash/recovery cycles without a partial commit,
+plus golden-file coverage proving that every earlier 1.x image still opens.
 
-### 1.5: Crash-safe filesystem transactions
+## 1.7 — Application compatibility
 
-`BEGIN` / `COMMIT` / `ROLLBACK` for filesystem workspaces and native bindings, built on
-the MVCC machinery that already exists: multi-statement atomicity and rollback, not
-just per-statement autocommit. The most-requested correctness feature.
+**Outcome:** common small applications can switch their storage adapter without
+rewriting normal query and schema code.
 
-This is the next engine milestone. It requires a write-ahead or copy-on-write
-commit protocol plus power-loss tests; it will not be implemented as a
-best-effort rollback wrapper.
+Planned scope:
 
-### 1.5: Finish richer JOINs
+- table aliases and N-table equality joins;
+- `CASE WHEN` and a focused set of string, numeric, and null-handling functions;
+- richer schema declarations, including defaults and check constraints;
+- reusable prepared-statement parity in every maintained binding;
+- compatibility suites derived from the browser, Node, Python, and Go starters;
+- actionable errors that name the unsupported construct and its source position.
 
-Two-table equality `INNER JOIN` and `LEFT JOIN` now use a hash-style lookup and
-support dotted identifiers, projection, `DISTINCT`, filtering, ordering, and
-pagination. Next are N-table plans, aliases, and index-assisted planning.
+Release gate: every maintained starter runs only against packages installed from
+the public registries, with no source-tree fallback.
 
-### SQL ergonomics
+## 1.8 — Data movement and inspection
 
-`OFFSET` and multi-row inserts are now on main. Next are `CASE WHEN`, more scalar
-functions (string / number), richer DDL defaults, and simple scalar
-subqueries in `WHERE` / `IN`. Incremental polish that closes the gap with everyday
-SQL.
+**Outcome:** a team can evaluate PicoVolt on existing data and understand what the
+engine stored and why a query used a particular path.
 
-### Smaller items, any release
+Planned scope:
 
-- **Decimals in the columnar layout.** Decimal values are storable in row form;
-  encoding them in the packed columnar layout (today such pages stay in row form) is
-  the remaining piece.
-- **Background columnar compaction.** Promote the on-demand row-to-columnar
-  transposition ([`storage/page.rs`](src/storage/page.rs)) to a background worker.
-- **Forward format migration.** Read older `FORMAT_VERSION`s in place rather than
-  requiring a re-bake.
-- **CLI follow-ups.** `pv history` now summarizes recent snapshots. Add row-level
-  time-travel diffs, Parquet, and binary SQLite import.
+- Parquet import/export and direct binary SQLite import;
+- `pv diff` for row-level changes between MVCC snapshots;
+- `EXPLAIN` output for scans, indexes, joins, sorting, and limits;
+- manifest, page, index, and compression statistics in `pv inspect`;
+- a documented, resumable pipeline for baking large production images;
+- signed dataset manifests for distributing `.pvdb` artifacts.
 
-## Bindings and extensions
+Release gate: round-trip and differential tests over representative public
+datasets, including datasets larger than the configured buffer pool.
 
-The C ABI opens two directions that grow independently of the core engine.
+## 1.9 — Stabilization
 
-- **More bindings.** A Go `database/sql` driver and pip-installable Python wheels
-  that bundle the shared library both shipped in 0.5.0. Still open: Go ORM
-  adapters and a documented C example. Because the bindings share one C ABI, new
-  languages (Ruby, C#, Java, Zig) are wrappers rather than new engine work.
-- **Drop-in compatibility.** Parameterized queries (`?` placeholders) shipped in
-  0.6.0 and now span the C ABI and language bindings. A Go `database/sql` driver,
-  `better-sqlite3`-style JavaScript adapter, and Python DB-API 2.0 module have also
-  shipped. Next: prepared-statement objects and compatibility test suites drawn
-  from real applications.
-- **Functional plugins.** The `WasmExec` trait is an existing extension seam.
-  More seams of the same shape could allow:
-  - additional index types behind `CREATE INDEX`, such as a full-text index or a
-    vector/embedding index for nearest-neighbor search;
-  - pluggable storage backends behind the VLE, such as an object-store backend;
-    OPFS snapshot persistence and a worker endpoint now ship for WebAssembly;
-  - import and export adapters beyond the shipped CSV, JSONL, and SQLite SQL-dump
-    support, especially Parquet and direct binary SQLite ingestion;
-  - alternative compression codecs.
+**Outcome:** 2.0 begins from measured behavior and a proven migration path rather
+than from an API redesign performed in the dark.
 
-## 2.0 candidates (breaking)
+Planned scope:
 
-Bigger pieces that would change the public API or the concurrency model, so they
-wait for a major version. (The HTTP/JSON **server mode** that was once the big next
-step shipped in 0.10.0.)
+- index-assisted N-table planning and benchmark-driven optimizer work;
+- packed decimal encoding and background columnar compaction;
+- `pv migrate` with dry-run, backup, verification, and rollback guidance;
+- sustained parser/decoder fuzzing and multi-day stress runs;
+- performance regression budgets for open, scan, point lookup, top-N, join, bake,
+  and recovery workloads;
+- a release-candidate period focused on downstream compatibility.
 
-- **Concurrent writers.** The engine is single-writer today: one thread owns it,
-  and the server serializes requests through that thread. True multi-writer
-  concurrency is the prerequisite for a general multi-client store and almost
-  certainly an API change.
-- **Encryption at rest** and **replication** for confidentiality and a warm copy.
-- **A native OPFS VLE backend.** The 1.x JavaScript wrapper persists snapshots in
-  OPFS; direct page-level OPFS access belongs here if it changes the open/init API.
-- **Local-first sync.** Operation-log or CRDT sync between an in-browser PicoVolt
-  and a server.
+Release gate: no unresolved critical or high-severity findings, 30 days of
+release-candidate soak, and successful migration of the complete golden-file
+corpus.
 
-## Maturity track (runs alongside every version)
+## 2.0 — A production concurrency contract
 
-Trust in a database is earned over time, not declared at a version bump. These run
-in parallel to the feature releases above and are what actually gate production
-confidence:
+**Outcome:** PicoVolt can be shared safely by multiple application tasks without
+forcing callers to build their own ownership thread around the database.
 
-- **External security audit.** None yet; the highest-value trust item.
-- **Sustained fuzzing.** The decoders and the SQL parser are fuzzed per commit;
-  1.x calls for a long-running soak, not just CI runs (see [SECURITY.md](SECURITY.md)).
-- **Crash-injection.** Read-side corruption is covered by injection tests; still
-  wanted is true power-loss injection (killing a process mid-flush) behind the
-  `Sync` durability claims, plus index crash-consistency once indexes persist (1.1).
-- **Extension contract.** Stabilize the crate-root seams documented in
-  [docs/EXTENDING.md](docs/EXTENDING.md).
+The 2.0 design may break APIs and advance the on-disk format. Its minimum scope is:
 
-## Out of scope
+- explicit database, read-transaction, and write-transaction handles;
+- concurrent snapshot readers with defined writer scheduling and cancellation;
+- a crash-recoverable commit log that exposes an ordered change stream;
+- backpressure and resource limits as part of the public contract;
+- first-party migration tooling from every 1.x format;
+- stable extension points for encryption and replication without making a
+  particular cloud service part of the engine.
 
-These keep the project focused:
+Full distributed consensus, automatic conflict-free multi-device sync, and a
+hosted control plane are **not** required for 2.0. They can build on the ordered
+change stream later instead of delaying the core concurrency contract.
 
-- It is not aiming to be a drop-in SQL-92 or PostgreSQL-compatible database.
-- No distributed consensus or multi-node clustering.
-- `pv-wasm` stays an integer-subset interpreter. Floats, SIMD, and tables remain
-  the `wasmi` backend's responsibility rather than a reimplementation.
+Release gates:
 
-## Suggesting changes
+1. an independent security review of the format, recovery path, FFI boundary,
+   and network surface;
+2. crash injection, model-based transaction tests, and thread-sanitizer coverage;
+3. documented latency and memory envelopes under contention;
+4. migration rehearsals on real 1.x databases with verified backups;
+5. at least three external applications completing a release-candidate trial.
 
-The ordering above is a starting point. To influence it, open an issue describing
-the problem you have rather than only the feature you want; concrete use cases are
-what move items up the list. See [CONTRIBUTING.md](CONTRIBUTING.md).
+## Work that runs alongside every release
+
+- Keep one version number across crates.io, npm, PyPI, native artifacts, and tags.
+- Publish checksums, SBOMs, provenance, clean-install smoke tests, and migration
+  notes for every release.
+- Never add runtime telemetry by default.
+- Maintain the stable-format promise: later 1.x builds read all earlier 1.x files.
+- Measure download growth together with successful installs, dependents, starter
+  completions, and issue resolution—not as an isolated vanity number.
+
+## Beyond 2.0
+
+Candidates include encrypted storage, an object-store backend, managed immutable
+dataset distribution, change-stream replication, offline sync, full-text and
+vector indexes, and additional language adapters. They remain candidates until a
+real application and maintainer capacity justify their cost.
+
+## Non-goals
+
+- Drop-in PostgreSQL or complete SQL-92 compatibility.
+- Distributed consensus or multi-node clustering in the core engine.
+- Reimplementing advanced WebAssembly execution features already handled by the
+  optional `wasmi` backend.
+
+To influence priority, open an issue describing the application, current
+workaround, failure mode, and smallest useful outcome. Concrete constraints move
+work faster than feature names alone.

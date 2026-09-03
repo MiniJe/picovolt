@@ -11,10 +11,10 @@ Snapshot taken 2026-09-03 from the public registry APIs:
 
 | Channel | Lifetime downloads | State |
 |---|---:|---|
-| npm `picovolt` | 2,563 | Published at 1.3.0 |
-| crates.io `picovolt` | 279 | Published at 1.3.0 |
-| PyPI `picovolt` | 0 | Not published yet |
-| **Known total** | **2,842** | GitHub release assets excluded |
+| npm `picovolt` | 2,563 | Published at 1.5.0 |
+| crates.io `picovolt` | 279 | Published at 1.5.0 |
+| PyPI `picovolt` | Not publicly reported | Published at 1.5.0 |
+| **Known registry total** | **At least 2,842** | PyPI and GitHub release assets excluded |
 
 Sources: [npm download API](https://api.npmjs.org/downloads/point/2026-06-22:2026-09-03/picovolt),
 [crates.io API](https://crates.io/api/v1/crates/picovolt), and
@@ -26,10 +26,11 @@ visits, source clones, CI artifacts, or repeated mirrors as downloads. Registry
 numbers include bots and CI, so dependents and successful onboarding are the
 health metrics that stop the headline number becoming vanity.
 
-At the current baseline, the remaining gap is 997,158 downloads. A two-year path
-needs roughly 41,550 downloads per month on average; a three-year path needs
-roughly 27,700. Because growth starts much lower, the end-of-period run rate must
-be higher than either average.
+At the current confirmed baseline, the remaining measured gap is no more than
+997,158 downloads because PyPI installs are not represented in the total. A
+two-year path needs roughly 41,550 measured downloads per month on average; a
+three-year path needs roughly 27,700. Because growth starts much lower, the
+end-of-period run rate must be higher than either average.
 
 ## Product position
 
@@ -61,13 +62,10 @@ These are release blockers, not optional marketing work.
    environments. A workflow that silently skipped a registry must fail visibly.
 5. Publish a support matrix for OS, CPU, runtime, and file-format compatibility.
 
-Current status (2026-09-03): crates.io and npm 1.4.0 are live. Native artifacts
-were blocked by an SBOM filename mismatch, now fixed on main. Python wheels build
-on all current targets, but PyPI rejected the OIDC identity because its trusted
-publisher has not yet been configured to match repository `MiniJe/picovolt`,
-workflow `python-wheels.yml`, environment `pypi`. The support matrix now lives in
-[`SUPPORT.md`](SUPPORT.md). Clean-room Cargo, npm, PyPI, and native CLI smoke
-checks are now part of the release workflows on main.
+Current status (2026-09-03): version 1.5.0 is live on crates.io, npm, and PyPI.
+The trusted-publishing identities are configured, the native SBOM filename issue
+is fixed, and clean-room Cargo, npm, PyPI, and native CLI smoke checks are part of
+the release workflows. The support matrix lives in [`SUPPORT.md`](../SUPPORT.md).
 
 Exit criterion: one version tag produces installable Cargo, npm, PyPI, and GitHub
 artifacts, and clean-room smoke tests execute a first query through each.
@@ -133,7 +131,7 @@ behind the items above.
 
 | Horizon | Cumulative target | Leading indicators |
 |---|---:|---|
-| 30 days | 10,000 | PyPI live; all release channels green; `pv` CLI specification accepted |
+| 30 days | 10,000 | All release channels green; three external starter completions |
 | 90 days | 50,000 | Four starters; two import formats; 20 public dependents |
 | 6 months | 150,000 | Transactions and basic JOINs; 10,000 weekly downloads |
 | 12 months | 400,000 | OPFS/Worker browser path; 25,000 weekly downloads; 100 dependents |
@@ -158,15 +156,14 @@ until users explicitly ask for product telemetry.
 
 ## Immediate next sprint
 
-1. Configure the `pypi` GitHub environment and PyPI pending trusted publisher for
-   `MiniJe/picovolt`, workflow `python-wheels.yml`, environment `pypi`; configure
-   npm's trusted publisher for `release.yml` and then revoke its long-lived token.
-2. Re-run native artifact generation with the corrected CycloneDX output and
-   verify the new clean-room installation smoke tests.
-3. Implement crash-safe filesystem transactions with power-loss injection tests;
+1. Implement crash-safe filesystem transactions with power-loss injection tests;
    this is the largest remaining adoption blocker.
-4. Extend the shipped joined-row filtering/ordering to N-table plans, and add
+2. Extend the shipped joined-row filtering/ordering to N-table plans, and add
    `CASE` plus common scalar functions from real starter-app compatibility tests.
-5. Add Parquet and direct binary SQLite import, then a row-level `pv diff` command.
-6. Publish the starters as standalone templates, make the browser demo the primary
-   homepage action, and start the public weekly adoption dashboard.
+3. Add Parquet and direct binary SQLite import, then a row-level `pv diff` command.
+4. Publish the starters as standalone templates and measure clean installs and
+   completed first queries.
+5. Start the public weekly adoption dashboard and recruit the first three
+   applications for the 1.6 release-candidate trial.
+6. Validate the commercial-support and PicoVolt Hub hypotheses described in
+   [MONETIZATION.md](MONETIZATION.md) without gating the open-source engine.

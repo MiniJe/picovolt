@@ -212,6 +212,7 @@ native modules built on the public API. Both are documented in
 |--|--|
 | Roadmap | [ROADMAP.md](ROADMAP.md) |
 | One-million-download plan | [docs/ROADMAP_1M_DOWNLOADS.md](docs/ROADMAP_1M_DOWNLOADS.md) |
+| Monetization thesis | [docs/MONETIZATION.md](docs/MONETIZATION.md) |
 | Platform and file support | [docs/SUPPORT.md](docs/SUPPORT.md) |
 | Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Code of conduct | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) |
