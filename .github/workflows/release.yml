@@ -181,7 +181,9 @@ jobs:
           mkdir -p dist
           cp "target/release/pv${{ matrix.ext }}" "dist/pv-${{ matrix.label }}${{ matrix.ext }}"
           cp "target/release/picovolt-server${{ matrix.ext }}" "dist/picovolt-server-${{ matrix.label }}${{ matrix.ext }}"
-          cargo cyclonedx --format json --override-filename "picovolt-${{ matrix.label }}.cdx.json"
+          # cargo-cyclonedx appends the selected format extension even when the
+          # filename is overridden, so omit the trailing `.json` here.
+          cargo cyclonedx --format json --override-filename "picovolt-${{ matrix.label }}.cdx"
           test -f "picovolt-${{ matrix.label }}.cdx.json"
           mv "picovolt-${{ matrix.label }}.cdx.json" dist/
       - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
