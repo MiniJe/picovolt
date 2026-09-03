@@ -1920,6 +1920,17 @@ impl Database {
         self.enterprise.config()
     }
 
+    /// Build an offline inventory snapshot for a host-owned fleet manager.
+    ///
+    /// This method performs no network or filesystem I/O.
+    #[cfg(feature = "enterprise")]
+    pub fn enterprise_status(&self) -> crate::enterprise::EnterpriseStatus {
+        crate::enterprise::EnterpriseStatus::current(
+            self.enterprise.config().cloned(),
+            self.current_tx(),
+        )
+    }
+
     /// Attach a host-owned transaction audit destination.
     ///
     /// Events contain no SQL, values, paths, credentials, or user identities.

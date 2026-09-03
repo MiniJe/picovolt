@@ -34,6 +34,27 @@ fn bake_sample(dir: &std::path::Path) -> std::path::PathBuf {
 // --- 1. The committed golden file must keep opening and matching --------------
 
 #[test]
+fn every_checked_in_golden_image_opens() {
+    let fixtures = std::fs::read_dir("tests/fixtures").unwrap();
+    let mut images = Vec::new();
+    for entry in fixtures {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|value| value.to_str()) == Some("pvdb") {
+            images.push(path);
+        }
+    }
+    images.sort();
+    assert!(
+        !images.is_empty(),
+        "the compatibility corpus must not be empty"
+    );
+    for image in images {
+        Database::open_prod(&image)
+            .unwrap_or_else(|error| panic!("historical image {} failed: {error}", image.display()));
+    }
+}
+
+#[test]
 fn golden_file_opens_and_matches() {
     let mut db = Database::open_prod(GOLDEN).expect("golden .pvdb must still open");
 

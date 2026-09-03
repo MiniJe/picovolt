@@ -43,8 +43,10 @@ Delivered scope:
 - an optional `enterprise` feature with data-minimizing transaction audit events
   and honest capability discovery for future fleet/control-plane integrations.
 
-Remaining release validation: extended randomized crash/recovery cycles and
-golden-file coverage proving that every earlier 1.x image still opens.
+Release validation now includes cross-process randomized crash/recovery cycles
+that bypass destructors after dirty-page sync, plus automatic opening of every
+checked-in historical `.pvdb` image. A longer soak can be run with
+`PICOVOLT_CRASH_CYCLES=1000 cargo test --test crash_recovery -- --nocapture`.
 
 ## 1.7 — Application compatibility
 

@@ -51,3 +51,20 @@ fn capabilities_do_not_claim_unimplemented_enterprise_features() {
     assert!(!capabilities.replication_stream);
     assert!(!capabilities.identity_provider);
 }
+
+#[test]
+fn status_is_serializable_offline_inventory() {
+    let mut db = Database::open_memory();
+    db.configure_enterprise(EnterpriseConfig::new("catalog-eu", "staging").unwrap());
+    db.query("CREATE TABLE inventory (id PRIMARY KEY)").unwrap();
+
+    let status = db.enterprise_status();
+    assert_eq!(status.engine_version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(status.current_transaction_id, db.current_tx());
+    assert_eq!(
+        status.deployment.as_ref().unwrap().database_id,
+        "catalog-eu"
+    );
+    let encoded = serde_json::to_string(&status).unwrap();
+    assert!(!encoded.contains("CREATE TABLE"));
+}

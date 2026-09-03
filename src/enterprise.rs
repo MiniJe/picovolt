@@ -12,6 +12,8 @@ use crate::TxId;
 
 /// Schema version carried by every enterprise audit event.
 pub const AUDIT_EVENT_SCHEMA_VERSION: u16 = 1;
+/// Schema version of [`EnterpriseStatus`].
+pub const ENTERPRISE_STATUS_SCHEMA_VERSION: u16 = 1;
 
 /// Host-supplied identity for one deployed database.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,6 +130,42 @@ impl EnterpriseCapabilities {
             encryption_at_rest: false,
             replication_stream: false,
             identity_provider: false,
+        }
+    }
+}
+
+/// Offline deployment inventory suitable for a host-owned fleet manager.
+///
+/// Producing this value performs no I/O and sends no telemetry. The embedding
+/// application decides whether, where, and how it is transported.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnterpriseStatus {
+    /// Status payload schema version.
+    pub schema_version: u16,
+    /// PicoVolt package version that produced this payload.
+    pub engine_version: String,
+    /// On-disk format written by this engine.
+    pub format_version: u16,
+    /// Host-supplied deployment identity, when configured.
+    pub deployment: Option<EnterpriseConfig>,
+    /// Last transaction visible to this handle.
+    pub current_transaction_id: TxId,
+    /// Capabilities that this build genuinely implements.
+    pub capabilities: EnterpriseCapabilities,
+}
+
+impl EnterpriseStatus {
+    pub(crate) fn current(
+        deployment: Option<EnterpriseConfig>,
+        current_transaction_id: TxId,
+    ) -> Self {
+        Self {
+            schema_version: ENTERPRISE_STATUS_SCHEMA_VERSION,
+            engine_version: env!("CARGO_PKG_VERSION").to_owned(),
+            format_version: crate::FORMAT_VERSION,
+            deployment,
+            current_transaction_id,
+            capabilities: EnterpriseCapabilities::current(),
         }
     }
 }

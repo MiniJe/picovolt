@@ -45,6 +45,10 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Test
         run: cargo test --all-targets --all-features
+      - name: Extended crash/recovery soak
+        env:
+          PICOVOLT_CRASH_CYCLES: "1000"
+        run: cargo test --test crash_recovery randomized_cross_process_crashes_are_atomic
       - name: Doc tests
         run: cargo test --doc
       - name: Build wasm32

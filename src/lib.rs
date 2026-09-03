@@ -99,7 +99,7 @@ pub use crate::engine::wasm::{WasmExec, WasmModule, WasmRuntime};
 #[doc(inline)]
 pub use crate::enterprise::{
     AuditEvent, AuditEventKind, AuditSink, EnterpriseCapabilities, EnterpriseConfig,
-    AUDIT_EVENT_SCHEMA_VERSION,
+    EnterpriseStatus, AUDIT_EVENT_SCHEMA_VERSION, ENTERPRISE_STATUS_SCHEMA_VERSION,
 };
 #[doc(inline)]
 pub use crate::migrate::ImportReport;

@@ -19,6 +19,9 @@ All notable changes to PicoVolt are documented here. The format is based on
 - An optional `enterprise` Cargo feature with versioned, data-minimizing
   transaction audit events, host-owned sinks, deployment identity, and honest
   capability discovery for future fleet integrations.
+- Offline, serializable enterprise deployment status snapshots, plus
+  cross-process crash/recovery stress tests and an automatically enumerated
+  historical format compatibility corpus.
 
 ### Changed
 

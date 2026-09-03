@@ -19,6 +19,9 @@ picovolt = { version = "1.6", features = ["enterprise"] }
 - `AuditSink` receives versioned transaction lifecycle events.
 - `EnterpriseCapabilities` lets a future control plane negotiate only features
   the engine actually implements.
+- `Database::enterprise_status()` creates a versioned, serializable offline
+  inventory record with engine/format versions, deployment identity, current
+  transaction position, and those honest capability flags.
 
 Audit events deliberately exclude SQL text, row values, filesystem paths,
 secrets, and user identity. The embedding application owns transport, retention,
@@ -42,8 +45,12 @@ db.set_audit_sink(Arc::new(LogSink));
 db.begin_transaction()?;
 db.query("CREATE TABLE orders (id PRIMARY KEY, total)")?;
 db.commit_transaction()?;
+let status_json = serde_json::to_string(&db.enterprise_status())?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
+
+Creating a status record performs no I/O. The host may persist or transport
+`status_json`, but PicoVolt never sends it on its own.
 
 Delivery is synchronous and best-effort in 1.6. A deployment that needs
 acknowledged audit durability should make its sink append to a host-owned durable
