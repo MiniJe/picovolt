@@ -10,6 +10,16 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 - `Database::query_with_limits` and `QueryLimits` let applications bound rows
   scanned, retained result bytes, returned rows, and wall-clock execution time.
+- Installable `pv` CLI with query, inspection, bake, CSV/JSONL import/export,
+  and SQLite SQL-dump import commands.
+- Reusable Rust prepared statements; `PRIMARY KEY`, `UNIQUE`, and `NOT NULL`
+  constraints; and two-table equality `INNER JOIN` / `LEFT JOIN` queries.
+- Atomic rollback transactions for in-memory Rust and JavaScript databases.
+- OPFS persistence and a Web Worker RPC module for browser applications.
+- Rust, Python, Go, and browser starters plus an integration gallery and weekly
+  benchmark automation.
+- Native release binaries, CycloneDX SBOMs, SHA-256 checksums, and GitHub
+  provenance attestations.
 
 ### Security
 

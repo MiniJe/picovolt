@@ -15,7 +15,7 @@
 //! O(pages), keeping per-insert manifest writes cheap.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::errors::{PvError, Result};
 use crate::core::types::{
     pack_addr, unpack_addr, FileHeader, PageId, RecordAddr, RecordEnvelope, TxId, FILE_HEADER_SIZE,
-    FORMAT_VERSION, FORMAT_VERSION_BASE, PAGE_HEADER_SIZE, PAGE_SIZE,
+    FORMAT_VERSION, FORMAT_VERSION_BASE, FORMAT_VERSION_INDEX, PAGE_HEADER_SIZE, PAGE_SIZE,
 };
 use crate::core::value::{Row, Value, DECIMAL_DEN};
 use crate::engine::compliance::{ComplianceMonitor, RuntimeMetrics};
@@ -59,6 +59,8 @@ const MAX_RECORD: usize = PAGE_SIZE - PAGE_HEADER_SIZE - SLOT_SIZE;
 
 struct Table {
     columns: Vec<String>,
+    unique_columns: BTreeSet<String>,
+    not_null_columns: BTreeSet<String>,
     first_page: Option<PageId>,
     tail_id: Option<PageId>,
     /// Resident write buffer (the current tail page); `None` in read-only mode.
@@ -109,6 +111,10 @@ fn check_manifest_version(m: &Manifest) -> Result<()> {
 struct TableMeta {
     name: String,
     columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    unique_columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    not_null_columns: Vec<String>,
     first_page: Option<u64>,
     tail_id: Option<u64>,
     row_versions: u64,
@@ -195,6 +201,35 @@ pub struct QueryLimits {
     pub max_result_rows: usize,
     /// Optional wall-clock deadline, checked throughout scans and before returning.
     pub deadline: Option<Instant>,
+}
+
+/// A reusable, validated SQL template with positional `?` parameters.
+///
+/// PicoVolt does not retain a borrow of the database, so a prepared statement
+/// can be cached by the caller and executed against any compatible handle.
+#[derive(Debug, Clone)]
+pub struct PreparedStatement {
+    sql: String,
+    parameter_count: usize,
+}
+
+impl PreparedStatement {
+    /// The number of positional values required by [`execute`](Self::execute).
+    pub fn parameter_count(&self) -> usize {
+        self.parameter_count
+    }
+
+    /// Execute this statement against `database`.
+    pub fn execute(&self, database: &mut Database, params: &[Value]) -> Result<QueryResult> {
+        if params.len() != self.parameter_count {
+            return Err(PvError::Schema(format!(
+                "prepared statement expects {} parameters, got {}",
+                self.parameter_count,
+                params.len()
+            )));
+        }
+        database.query_with(&self.sql, params)
+    }
 }
 
 impl QueryLimits {
@@ -609,10 +644,16 @@ impl Database {
         // the page block and CAS pool are sized.
         let (region, descs) = self.build_index_region();
         let region_offset = (FILE_HEADER_SIZE + pages.len() * PAGE_SIZE + cas_pool.len()) as u64;
-        let format_version = if region.is_empty() {
+        let has_constraints = self
+            .tables
+            .values()
+            .any(|table| !table.unique_columns.is_empty() || !table.not_null_columns.is_empty());
+        let format_version = if has_constraints {
+            FORMAT_VERSION
+        } else if region.is_empty() {
             FORMAT_VERSION_BASE
         } else {
-            FORMAT_VERSION
+            FORMAT_VERSION_INDEX
         };
 
         let manifest = self.build_manifest(
@@ -668,6 +709,45 @@ impl Database {
         self.query(&bound)
     }
 
+    /// Validate and retain a reusable SQL template.
+    pub fn prepare(&self, sql: impl Into<String>) -> Result<PreparedStatement> {
+        let sql = sql.into();
+        let parameter_count = crate::engine::query::parameter_count(&sql);
+        let placeholders = vec![Value::Null; parameter_count];
+        let bound = crate::engine::query::bind_params(&sql, &placeholders)?;
+        parse(&bound)?;
+        Ok(PreparedStatement {
+            sql,
+            parameter_count,
+        })
+    }
+
+    /// Run a closure atomically against an in-memory database.
+    ///
+    /// If the closure returns an error, the complete database image is restored.
+    /// Filesystem workspaces still use statement-level autocommit; their future
+    /// transaction implementation requires a write-ahead log rather than a
+    /// potentially misleading best-effort rollback.
+    pub fn transaction<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Database) -> Result<T>,
+    ) -> Result<T> {
+        self.ensure_writable()?;
+        if self.root.is_some() {
+            return Err(PvError::Schema(
+                "multi-statement transactions currently require an in-memory database".into(),
+            ));
+        }
+        let snapshot = self.bake_to_bytes()?;
+        match operation(self) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                *self = Database::import_bytes(&snapshot)?;
+                Err(error)
+            }
+        }
+    }
+
     /// Execute a parameterized statement with explicit resource limits. This is
     /// intended for servers and other trust boundaries; embedded callers can use
     /// [`query_with`](Database::query_with) without imposed limits.
@@ -696,12 +776,37 @@ impl Database {
         mut budget: Option<&mut QueryBudget>,
     ) -> Result<QueryResult> {
         match statement {
-            Statement::CreateTable { name, columns } => {
-                self.create_table(&name, columns)?;
+            Statement::CreateTable {
+                name,
+                columns,
+                unique_columns,
+                not_null_columns,
+            } => {
+                self.create_table_with_constraints(
+                    &name,
+                    columns,
+                    unique_columns,
+                    not_null_columns,
+                )?;
                 Ok(QueryResult::Done)
             }
-            Statement::CreateIndex { table, column } => {
+            Statement::CreateIndex {
+                table,
+                column,
+                unique,
+            } => {
+                if unique {
+                    self.validate_unique(&table, &column)?;
+                }
                 self.create_index_bounded(&table, &column, budget.as_deref_mut())?;
+                if unique {
+                    self.tables
+                        .get_mut(&table)
+                        .expect("existence checked")
+                        .unique_columns
+                        .insert(column);
+                    self.maybe_flush()?;
+                }
                 Ok(QueryResult::Done)
             }
             Statement::Insert { table, values } => {
@@ -772,6 +877,20 @@ impl Database {
                     project_select(columns, rows, projection, &order, distinct, limit)
                 }
             }
+            Statement::SelectJoin {
+                left_table,
+                right_table,
+                left_column,
+                right_column,
+                left_join,
+            } => self.select_join(
+                &left_table,
+                &right_table,
+                &left_column,
+                &right_column,
+                left_join,
+                budget.as_deref_mut(),
+            ),
             Statement::Update { table, set, filter } => {
                 let n = self.update_where_bounded(
                     &table,
@@ -797,6 +916,16 @@ impl Database {
 
     /// Create a table with the given column names.
     pub fn create_table(&mut self, name: &str, columns: Vec<String>) -> Result<()> {
+        self.create_table_with_constraints(name, columns, Vec::new(), Vec::new())
+    }
+
+    fn create_table_with_constraints(
+        &mut self,
+        name: &str,
+        columns: Vec<String>,
+        unique_columns: Vec<String>,
+        not_null_columns: Vec<String>,
+    ) -> Result<()> {
         self.ensure_writable()?;
         if self.tables.contains_key(name) {
             return Err(PvError::Schema(format!("table `{name}` already exists")));
@@ -805,6 +934,8 @@ impl Database {
             name.to_string(),
             Table {
                 columns,
+                unique_columns: unique_columns.into_iter().collect(),
+                not_null_columns: not_null_columns.into_iter().collect(),
                 first_page: None,
                 tail_id: None,
                 tail: None,
@@ -813,6 +944,27 @@ impl Database {
             },
         );
         self.maybe_flush()
+    }
+
+    fn validate_unique(&self, table_name: &str, column: &str) -> Result<()> {
+        let (_, rows) = self.select(table_name, None)?;
+        let table = self
+            .tables
+            .get(table_name)
+            .ok_or_else(|| PvError::TableNotFound(table_name.into()))?;
+        let ix = column_index(table, column)?;
+        let mut seen: Vec<Value> = Vec::new();
+        for row in rows {
+            if row[ix] != Value::Null {
+                if seen.iter().any(|value| values_equal(value, &row[ix])) {
+                    return Err(PvError::Schema(format!(
+                        "cannot create unique index: duplicate value in `{column}`"
+                    )));
+                }
+                seen.push(row[ix].clone());
+            }
+        }
+        Ok(())
     }
 
     /// Create an equality index on `column`, built from the current rows.
@@ -868,6 +1020,37 @@ impl Database {
                 "table `{table_name}` expects {arity} columns, got {}",
                 values.len()
             )));
+        }
+
+        let (columns, unique_columns, not_null_columns) = {
+            let table = self.tables.get(table_name).expect("existence checked");
+            (
+                table.columns.clone(),
+                table.unique_columns.clone(),
+                table.not_null_columns.clone(),
+            )
+        };
+        for column in &not_null_columns {
+            let ix = col_pos(&columns, column)?;
+            if values[ix] == Value::Null {
+                return Err(PvError::Schema(format!(
+                    "column `{column}` may not be NULL"
+                )));
+            }
+        }
+        for column in &unique_columns {
+            let ix = col_pos(&columns, column)?;
+            if values[ix] != Value::Null {
+                let (_, existing) = self.select(table_name, None)?;
+                if existing
+                    .iter()
+                    .any(|row| values_equal(&row[ix], &values[ix]))
+                {
+                    return Err(PvError::Schema(format!(
+                        "duplicate value for unique column `{column}`"
+                    )));
+                }
+            }
         }
 
         let tx = self.txm.begin_write();
@@ -1005,6 +1188,72 @@ impl Database {
             Ok(())
         })?;
         Ok((columns, rows))
+    }
+
+    /// Execute a basic equality join. The right side is hashed once, giving
+    /// linear expected execution rather than a nested-loop scan.
+    fn select_join(
+        &self,
+        left_table: &str,
+        right_table: &str,
+        left_column: &str,
+        right_column: &str,
+        left_join: bool,
+        mut budget: Option<&mut QueryBudget>,
+    ) -> Result<QueryResult> {
+        let (left_columns, left_rows) =
+            self.select_filtered_bounded(left_table, None, None, budget.as_deref_mut())?;
+        let (right_columns, right_rows) =
+            self.select_filtered_bounded(right_table, None, None, budget.as_deref_mut())?;
+        let left_key = col_pos(&left_columns, left_column)?;
+        let right_key = col_pos(&right_columns, right_column)?;
+
+        let mut right_by_key: BTreeMap<Value, Vec<&Row>> = BTreeMap::new();
+        for row in &right_rows {
+            if row[right_key] != Value::Null {
+                right_by_key
+                    .entry(row[right_key].clone())
+                    .or_default()
+                    .push(row);
+            }
+        }
+
+        let mut rows = Vec::new();
+        for left in &left_rows {
+            let matches = if left[left_key] == Value::Null {
+                None
+            } else {
+                right_by_key.get(&left[left_key])
+            };
+            if let Some(matches) = matches {
+                for right in matches {
+                    let mut row = left.clone();
+                    row.extend_from_slice(right);
+                    if let Some(budget) = budget.as_deref_mut() {
+                        budget.materialize(&row)?;
+                    }
+                    rows.push(row);
+                }
+            } else if left_join {
+                let mut row = left.clone();
+                row.resize(row.len() + right_columns.len(), Value::Null);
+                if let Some(budget) = budget.as_deref_mut() {
+                    budget.materialize(&row)?;
+                }
+                rows.push(row);
+            }
+        }
+
+        let columns = left_columns
+            .iter()
+            .map(|column| format!("{left_table}.{column}"))
+            .chain(
+                right_columns
+                    .iter()
+                    .map(|column| format!("{right_table}.{column}")),
+            )
+            .collect();
+        Ok(QueryResult::Rows { columns, rows })
     }
 
     /// The column names of `table`, in order.
@@ -1268,6 +1517,35 @@ impl Database {
         if count == 0 {
             return Ok(0);
         }
+        let (is_unique, is_not_null) = {
+            let table = self.tables.get(table_name).expect("existence checked");
+            (
+                table.unique_columns.contains(set_column),
+                table.not_null_columns.contains(set_column),
+            )
+        };
+        if is_not_null && *set_value == Value::Null {
+            return Err(PvError::Schema(format!(
+                "column `{set_column}` may not be NULL"
+            )));
+        }
+        if is_unique && *set_value != Value::Null {
+            let already_matching = matches
+                .iter()
+                .filter(|(_, row)| row[set_ix] == *set_value)
+                .count();
+            let existing = self
+                .select(table_name, None)?
+                .1
+                .iter()
+                .filter(|row| values_equal(&row[set_ix], set_value))
+                .count();
+            if count > 1 || existing > already_matching {
+                return Err(PvError::Schema(format!(
+                    "duplicate value for unique column `{set_column}`"
+                )));
+            }
+        }
         if let Some(budget) = budget {
             budget.checkpoint()?;
         }
@@ -1528,6 +1806,8 @@ impl Database {
                 TableMeta {
                     name: name.clone(),
                     columns: t.columns.clone(),
+                    unique_columns: t.unique_columns.iter().cloned().collect(),
+                    not_null_columns: t.not_null_columns.iter().cloned().collect(),
                     first_page: t.first_page,
                     tail_id: t.tail_id,
                     row_versions: t.row_versions,
@@ -1538,13 +1818,24 @@ impl Database {
             })
             .collect();
         let page_count = self.cache.borrow().backend().page_count();
+        let has_constraints = self
+            .tables
+            .values()
+            .any(|table| !table.unique_columns.is_empty() || !table.not_null_columns.is_empty());
         let (format_version, index_region) = match plan {
             // Dev workspaces and region-less files stay at the base version so an
             // older build can still read them.
+            IndexPlan::Json if has_constraints => (FORMAT_VERSION, None),
             IndexPlan::Json => (FORMAT_VERSION_BASE, None),
             IndexPlan::Binary { offset, len, .. } if *len > 0 => {
-                (FORMAT_VERSION, Some((*offset, *len)))
+                let version = if has_constraints {
+                    FORMAT_VERSION
+                } else {
+                    FORMAT_VERSION_INDEX
+                };
+                (version, Some((*offset, *len)))
             }
+            IndexPlan::Binary { .. } if has_constraints => (FORMAT_VERSION, None),
             IndexPlan::Binary { .. } => (FORMAT_VERSION_BASE, None),
         };
         Ok(Manifest {
@@ -2507,6 +2798,8 @@ fn build_tables(
     for meta in &manifest.tables {
         let mut table = Table {
             columns: meta.columns.clone(),
+            unique_columns: meta.unique_columns.iter().cloned().collect(),
+            not_null_columns: meta.not_null_columns.iter().cloned().collect(),
             first_page: meta.first_page,
             tail_id: meta.tail_id,
             tail: None,
@@ -3463,6 +3756,8 @@ mod tests {
         let mut cache = PageCache::new(Backend::Dev(dev), 8);
         let table = Table {
             columns: vec!["x".into()],
+            unique_columns: BTreeSet::new(),
+            not_null_columns: BTreeSet::new(),
             first_page: Some(pid),
             tail_id: None,
             tail: None,

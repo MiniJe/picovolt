@@ -2,7 +2,7 @@
 //! region. Covers version stamping, in-memory and production round-trips through
 //! the region, and back-compat for index-less files.
 
-use picovolt::Database;
+use picovolt::{Database, FORMAT_VERSION_INDEX};
 
 fn format_version(image: &[u8]) -> u16 {
     u16::from_le_bytes([image[4], image[5]])
@@ -26,7 +26,7 @@ fn indexed_monolith_is_version_2_and_round_trips_via_region() {
     let bytes = indexed_db(500).bake_to_bytes().unwrap();
     assert_eq!(
         format_version(&bytes),
-        2,
+        FORMAT_VERSION_INDEX,
         "a monolith carrying a binary index region must be format version 2"
     );
 

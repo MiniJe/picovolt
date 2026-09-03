@@ -20,6 +20,10 @@ pub enum Statement {
         name: String,
         /// Declared column names.
         columns: Vec<String>,
+        /// Columns declared `PRIMARY KEY` or `UNIQUE`.
+        unique_columns: Vec<String>,
+        /// Columns declared `PRIMARY KEY` or `NOT NULL`.
+        not_null_columns: Vec<String>,
     },
     /// `INSERT INTO name VALUES (v, v, ...)`
     Insert {
@@ -34,6 +38,8 @@ pub enum Statement {
         table: String,
         /// Column to index.
         column: String,
+        /// Enforce uniqueness when true.
+        unique: bool,
     },
     /// `SELECT <proj> FROM name [WHERE <pred>] [GROUP BY cols] [BEFORE tx]
     /// [ORDER BY col [ASC|DESC]] [LIMIT n]`
@@ -57,6 +63,19 @@ pub enum Statement {
         order: Vec<OrderBy>,
         /// Optional cap on the number of rows returned.
         limit: Option<usize>,
+    },
+    /// `SELECT * FROM left [INNER|LEFT] JOIN right ON left_col = right_col`.
+    SelectJoin {
+        /// Left input table.
+        left_table: String,
+        /// Right input table.
+        right_table: String,
+        /// Equality key in the left table.
+        left_column: String,
+        /// Equality key in the right table.
+        right_column: String,
+        /// Preserve unmatched left rows when true.
+        left_join: bool,
     },
     /// `UPDATE name SET col = value WHERE <pred>`
     Update {
@@ -340,6 +359,27 @@ pub fn bind_params(sql: &str, params: &[Value]) -> crate::Result<String> {
         )));
     }
     Ok(out)
+}
+
+/// Count positional `?` placeholders, ignoring question marks inside SQL string
+/// literals. Used by [`crate::PreparedStatement`] to validate arguments before
+/// execution.
+pub fn parameter_count(sql: &str) -> usize {
+    let mut count = 0;
+    let mut in_str = false;
+    let mut chars = sql.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\'' {
+            if in_str && chars.peek() == Some(&'\'') {
+                chars.next();
+            } else {
+                in_str = !in_str;
+            }
+        } else if c == '?' && !in_str {
+            count += 1;
+        }
+    }
+    count
 }
 
 fn value_to_sql_literal(v: &Value) -> crate::Result<String> {
@@ -687,8 +727,28 @@ fn parse_create(cur: &mut Cursor) -> Result<Statement> {
             let name = cur.ident()?;
             cur.expect(Tok::LParen)?;
             let mut columns = Vec::new();
+            let mut unique_columns = Vec::new();
+            let mut not_null_columns = Vec::new();
             loop {
-                columns.push(cur.ident()?);
+                let column = cur.ident()?;
+                columns.push(column.clone());
+                loop {
+                    if peek_kw(cur, "primary") {
+                        cur.next()?;
+                        cur.keyword("key")?;
+                        unique_columns.push(column.clone());
+                        not_null_columns.push(column.clone());
+                    } else if peek_kw(cur, "unique") {
+                        cur.next()?;
+                        unique_columns.push(column.clone());
+                    } else if peek_kw(cur, "not") {
+                        cur.next()?;
+                        cur.keyword("null")?;
+                        not_null_columns.push(column.clone());
+                    } else {
+                        break;
+                    }
+                }
                 let sep = cur.here();
                 match cur.next()? {
                     Tok::Comma => continue,
@@ -698,7 +758,12 @@ fn parse_create(cur: &mut Cursor) -> Result<Statement> {
                     }
                 }
             }
-            Ok(Statement::CreateTable { name, columns })
+            Ok(Statement::CreateTable {
+                name,
+                columns,
+                unique_columns,
+                not_null_columns,
+            })
         }
         Tok::Word(w) if w.eq_ignore_ascii_case("index") => {
             cur.keyword("on")?;
@@ -706,7 +771,24 @@ fn parse_create(cur: &mut Cursor) -> Result<Statement> {
             cur.expect(Tok::LParen)?;
             let column = cur.ident()?;
             cur.expect(Tok::RParen)?;
-            Ok(Statement::CreateIndex { table, column })
+            Ok(Statement::CreateIndex {
+                table,
+                column,
+                unique: false,
+            })
+        }
+        Tok::Word(w) if w.eq_ignore_ascii_case("unique") => {
+            cur.keyword("index")?;
+            cur.keyword("on")?;
+            let table = cur.ident()?;
+            cur.expect(Tok::LParen)?;
+            let column = cur.ident()?;
+            cur.expect(Tok::RParen)?;
+            Ok(Statement::CreateIndex {
+                table,
+                column,
+                unique: true,
+            })
         }
         other => Err(cur.err_at(
             at,
@@ -1077,6 +1159,37 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
     cur.keyword("from")?;
     let table = cur.ident()?;
 
+    if peek_kw(cur, "join") || peek_kw(cur, "inner") || peek_kw(cur, "left") {
+        if projection != Projection::All || distinct {
+            return Err(cur.err("joins currently require `SELECT *`"));
+        }
+        let left_join = if peek_kw(cur, "left") {
+            cur.next()?;
+            if peek_kw(cur, "outer") {
+                cur.next()?;
+            }
+            true
+        } else {
+            if peek_kw(cur, "inner") {
+                cur.next()?;
+            }
+            false
+        };
+        cur.keyword("join")?;
+        let right_table = cur.ident()?;
+        cur.keyword("on")?;
+        let left_column = cur.ident()?;
+        cur.expect(Tok::Eq)?;
+        let right_column = cur.ident()?;
+        return Ok(Statement::SelectJoin {
+            left_table: table,
+            right_table,
+            left_column,
+            right_column,
+            left_join,
+        });
+    }
+
     let filter = if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("where")) {
         cur.next()?; // consume WHERE
         Some(parse_predicate(cur)?)
@@ -1202,6 +1315,8 @@ mod tests {
             Statement::CreateTable {
                 name: "users".into(),
                 columns: vec!["id".into(), "name".into(), "status".into()],
+                unique_columns: vec![],
+                not_null_columns: vec![],
             }
         );
     }
@@ -1364,6 +1479,7 @@ mod tests {
             Statement::CreateIndex {
                 table: "users".into(),
                 column: "status".into(),
+                unique: false,
             }
         );
     }

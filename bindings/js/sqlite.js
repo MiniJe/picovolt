@@ -9,7 +9,7 @@
 //   // [ { id: 1, name: "alice" } ]
 //
 // Limitations: parameters are positional `?` only (named `:id` params are not
-// supported); there are no transactions; blob parameters are unsupported.
+// supported); blob parameters are unsupported.
 
 import { Db } from "./picovolt.js";
 
@@ -65,6 +65,7 @@ class Statement {
 class Database {
   constructor() {
     this._db = new Db();
+    this._inTransaction = false;
   }
 
   prepare(sql) {
@@ -93,8 +94,28 @@ class Database {
     throw new Error("picovolt: pragma is not supported");
   }
 
-  transaction() {
-    throw new Error("picovolt: transactions are not supported");
+  // Wrap a synchronous callback in an atomic unit. A compact PVDB snapshot is
+  // restored if the callback throws, matching better-sqlite3's common pattern.
+  transaction(fn) {
+    if (typeof fn !== "function") throw new TypeError("transaction expects a function");
+    const db = this;
+    function wrapped(...args) {
+      if (db._inTransaction) return fn(...args);
+      const snapshot = db.serialize();
+      db._inTransaction = true;
+      try {
+        return fn(...args);
+      } catch (error) {
+        db._db = Db.fromBytes(snapshot);
+        throw error;
+      } finally {
+        db._inTransaction = false;
+      }
+    }
+    wrapped.deferred = wrapped;
+    wrapped.immediate = wrapped;
+    wrapped.exclusive = wrapped;
+    return wrapped;
   }
 
   close() {

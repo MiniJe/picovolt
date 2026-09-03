@@ -46,7 +46,11 @@ pub const MAGIC_BYTES: [u8; 4] = [0x50, 0x56, 0x44, 0x42];
 ///   manifest (`header | pages | CAS pool | index region | manifest`). A file is
 ///   only stamped version 2 when it actually carries that region; an index-less
 ///   monolith stays version 1 and remains readable by version-1 builds.
-pub const FORMAT_VERSION: u16 = 2;
+/// - Version 3: persists `PRIMARY KEY`, `UNIQUE`, and `NOT NULL` constraints.
+pub const FORMAT_VERSION: u16 = 3;
+
+/// The version required by a binary secondary-index region without constraints.
+pub const FORMAT_VERSION_INDEX: u16 = 2;
 
 /// The version stamped on a file that carries no binary index region, kept at 1
 /// so such files stay readable by older builds.

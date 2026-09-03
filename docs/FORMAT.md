@@ -1,4 +1,4 @@
-# PicoVolt on-disk format (`FORMAT_VERSION = 2`)
+# PicoVolt on-disk format (`FORMAT_VERSION = 3`)
 
 This document specifies the byte-level layout of PicoVolt's persisted data. It is
 the reference for the **0.11.0 format freeze**: from this version on, a change to
@@ -13,6 +13,8 @@ Version history:
   and the manifest (§6.1). A file is stamped version 2 **only when it carries that
   region**; an index-less monolith and every development workspace stay at version
   1, so version-1 builds can still read them.
+- **Version 3** (next minor): persists column-level `PRIMARY KEY`, `UNIQUE`, and
+  `NOT NULL` constraints. Only databases with constraints are stamped version 3.
 
 All multi-byte integers are **little-endian**. Sizes are in bytes.
 
@@ -20,7 +22,8 @@ Key constants (`src/core/types.rs`):
 
 | Constant              | Value        | Meaning                                  |
 |-----------------------|--------------|------------------------------------------|
-| `FORMAT_VERSION`      | `2`          | Newest version this build can read.      |
+| `FORMAT_VERSION`      | `3`          | Newest version this build can read.      |
+| `FORMAT_VERSION_INDEX`| `2`          | Binary-index format without constraints. |
 | `FORMAT_VERSION_BASE` | `1`          | Version written when there is no index region. |
 | `PAGE_SIZE`           | `4096`       | One physical page.                       |
 | `PAGE_HEADER_SIZE`    | `28`         | Fixed header region at the front of every page. |
@@ -75,7 +78,7 @@ rejected as corruption rather than trusted.
 | Offset | Size | Field            | Notes                                            |
 |-------:|-----:|------------------|--------------------------------------------------|
 | 0      | 4    | `magic`          | `MAGIC_BYTES` = `"PVDB"`. Mismatch ⇒ `SignatureMismatch`. |
-| 4      | 2    | `format_version` | Must be `1..=FORMAT_VERSION` (1 or 2). `0` or newer ⇒ `Corruption`. |
+| 4      | 2    | `format_version` | Must be `1..=FORMAT_VERSION` (1, 2, or 3). `0` or newer ⇒ `Corruption`. |
 | 6      | 2    | flags            | Reserved, written as zero.                       |
 | 8      | 8    | `manifest_offset`| Absolute offset of the JSON manifest.            |
 | 16     | 8    | `cas_offset`     | Absolute offset of the CAS blob pool.            |
@@ -204,6 +207,8 @@ is `pv_manifest.json`. Schema:
     {
       "name": "users",
       "columns": ["id", "name", "city"],
+      "unique_columns": ["id"], // v3: PRIMARY KEY or UNIQUE
+      "not_null_columns": ["id"], // v3: PRIMARY KEY or NOT NULL
       "first_page": 0,          // Option<u64>: head of the page chain
       "tail_id": 0,             // Option<u64>: the resident write page
       "row_versions": 3,        // u64
@@ -285,6 +290,9 @@ page-aligned offsets. Pages are append-only within the workspace's lifetime.
   1.1/1.2 build cleanly rejects a version-2 file (it is refused, never mis-parsed).
   Because the version is bumped to 2 only when a binary index region is present,
   index-less files written by 1.3 stay version 1 and remain readable by 1.1/1.2.
+- **Version 3 preserves constraints.** A database is stamped version 3 only when
+  at least one table has a persisted uniqueness or nullability constraint, so an
+  older reader rejects it instead of silently failing to enforce its schema.
 - Any future change to the bytes described here **must** bump `FORMAT_VERSION`,
   add a golden fixture for the new version under `tests/fixtures/`, and preserve
   the old fixtures' read tests (`tests/format_robustness.rs`).

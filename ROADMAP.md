@@ -24,6 +24,13 @@ extension sandbox; an SQL front-end; and the WebAssembly and npm bindings.
   index regions and reopen without rebuilding every index from table scans.
 - **Bounded server execution:** network binds require bearer authentication, and
   server queries now have queue, scan, memory, result, response, and time limits.
+- **First-class CLI and distribution:** `pv` imports/exports common text formats,
+  queries and inspects databases, and bakes production images; releases attach
+  native tools, SBOMs, checksums, and provenance attestations.
+- **Compatibility foundations:** reusable prepared statements, column constraints,
+  equality `INNER`/`LEFT JOIN`, and atomic in-memory transaction wrappers.
+- **Durable browser path:** an OPFS wrapper and Web Worker RPC entry point keep
+  storage durable and queries off the UI thread.
 
 - **Richer WHERE predicates:** comparison operators (`<`, `<=`, `>`, `>=`, `!=`,
   `<>`), `AND` and `OR` with parentheses, and `LIKE` (`%` and `_`) for `SELECT`,
@@ -67,17 +74,17 @@ changes the public API or breaks 1.x file compatibility (a newer build always re
 an older 1.x file). Order is by impact (informed by where evaluators say the engine
 is weakest) and is direction, not a schedule.
 
-### Next: Explicit transactions
+### Next: Filesystem transactions
 
-`BEGIN` / `COMMIT` / `ROLLBACK` across the engine API and every binding, built on
+`BEGIN` / `COMMIT` / `ROLLBACK` for filesystem workspaces and native bindings, built on
 the MVCC machinery that already exists: multi-statement atomicity and rollback, not
 just per-statement autocommit. The most-requested correctness feature.
 
-### Then: JOINs
+### Then: Richer JOINs
 
-`INNER JOIN` and `LEFT JOIN` in `SELECT`: nested-loop first, an index/hash join
-when a join key is indexed. The largest single piece and the most-cited missing SQL
-feature; two-table joins first, then N-table.
+Basic two-table equality `INNER JOIN` and `LEFT JOIN` now use a hash-style lookup.
+Next are qualified projections, filters/order/limits over joined rows, and N-table
+plans.
 
 ### SQL ergonomics
 
@@ -94,8 +101,7 @@ SQL.
   transposition ([`storage/page.rs`](src/storage/page.rs)) to a background worker.
 - **Forward format migration.** Read older `FORMAT_VERSION`s in place rather than
   requiring a re-bake.
-- **A `pv` CLI.** Promote the `repl` example into a real binary for import/export,
-  inspection, and time-travel diffs.
+- **CLI follow-ups.** Add time-travel diffs, Parquet, and binary SQLite import.
 
 ## Bindings and extensions
 
@@ -114,10 +120,10 @@ The C ABI opens two directions that grow independently of the core engine.
   More seams of the same shape could allow:
   - additional index types behind `CREATE INDEX`, such as a full-text index or a
     vector/embedding index for nearest-neighbor search;
-  - pluggable storage backends behind the VLE, such as an object-store backend, or
-    durable in-browser persistence (OPFS) for the WebAssembly build, which is
-    in-memory only today;
-  - import and export adapters for CSV, Parquet, JSON, and SQLite;
+  - pluggable storage backends behind the VLE, such as an object-store backend;
+    OPFS snapshot persistence and a worker endpoint now ship for WebAssembly;
+  - import and export adapters beyond the shipped CSV, JSONL, and SQLite SQL-dump
+    support, especially Parquet and direct binary SQLite ingestion;
   - alternative compression codecs.
 
 ## 2.0 candidates (breaking)
@@ -131,8 +137,8 @@ step shipped in 0.10.0.)
   concurrency is the prerequisite for a general multi-client store and almost
   certainly an API change.
 - **Encryption at rest** and **replication** for confidentiality and a warm copy.
-- **A durable in-browser backend (OPFS)** so the WebAssembly build persists instead
-  of being in-memory only. A 2.0 item only if it changes the open/init API.
+- **A native OPFS VLE backend.** The 1.x JavaScript wrapper persists snapshots in
+  OPFS; direct page-level OPFS access belongs here if it changes the open/init API.
 - **Local-first sync.** Operation-log or CRDT sync between an in-browser PicoVolt
   and a server.
 

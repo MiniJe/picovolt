@@ -23,6 +23,10 @@ name = "picovolt-server"
 path = "src/bin/server.rs"
 required-features = ["server"]
 
+[[bin]]
+name = "pv"
+path = "src/bin/pv.rs"
+
 [features]
 # Enable the JavaScript/npm bindings (build for wasm32 with wasm-pack).
 wasm = ["dep:wasm-bindgen", "dep:console_error_panic_hook", "dep:js-sys"]

@@ -13,6 +13,7 @@ use picovolt::{
 
 const GOLDEN: &str = "tests/fixtures/golden_v0_11_0.pvdb";
 const GOLDEN_V2: &str = "tests/fixtures/golden_v1_3_0.pvdb";
+const GOLDEN_V3: &str = "tests/fixtures/golden_v1_4_0.pvdb";
 
 /// Bake the canonical sample dataset into `<dir>/sample.pvdb` and return its path.
 fn bake_sample(dir: &std::path::Path) -> std::path::PathBuf {
@@ -49,6 +50,24 @@ fn golden_file_opens_and_matches() {
         Value::Text(s) => assert_eq!(s.len(), 500),
         other => panic!("expected a text body, got {other:?}"),
     }
+}
+
+#[test]
+fn constrained_v3_golden_preserves_schema_rules() {
+    let mut db = Database::open_prod(GOLDEN_V3).unwrap();
+    assert_eq!(
+        db.query("SELECT * FROM accounts")
+            .unwrap()
+            .rows()
+            .unwrap()
+            .len(),
+        1
+    );
+    let bytes = std::fs::read(GOLDEN_V3).unwrap();
+    let mut writable = Database::import_bytes(&bytes).unwrap();
+    assert!(writable
+        .query("INSERT INTO accounts VALUES (1, 'lin@example.com', 'Lin')")
+        .is_err());
 }
 
 #[test]

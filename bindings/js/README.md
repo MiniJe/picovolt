@@ -25,16 +25,21 @@ const all = db.prepare("SELECT * FROM users").all();
 `all(...params)`, and `iterate(...params)`; `exec(sql)` runs `;`-separated
 statements without parameters.
 
+`db.transaction(fn)` returns a synchronous atomic wrapper. If `fn` throws, the
+database is restored to its pre-transaction snapshot.
+
+For durable browser storage, import `PersistentDb` from `picovolt/browser`; it
+loads and saves a `.pvdb` image in OPFS. `picovolt/worker` is a ready-made module
+worker accepting `open`, `query`, `save`, and `close` RPC messages.
+
 ## Limitations
 
 PicoVolt is not SQLite, so some better-sqlite3 features are intentionally absent:
 
 - Parameters are positional `?` only. Named parameters (`:id`) are not supported.
-- No transactions: `db.transaction(...)` throws.
 - No `pragma`.
 - Blob parameters are unsupported.
-- The SQL subset has no JOINs, and `CREATE TABLE` takes column names only (no
-  types or constraints).
+- JOIN support currently covers `SELECT *` equality `INNER JOIN` and `LEFT JOIN`.
 
 The raw engine API (`import { Db } from "picovolt"`) remains available if you want
 the JSON-returning `db.query(sql, params)` directly.

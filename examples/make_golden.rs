@@ -75,4 +75,18 @@ fn main() {
 
     let size2 = std::fs::metadata(&out2).unwrap().len();
     println!("wrote {} ({size2} bytes)", out2.display());
+
+    // A version-3 golden carrying persisted schema constraints.
+    let ws3 = dir.join("_golden_ws3");
+    let _ = std::fs::remove_dir_all(&ws3);
+    let mut db3 = Database::open_dev(&ws3).unwrap();
+    db3.query("CREATE TABLE accounts (id PRIMARY KEY, email UNIQUE, name NOT NULL)")
+        .unwrap();
+    db3.query("INSERT INTO accounts VALUES (1, 'ada@example.com', 'Ada')")
+        .unwrap();
+    let out3 = dir.join("golden_v1_4_0.pvdb");
+    db3.bake(&out3).unwrap();
+    let _ = std::fs::remove_dir_all(&ws3);
+    let size3 = std::fs::metadata(&out3).unwrap().len();
+    println!("wrote {} ({size3} bytes)", out3.display());
 }

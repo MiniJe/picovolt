@@ -475,3 +475,91 @@ fn count_star_fast_path_matches_scan_including_time_travel() {
         vec!["n".to_string()]
     );
 }
+
+#[test]
+fn equality_inner_and_left_joins() {
+    let mut db = Database::open_memory();
+    db.query("CREATE TABLE users (id, name)").unwrap();
+    db.query("CREATE TABLE orders (user_id, item)").unwrap();
+    db.query("INSERT INTO users VALUES (1, 'Ada')").unwrap();
+    db.query("INSERT INTO users VALUES (2, 'Lin')").unwrap();
+    db.query("INSERT INTO orders VALUES (1, 'book')").unwrap();
+    db.query("INSERT INTO orders VALUES (1, 'pen')").unwrap();
+
+    assert_eq!(
+        rows(
+            &mut db,
+            "SELECT * FROM users INNER JOIN orders ON id = user_id",
+        ),
+        vec![
+            vec![
+                Value::Int(1),
+                Value::from("Ada"),
+                Value::Int(1),
+                Value::from("book")
+            ],
+            vec![
+                Value::Int(1),
+                Value::from("Ada"),
+                Value::Int(1),
+                Value::from("pen")
+            ],
+        ]
+    );
+    let result = db
+        .query("SELECT * FROM users LEFT JOIN orders ON id = user_id")
+        .unwrap();
+    assert_eq!(
+        result.columns().unwrap(),
+        ["users.id", "users.name", "orders.user_id", "orders.item"]
+    );
+    assert_eq!(result.rows().unwrap().len(), 3);
+    assert_eq!(result.rows().unwrap()[2][2], Value::Null);
+}
+
+#[test]
+fn reusable_prepared_statement_validates_arity() {
+    let mut db = Database::open_memory();
+    db.query("CREATE TABLE users (id, name)").unwrap();
+    let insert = db.prepare("INSERT INTO users VALUES (?, ?)").unwrap();
+    assert_eq!(insert.parameter_count(), 2);
+    insert
+        .execute(&mut db, &[Value::Int(1), Value::from("Ada")])
+        .unwrap();
+    assert!(insert.execute(&mut db, &[Value::Int(2)]).is_err());
+}
+
+#[test]
+fn primary_key_and_unique_constraints_are_enforced() {
+    let mut db = Database::open_memory();
+    db.query("CREATE TABLE users (id PRIMARY KEY, email UNIQUE, name NOT NULL)")
+        .unwrap();
+    db.query("INSERT INTO users VALUES (1, 'a@example.com', 'Ada')")
+        .unwrap();
+    assert!(db
+        .query("INSERT INTO users VALUES (1, 'b@example.com', 'Lin')")
+        .is_err());
+    assert!(db
+        .query("INSERT INTO users VALUES (2, 'a@example.com', 'Lin')")
+        .is_err());
+    assert!(db
+        .query("INSERT INTO users VALUES (2, 'b@example.com', NULL)")
+        .is_err());
+    assert!(db.query("UPDATE users SET id = NULL WHERE id = 1").is_err());
+    assert!(db
+        .query("INSERT INTO users VALUES (1.0, 'c@example.com', 'Cat')")
+        .is_err());
+}
+
+#[test]
+fn in_memory_transactions_roll_back_on_error() {
+    let mut db = Database::open_memory();
+    db.query("CREATE TABLE events (id PRIMARY KEY)").unwrap();
+    let result = db.transaction(|tx| {
+        tx.query("INSERT INTO events VALUES (1)")?;
+        tx.query("INSERT INTO events VALUES (1)")?;
+        Ok(())
+    });
+    assert!(result.is_err());
+    assert!(rows(&mut db, "SELECT * FROM events").is_empty());
+}

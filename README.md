@@ -112,7 +112,13 @@ cargo run --release --example repl     # interactive SQL shell (pvsql)
 cargo run --release --example bench    # evaluation harness across modes and workloads
 ```
 
-SQL supported: `CREATE TABLE`, `CREATE INDEX ON t (col)`, `INSERT`,
+Install the first-class CLI with `cargo install picovolt`, then use `pv query`,
+`pv inspect`, `pv import`, `pv export`, and `pv bake`. Copyable Rust, Python, Go,
+and browser projects are in [`starters/`](starters/README.md); supported adapters
+are catalogued in [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
+
+SQL supported: `CREATE TABLE` with `PRIMARY KEY`, `UNIQUE`, and `NOT NULL`,
+`CREATE [UNIQUE] INDEX ON t (col)`, `INSERT`,
 `UPDATE ... SET ... WHERE`, `DELETE ... WHERE`, `DROP TABLE`, and
 `SELECT [DISTINCT] {* | col [AS alias], ... | COUNT/SUM/MIN/MAX/AVG(...) [AS alias]}
 FROM t [WHERE <pred>] [GROUP BY cols] [HAVING <pred>] [BEFORE tx]
@@ -120,6 +126,9 @@ FROM t [WHERE <pred>] [GROUP BY cols] [HAVING <pred>] [BEFORE tx]
 `col <op> value` (`=`, `!=`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`),
 `col [NOT] IN (...)`, `col [NOT] BETWEEN a AND b`, and `col IS [NOT] NULL` with
 `AND`, `OR`, and parentheses. Integer and decimal values compare by magnitude.
+Basic `SELECT * FROM a [INNER|LEFT] JOIN b ON a_key = b_key` equality joins are
+also supported. Rust callers can cache `Database::prepare(...)` templates and use
+atomic `Database::transaction(...)` closures with in-memory databases.
 Durability is selectable via `Database::set_durability` (`Fast` OS-cache default,
 or crash-safe `Sync` with fsync and an atomic manifest).
 
@@ -130,8 +139,8 @@ around 33k rows/s, linear), larger-than-RAM reads through a bounded buffer pool 
 lookups roughly 11,000 times faster than a scan, plus range predicates), MVCC
 time-travel, opt-in crash-safe durability (`Durability::Sync`), and a fast
 compile-and-publish path (CAS dedup, columnar compression, memory-mappable
-single-file artifacts). Current limits include no explicit multi-statement SQL
-transactions, no JOINs, and no concurrent writers.
+single-file artifacts). Current limits include no filesystem `BEGIN`/`COMMIT`
+transactions, only basic two-table equality joins, and no concurrent writers.
 
 ## Install and distribution
 
@@ -143,7 +152,8 @@ transactions, no JOINs, and no concurrent writers.
 | **C / Go** (native, via the C ABI) | `cargo build --release --features capi`, then see [`bindings/`](bindings) |
 | **In-memory** (native, no filesystem) | `Database::open_memory()`, export with `bake_to_bytes()` |
 
-PicoVolt runs in the browser through its in-memory backend. Build the WebAssembly
+PicoVolt runs in the browser through its in-memory backend plus an OPFS persistence
+wrapper and Web Worker endpoint. Build the WebAssembly
 package with `wasm-pack build --target bundler --release -- --features wasm`, then
 `import { Db } from "picovolt"` and run SQL with `db.query(...)`. See
 [src/wasm_api.rs](src/wasm_api.rs) for the JavaScript surface.
@@ -159,9 +169,9 @@ All bindings accept positional `?` parameters
 a familiar surface, drop-in adapters are provided: a `better-sqlite3`-style
 JavaScript API (`import Database from "picovolt/sqlite"`), a Python DB-API 2.0
 module (`import picovolt.dbapi2 as sqlite`), and the Go `database/sql` driver
-([`bindings/go/pvsql`](bindings/go/pvsql)). Shared limits across all of them:
-positional `?` only, no SQL transactions, no JOINs, and `CREATE TABLE` takes
-column names only.
+([`bindings/go/pvsql`](bindings/go/pvsql)). Shared limits include positional `?`
+only and the intentionally compact SQL grammar; JavaScript and in-memory Rust
+also expose rollback-capable transaction wrappers.
 
 ## Server mode
 

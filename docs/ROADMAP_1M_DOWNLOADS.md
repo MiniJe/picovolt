@@ -150,9 +150,9 @@ until users explicitly ask for product telemetry.
    npm's trusted publisher for `release.yml` and then revoke its long-lived token.
 2. Replace the current Linux Python wheel with manylinux/musllinux builds and add
    arm64 coverage; run public-install smoke tests after publishing.
-3. Specify and ship the `pv` CLI around the existing REPL, bake, import, query,
-   and server APIs.
-4. Add GitHub release binaries, SHA-256 checksums, provenance attestations, and an
-   SBOM.
-5. Build the four starter projects and make the live Rewind demo the primary
-   homepage call to action.
+3. Extend the shipped `pv` CLI with Parquet and binary SQLite import plus
+   time-travel diffs.
+4. Run the new native-binary, SHA-256, provenance, and CycloneDX release jobs on
+   the next version tag and verify every attached artifact.
+5. Publish the four shipped starter projects as standalone templates and choose a
+   maintained browser demo as the primary homepage call to action.
