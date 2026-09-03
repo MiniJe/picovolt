@@ -56,7 +56,7 @@ Linux and Windows. Changes are tracked in [CHANGELOG.md](CHANGELOG.md).
 | [`engine/mvcc.rs`](src/engine/mvcc.rs) | transaction clock and snapshot visibility |
 | [`engine/wasm.rs`](src/engine/wasm.rs) | sandboxed `wasmi` extension runtime and the `WasmExec` backend trait |
 | [`engine/interp.rs`](src/engine/interp.rs) | `pv-wasm`: a from-scratch WASM interpreter (integer subset) |
-| [`engine/query.rs`](src/engine/query.rs) | SQL front-end (CREATE/INSERT/UPDATE/DELETE/DROP, `SELECT` with projection, `AS` aliases, `DISTINCT`, aggregates, `GROUP BY`/`HAVING`, `WHERE` predicates incl. `IN`/`BETWEEN`/`IS NULL`/`LIKE`, `BEFORE`, multi-column `ORDER BY`, `LIMIT`) |
+| [`engine/query.rs`](src/engine/query.rs) | SQL front-end (CREATE/INSERT/UPDATE/DELETE/DROP, `SELECT` with projection, `AS` aliases, `DISTINCT`, aggregates, `GROUP BY`/`HAVING`, `WHERE` predicates incl. `IN`/`BETWEEN`/`IS NULL`/`LIKE`, `BEFORE`, multi-column `ORDER BY`, `LIMIT`/`OFFSET`) |
 | [`engine/compliance.rs`](src/engine/compliance.rs) | optional, app-driven usage-policy hook (not a license requirement) |
 | [`db.rs`](src/db.rs) | the `Database` surface that ties it together |
 | [`ffi.rs`](src/ffi.rs) | C ABI (the `capi` feature): a panic-safe, C-callable surface wrapping the engine for Go, Python, and C bindings |
@@ -113,21 +113,21 @@ cargo run --release --example bench    # evaluation harness across modes and wor
 ```
 
 Install the first-class CLI with `cargo install picovolt`, then use `pv query`,
-`pv inspect`, `pv import`, `pv export`, and `pv bake`. Copyable Rust, Python, Go,
-and browser projects are in [`starters/`](starters/README.md); supported adapters
+`pv inspect`, `pv history`, `pv import`, `pv export`, and `pv bake`. Copyable
+Rust, Python, Go, Node, and browser projects are in [`starters/`](starters/README.md); supported adapters
 are catalogued in [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
 
 SQL supported: `CREATE TABLE` with `PRIMARY KEY`, `UNIQUE`, and `NOT NULL`,
-`CREATE [UNIQUE] INDEX ON t (col)`, `INSERT`,
+`CREATE [UNIQUE] INDEX ON t (col)`, single- and multi-row `INSERT`,
 `UPDATE ... SET ... WHERE`, `DELETE ... WHERE`, `DROP TABLE`, and
 `SELECT [DISTINCT] {* | col [AS alias], ... | COUNT/SUM/MIN/MAX/AVG(...) [AS alias]}
 FROM t [WHERE <pred>] [GROUP BY cols] [HAVING <pred>] [BEFORE tx]
-[ORDER BY col [ASC|DESC], ...] [LIMIT n]`, where `<pred>` combines
+[ORDER BY col [ASC|DESC], ...] [LIMIT n] [OFFSET n]`, where `<pred>` combines
 `col <op> value` (`=`, `!=`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`),
 `col [NOT] IN (...)`, `col [NOT] BETWEEN a AND b`, and `col IS [NOT] NULL` with
 `AND`, `OR`, and parentheses. Integer and decimal values compare by magnitude.
-Basic `SELECT * FROM a [INNER|LEFT] JOIN b ON a_key = b_key` equality joins are
-also supported. Rust callers can cache `Database::prepare(...)` templates and use
+Two-table equality `INNER`/`LEFT JOIN` queries support `*`, column projection,
+aliases, and `DISTINCT`. Rust callers can cache `Database::prepare(...)` templates and use
 atomic `Database::transaction(...)` closures with in-memory databases.
 Durability is selectable via `Database::set_durability` (`Fast` OS-cache default,
 or crash-safe `Sync` with fsync and an atomic manifest).
@@ -211,6 +211,7 @@ native modules built on the public API. Both are documented in
 |--|--|
 | Roadmap | [ROADMAP.md](ROADMAP.md) |
 | One-million-download plan | [docs/ROADMAP_1M_DOWNLOADS.md](docs/ROADMAP_1M_DOWNLOADS.md) |
+| Platform and file support | [docs/SUPPORT.md](docs/SUPPORT.md) |
 | Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Code of conduct | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) |
 | Changelog | [CHANGELOG.md](CHANGELOG.md) |

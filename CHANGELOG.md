@@ -6,6 +6,20 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- SQL pagination with `OFFSET`, including indexed and grouped query paths.
+- Multi-row `INSERT ... VALUES (...), (...)` statements.
+- Column projection and `DISTINCT` for two-table equality joins, with ambiguity
+  errors for duplicate unqualified column names.
+- `pv history` for quickly inspecting MVCC row counts across recent snapshots.
+- A copyable Node.js starter using the npm compatibility adapter.
+
+### Fixed
+
+- Native release jobs now use cargo-cyclonedx's actual configurable output name
+  instead of assuming it writes `bom.json`.
+
 ## [1.4.0] - 2026-09-03
 
 ### Added

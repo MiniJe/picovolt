@@ -61,6 +61,13 @@ These are release blockers, not optional marketing work.
    environments. A workflow that silently skipped a registry must fail visibly.
 5. Publish a support matrix for OS, CPU, runtime, and file-format compatibility.
 
+Current status (2026-09-03): crates.io and npm 1.4.0 are live. Native artifacts
+were blocked by an SBOM filename mismatch, now fixed on main. Python wheels build
+on all current targets, but PyPI rejected the OIDC identity because its trusted
+publisher has not yet been configured to match repository `MiniJe/picovolt`,
+workflow `python-wheels.yml`, environment `pypi`. The support matrix now lives in
+[`SUPPORT.md`](SUPPORT.md).
+
 Exit criterion: one version tag produces installable Cargo, npm, PyPI, and GitHub
 artifacts, and clean-room smoke tests execute a first query through each.
 
@@ -79,6 +86,10 @@ artifacts, and clean-room smoke tests execute a first query through each.
 Exit criterion: a new user can install, load sample data, query it, and export a
 result without reading engine internals.
 
+Current status: browser, Node, Python, Go, and Rust starters are present. CSV,
+JSONL, and SQLite SQL-dump movement is shipped; Parquet and direct binary SQLite
+remain open.
+
 ### P2 — Close adoption-blocking compatibility gaps
 
 Implement in this order:
@@ -88,7 +99,8 @@ Implement in this order:
    hash join where measurement justifies it.
 3. Primary-key and unique constraints with clear conflict errors.
 4. A prepared-statement object rather than only placeholder substitution.
-5. `OFFSET`, `CASE`, common scalar functions, and richer schema declarations.
+5. `OFFSET` (shipped on main), `CASE`, common scalar functions, and richer schema
+   declarations.
 
 These features should be driven by failing compatibility tests copied from the
 starter applications. Broad SQL surface area that no onboarding path needs stays
@@ -148,11 +160,12 @@ until users explicitly ask for product telemetry.
 1. Configure the `pypi` GitHub environment and PyPI pending trusted publisher for
    `MiniJe/picovolt`, workflow `python-wheels.yml`, environment `pypi`; configure
    npm's trusted publisher for `release.yml` and then revoke its long-lived token.
-2. Replace the current Linux Python wheel with manylinux/musllinux builds and add
-   arm64 coverage; run public-install smoke tests after publishing.
-3. Extend the shipped `pv` CLI with Parquet and binary SQLite import plus
-   time-travel diffs.
-4. Run the new native-binary, SHA-256, provenance, and CycloneDX release jobs on
-   the next version tag and verify every attached artifact.
-5. Publish the four shipped starter projects as standalone templates and choose a
-   maintained browser demo as the primary homepage call to action.
+2. Re-run native artifact generation with the corrected CycloneDX output and add
+   clean-room installation smoke tests for Cargo, npm, PyPI, and GitHub binaries.
+3. Implement crash-safe filesystem transactions with power-loss injection tests;
+   this is the largest remaining adoption blocker.
+4. Finish joined-row filtering/ordering and add `CASE` plus common scalar
+   functions from real starter-app compatibility tests.
+5. Add Parquet and direct binary SQLite import, then a row-level `pv diff` command.
+6. Publish the starters as standalone templates, make the browser demo the primary
+   homepage action, and start the public weekly adoption dashboard.

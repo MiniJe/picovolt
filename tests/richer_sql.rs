@@ -2,7 +2,7 @@
 //! `SELECT DISTINCT`, `IN`/`NOT IN`, `BETWEEN`/`NOT BETWEEN`, `IS [NOT] NULL`,
 //! `NOT LIKE`, multi-column `ORDER BY`, `HAVING`, and `AVG`/`SUM` over decimals.
 
-use picovolt::{Database, Row, Value};
+use picovolt::{Database, QueryResult, Row, Value};
 
 /// A small fixture: `t (id, name, city, age, score)` with a null age and decimal
 /// scores, plus duplicate names/cities for DISTINCT and GROUP BY/HAVING.
@@ -515,6 +515,73 @@ fn equality_inner_and_left_joins() {
     );
     assert_eq!(result.rows().unwrap().len(), 3);
     assert_eq!(result.rows().unwrap()[2][2], Value::Null);
+}
+
+#[test]
+fn offset_multi_insert_and_join_projection_compose() {
+    let mut db = Database::open_memory();
+    db.query("CREATE TABLE users (id PRIMARY KEY, name)")
+        .unwrap();
+    db.query("INSERT INTO users VALUES (1, 'alice'), (2, 'bob'), (3, 'cara')")
+        .unwrap();
+    db.query("CREATE TABLE orders (user_id, item)").unwrap();
+    db.query("INSERT INTO orders VALUES (1, 'book'), (2, 'pen'), (2, 'pad')")
+        .unwrap();
+
+    let QueryResult::Rows {
+        columns,
+        rows: joined_rows,
+    } = db
+        .query("SELECT name, item FROM users JOIN orders ON id = user_id")
+        .unwrap()
+    else {
+        panic!("expected rows")
+    };
+    assert_eq!(columns, vec!["name", "item"]);
+    assert_eq!(joined_rows.len(), 3);
+
+    let QueryResult::Rows {
+        rows: page_rows, ..
+    } = db
+        .query("SELECT * FROM users ORDER BY id LIMIT 1 OFFSET 1")
+        .unwrap()
+    else {
+        panic!("expected rows")
+    };
+    assert_eq!(
+        page_rows,
+        vec![vec![Value::Int(2), Value::Text("bob".into())]]
+    );
+
+    let QueryResult::Rows {
+        rows: distinct_rows,
+        ..
+    } = db
+        .query("SELECT DISTINCT name FROM users JOIN orders ON id = user_id")
+        .unwrap()
+    else {
+        panic!("expected rows")
+    };
+    assert_eq!(distinct_rows.len(), 2);
+
+    assert!(db
+        .query("INSERT INTO users VALUES (4, 'dan'), (4, 'duplicate')")
+        .is_err());
+    assert!(rows(&mut db, "SELECT * FROM users WHERE id = 4").is_empty());
+
+    db.query("CREATE TABLE decimal_keys (id, label)").unwrap();
+    db.query("INSERT INTO decimal_keys VALUES (2.0, 'numeric match')")
+        .unwrap();
+    assert_eq!(
+        rows(
+            &mut db,
+            "SELECT name, label FROM users JOIN decimal_keys ON id = id",
+        ),
+        vec![vec![
+            Value::Text("bob".into()),
+            Value::Text("numeric match".into()),
+        ]]
+    );
 }
 
 #[test]

@@ -30,6 +30,7 @@ fn run(args: Vec<String>) -> CliResult<()> {
             }
             Ok(())
         }
+        Some("history") if args.len() >= 2 => history_command(&args[1..]),
         Some("bake") if args.len() == 3 => {
             let mut db = Database::open_dev(&args[1])?;
             db.bake(&args[2])?;
@@ -46,6 +47,43 @@ fn run(args: Vec<String>) -> CliResult<()> {
             Err(format!("unknown or incomplete command `{command}`; run `pv help`").into())
         }
     }
+}
+
+fn history_command(args: &[String]) -> CliResult<()> {
+    let db = open_database(&args[0])?;
+    let tables = match option(args, "--table") {
+        Some(table) => vec![table.to_owned()],
+        None => db.table_names(),
+    };
+    let limit = option(args, "--limit")
+        .map(str::parse::<u64>)
+        .transpose()?
+        .unwrap_or(20);
+    println!("transaction,table,rows");
+    for (tx, table, rows) in history_rows(&db, &tables, limit)? {
+        println!("{tx},{},{}", csv_escape(&table), rows);
+    }
+    Ok(())
+}
+
+fn history_rows(
+    db: &Database,
+    tables: &[String],
+    limit: u64,
+) -> Result<Vec<(u64, String, usize)>, PvError> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let current = db.current_tx();
+    let first = current.saturating_sub(limit.saturating_sub(1));
+    let mut history = Vec::new();
+    for tx in first..=current {
+        for table in tables {
+            let (_, rows) = db.select(table, Some(tx))?;
+            history.push((tx, table.clone(), rows.len()));
+        }
+    }
+    Ok(history)
 }
 
 fn open_database(path: &str) -> Result<Database, PvError> {
@@ -334,6 +372,7 @@ fn print_help() {
     println!("PicoVolt command-line interface\n");
     println!("  pv query <database> <sql>");
     println!("  pv inspect <database>");
+    println!("  pv history <database> [--table name] [--limit transactions]");
     println!("  pv bake <workspace> <output.pvdb>");
     println!("  pv import <workspace> <input> [--table name] [--format csv|jsonl|sql]");
     println!("  pv export <database> <table> <output> [--format csv|jsonl]");
@@ -372,5 +411,16 @@ mod tests {
         let text = String::from_utf8(exported).unwrap();
         assert!(text.contains(r#"{"id":1,"name":"Ada"}"#));
         assert!(text.contains(r#"{"id":2,"name":"Lin, Jr"}"#));
+    }
+
+    #[test]
+    fn history_reports_recent_snapshot_counts() {
+        let mut db = Database::open_memory();
+        db.query("CREATE TABLE events (id)").unwrap();
+        db.query("INSERT INTO events VALUES (1), (2)").unwrap();
+        let history = history_rows(&db, &["events".into()], 2).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history.last().unwrap().2, 2);
+        assert!(history[0].2 <= history[1].2);
     }
 }

@@ -1,0 +1,14 @@
+{
+  "name": "picovolt-node-starter",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node --experimental-wasm-modules index.js"
+  },
+  "dependencies": {
+    "picovolt": "^1.4.0"
+  }
+}

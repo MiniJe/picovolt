@@ -6,6 +6,7 @@ Each directory is a minimal, copyable first project:
 - `python` — Python DB-API 2.0 usage
 - `go` — Go `database/sql` usage
 - `browser` — Vite, WebAssembly, and durable OPFS storage
+- `node` — Node.js and the synchronous SQLite-style npm adapter
 
 The language bindings require their documented native/WASM build artifacts until
 the next package release makes them available from their registries.

@@ -813,6 +813,18 @@ impl Database {
                 self.insert(&table, values)?;
                 Ok(QueryResult::Mutated(1))
             }
+            Statement::InsertMany { table, rows } => {
+                let count = rows.len();
+                let mut pending = Vec::with_capacity(count);
+                for values in &rows {
+                    self.validate_insert_values(&table, values, &pending)?;
+                    pending.push(values.clone());
+                }
+                for values in rows {
+                    self.insert(&table, values)?;
+                }
+                Ok(QueryResult::Mutated(count))
+            }
             Statement::Select {
                 table,
                 projection,
@@ -823,6 +835,7 @@ impl Database {
                 having,
                 order,
                 limit,
+                offset,
             } => {
                 // Fast path: a bare `COUNT(*)` (no WHERE/GROUP BY/HAVING/ORDER/LIMIT)
                 // only needs record visibility, so count envelopes without decoding
@@ -832,6 +845,7 @@ impl Database {
                     && having.is_none()
                     && order.is_empty()
                     && limit.is_none()
+                    && offset == 0
                     && !distinct
                 {
                     if let Some(alias) = count_star_only(&projection) {
@@ -856,10 +870,18 @@ impl Database {
                             &table,
                             ob,
                             before,
-                            limit,
+                            limit.map(|n| n.saturating_add(offset)),
                             budget.as_deref_mut(),
                         )?;
-                        return project_select(columns, rows, projection, &[], false, None);
+                        return project_select(
+                            columns,
+                            rows,
+                            projection,
+                            &[],
+                            false,
+                            limit,
+                            offset,
+                        );
                     }
                 }
                 let (columns, rows) = self.select_filtered_bounded(
@@ -871,13 +893,15 @@ impl Database {
                 if grouped {
                     let items = projection_to_items(projection)?;
                     project_grouped(
-                        columns, rows, items, group_by, having, order, distinct, limit,
+                        columns, rows, items, group_by, having, order, distinct, limit, offset,
                     )
                 } else {
-                    project_select(columns, rows, projection, &order, distinct, limit)
+                    project_select(columns, rows, projection, &order, distinct, limit, offset)
                 }
             }
             Statement::SelectJoin {
+                projection,
+                distinct,
                 left_table,
                 right_table,
                 left_column,
@@ -889,6 +913,8 @@ impl Database {
                 &left_column,
                 &right_column,
                 left_join,
+                projection,
+                distinct,
                 budget.as_deref_mut(),
             ),
             Statement::Update { table, set, filter } => {
@@ -1009,6 +1035,16 @@ impl Database {
     /// Insert one row (a new MVCC version under a fresh transaction id).
     pub fn insert(&mut self, table_name: &str, values: Vec<Value>) -> Result<()> {
         self.ensure_writable()?;
+        self.validate_insert_values(table_name, &values, &[])?;
+        self.insert_validated(table_name, values)
+    }
+
+    fn validate_insert_values(
+        &self,
+        table_name: &str,
+        values: &[Value],
+        pending: &[Vec<Value>],
+    ) -> Result<()> {
         let arity = self
             .tables
             .get(table_name)
@@ -1044,6 +1080,7 @@ impl Database {
                 let (_, existing) = self.select(table_name, None)?;
                 if existing
                     .iter()
+                    .chain(pending.iter())
                     .any(|row| values_equal(&row[ix], &values[ix]))
                 {
                     return Err(PvError::Schema(format!(
@@ -1053,6 +1090,10 @@ impl Database {
             }
         }
 
+        Ok(())
+    }
+
+    fn insert_validated(&mut self, table_name: &str, values: Vec<Value>) -> Result<()> {
         let tx = self.txm.begin_write();
         let envelope = RecordEnvelope::new(tx, 0);
         let record = encode_record(&envelope, &values, &mut self.cas)?;
@@ -1192,6 +1233,7 @@ impl Database {
 
     /// Execute a basic equality join. The right side is hashed once, giving
     /// linear expected execution rather than a nested-loop scan.
+    #[allow(clippy::too_many_arguments)] // each argument is a parsed JOIN clause
     fn select_join(
         &self,
         left_table: &str,
@@ -1199,6 +1241,8 @@ impl Database {
         left_column: &str,
         right_column: &str,
         left_join: bool,
+        projection: Projection,
+        distinct: bool,
         mut budget: Option<&mut QueryBudget>,
     ) -> Result<QueryResult> {
         let (left_columns, left_rows) =
@@ -1212,7 +1256,7 @@ impl Database {
         for row in &right_rows {
             if row[right_key] != Value::Null {
                 right_by_key
-                    .entry(row[right_key].clone())
+                    .entry(join_key(&row[right_key]))
                     .or_default()
                     .push(row);
             }
@@ -1223,7 +1267,7 @@ impl Database {
             let matches = if left[left_key] == Value::Null {
                 None
             } else {
-                right_by_key.get(&left[left_key])
+                right_by_key.get(&join_key(&left[left_key]))
             };
             if let Some(matches) = matches {
                 for right in matches {
@@ -1253,7 +1297,7 @@ impl Database {
                     .map(|column| format!("{right_table}.{column}")),
             )
             .collect();
-        Ok(QueryResult::Rows { columns, rows })
+        project_select(columns, rows, projection, &[], distinct, None, 0)
     }
 
     /// The column names of `table`, in order.
@@ -1896,11 +1940,12 @@ fn project_select(
     order: &[OrderBy],
     distinct: bool,
     limit: Option<usize>,
+    offset: usize,
 ) -> Result<QueryResult> {
     // Sort on the full row, before projection can drop a sort column. For
     // `ORDER BY ... LIMIT k` without DISTINCT, only the top-k rows are needed, so
     // select them in one pass instead of sorting every matched row.
-    match limit {
+    match limit.map(|k| k.saturating_add(offset)) {
         Some(k) if !distinct && !order.is_empty() => {
             rows = take_top_n(rows, &columns, order, k)?;
         }
@@ -1912,12 +1957,7 @@ fn project_select(
         Projection::Columns(cols) => {
             let idxs = cols
                 .iter()
-                .map(|c| {
-                    columns
-                        .iter()
-                        .position(|x| x == c)
-                        .ok_or_else(|| PvError::Schema(format!("no column `{c}`")))
-                })
+                .map(|c| projection_col_pos(&columns, c))
                 .collect::<Result<Vec<_>>>()?;
             let projected = rows
                 .into_iter()
@@ -1934,10 +1974,7 @@ fn project_select(
             for it in &items {
                 match &it.expr {
                     SelectExpr::Column(c) => {
-                        let ix = columns
-                            .iter()
-                            .position(|x| x == c)
-                            .ok_or_else(|| PvError::Schema(format!("no column `{c}`")))?;
+                        let ix = projection_col_pos(&columns, c)?;
                         idxs.push(ix);
                         names.push(it.alias.clone().unwrap_or_else(|| c.clone()));
                     }
@@ -1957,6 +1994,9 @@ fn project_select(
     if distinct {
         dedup_rows(&mut out_rows);
     }
+    if offset > 0 {
+        out_rows = out_rows.into_iter().skip(offset).collect();
+    }
     if let Some(n) = limit {
         out_rows.truncate(n);
     }
@@ -1964,6 +2004,26 @@ fn project_select(
         columns: out_columns,
         rows: out_rows,
     })
+}
+
+/// Resolve an output column, accepting a unique unqualified suffix for joined
+/// rows (for example `name` for `users.name`). Ambiguous names stay errors.
+fn projection_col_pos(columns: &[String], name: &str) -> Result<usize> {
+    if let Some(ix) = columns.iter().position(|column| column == name) {
+        return Ok(ix);
+    }
+    let suffix = format!(".{name}");
+    let mut matches = columns
+        .iter()
+        .enumerate()
+        .filter(|(_, column)| column.ends_with(&suffix));
+    let Some((ix, _)) = matches.next() else {
+        return Err(PvError::Schema(format!("no column `{name}`")));
+    };
+    if matches.next().is_some() {
+        return Err(PvError::Schema(format!("ambiguous column `{name}`")));
+    }
+    Ok(ix)
 }
 
 /// Resolve `order` into `(column index, descending)` keys against `columns`.
@@ -2215,6 +2275,15 @@ fn values_equal(a: &Value, b: &Value) -> bool {
     }
 }
 
+/// Normalize numeric equality keys so joins agree with WHERE semantics:
+/// `1` and `1.000000` must hash to the same bucket.
+fn join_key(value: &Value) -> Value {
+    match value {
+        Value::Int(value) => Value::Decimal(promote_int(*value)),
+        value => value.clone(),
+    }
+}
+
 /// Apply one comparison. Ordering comparisons against `NULL` are never true (SQL
 /// three-valued logic); `=`/`!=` and the ordering operators compare numerically
 /// across `Int`/`Decimal`; `LIKE`/`NOT LIKE` need two texts.
@@ -2308,6 +2377,7 @@ fn project_grouped(
     order: Vec<OrderBy>,
     distinct: bool,
     limit: Option<usize>,
+    offset: usize,
 ) -> Result<QueryResult> {
     // A bare column in the select list must be a grouping column.
     for item in &items {
@@ -2383,6 +2453,9 @@ fn project_grouped(
     sort_rows(&mut out_rows, &out_columns, &order)?;
     if distinct {
         dedup_rows(&mut out_rows);
+    }
+    if offset > 0 {
+        out_rows = out_rows.into_iter().skip(offset).collect();
     }
     if let Some(n) = limit {
         out_rows.truncate(n);

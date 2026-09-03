@@ -5,7 +5,7 @@
 //! `CREATE TABLE`/`INDEX`, `INSERT`, `DROP TABLE`, `UPDATE`/`DELETE`, and
 //! `SELECT` with column/aggregate projection, `WHERE` predicates (comparison
 //! operators, `AND`/`OR`, `LIKE`), `GROUP BY`, `BEFORE tx` time-travel,
-//! `ORDER BY`, and `LIMIT`. Anything beyond that (joins, subqueries) is
+//! `ORDER BY`, `LIMIT`, and `OFFSET`. Anything beyond that (subqueries) is
 //! intentionally out of scope and reported as [`PvError::Query`].
 
 use crate::core::errors::{PvError, Result};
@@ -31,6 +31,13 @@ pub enum Statement {
         table: String,
         /// Row values, positional.
         values: Vec<Value>,
+    },
+    /// `INSERT INTO name VALUES (...), (...)`
+    InsertMany {
+        /// Target table.
+        table: String,
+        /// Rows to insert, in source order.
+        rows: Vec<Vec<Value>>,
     },
     /// `CREATE INDEX ON name (col)`
     CreateIndex {
@@ -63,9 +70,15 @@ pub enum Statement {
         order: Vec<OrderBy>,
         /// Optional cap on the number of rows returned.
         limit: Option<usize>,
+        /// Number of result rows to skip after ordering.
+        offset: usize,
     },
     /// `SELECT * FROM left [INNER|LEFT] JOIN right ON left_col = right_col`.
     SelectJoin {
+        /// What to return from the combined row.
+        projection: Projection,
+        /// Drop duplicate output rows.
+        distinct: bool,
         /// Left input table.
         left_table: String,
         /// Right input table.
@@ -801,18 +814,35 @@ fn parse_insert(cur: &mut Cursor) -> Result<Statement> {
     cur.keyword("into")?;
     let table = cur.ident()?;
     cur.keyword("values")?;
-    cur.expect(Tok::LParen)?;
-    let mut values = Vec::new();
+    let mut rows = Vec::new();
     loop {
-        values.push(cur.value()?);
-        let sep = cur.here();
-        match cur.next()? {
-            Tok::Comma => continue,
-            Tok::RParen => break,
-            other => return Err(cur.err_at(sep, format!("expected `,` or `)`, found {other:?}"))),
+        cur.expect(Tok::LParen)?;
+        let mut values = Vec::new();
+        loop {
+            values.push(cur.value()?);
+            let sep = cur.here();
+            match cur.next()? {
+                Tok::Comma => continue,
+                Tok::RParen => break,
+                other => {
+                    return Err(cur.err_at(sep, format!("expected `,` or `)`, found {other:?}")))
+                }
+            }
         }
+        rows.push(values);
+        if !matches!(cur.peek(), Some(Tok::Comma)) {
+            break;
+        }
+        cur.next()?;
     }
-    Ok(Statement::Insert { table, values })
+    if rows.len() == 1 {
+        Ok(Statement::Insert {
+            table,
+            values: rows.pop().expect("one row"),
+        })
+    } else {
+        Ok(Statement::InsertMany { table, rows })
+    }
 }
 
 fn agg_func(word: &str) -> Option<AggFunc> {
@@ -1160,9 +1190,6 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
     let table = cur.ident()?;
 
     if peek_kw(cur, "join") || peek_kw(cur, "inner") || peek_kw(cur, "left") {
-        if projection != Projection::All || distinct {
-            return Err(cur.err("joins currently require `SELECT *`"));
-        }
         let left_join = if peek_kw(cur, "left") {
             cur.next()?;
             if peek_kw(cur, "outer") {
@@ -1182,6 +1209,8 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
         cur.expect(Tok::Eq)?;
         let right_column = cur.ident()?;
         return Ok(Statement::SelectJoin {
+            projection,
+            distinct,
             left_table: table,
             right_table,
             left_column,
@@ -1262,6 +1291,22 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
         None
     };
 
+    let offset = if peek_kw(cur, "offset") {
+        cur.next()?;
+        let at = cur.here();
+        match cur.next()? {
+            Tok::Int(i) if i >= 0 => i as usize,
+            other => {
+                return Err(cur.err_at(
+                    at,
+                    format!("OFFSET expects a non-negative integer, found {other:?}"),
+                ))
+            }
+        }
+    } else {
+        0
+    };
+
     Ok(Statement::Select {
         table,
         projection,
@@ -1272,6 +1317,7 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
         having,
         order,
         limit,
+        offset,
     })
 }
 
@@ -1333,6 +1379,20 @@ mod tests {
     }
 
     #[test]
+    fn parses_multi_row_insert() {
+        assert_eq!(
+            parse("INSERT INTO users VALUES (1, 'alice'), (2, 'bob')").unwrap(),
+            Statement::InsertMany {
+                table: "users".into(),
+                rows: vec![
+                    vec![Value::Int(1), Value::Text("alice".into())],
+                    vec![Value::Int(2), Value::Text("bob".into())],
+                ],
+            }
+        );
+    }
+
+    #[test]
     fn parses_select_with_and_without_time_travel() {
         assert_eq!(
             parse("SELECT * FROM users").unwrap(),
@@ -1346,6 +1406,7 @@ mod tests {
                 having: None,
                 order: vec![],
                 limit: None,
+                offset: 0,
             }
         );
         assert_eq!(
@@ -1360,6 +1421,7 @@ mod tests {
                 having: None,
                 order: vec![],
                 limit: None,
+                offset: 0,
             }
         );
     }
@@ -1378,6 +1440,7 @@ mod tests {
                 having: None,
                 order: vec![],
                 limit: None,
+                offset: 0,
             }
         );
         assert_eq!(
@@ -1392,8 +1455,21 @@ mod tests {
                 having: None,
                 order: vec![],
                 limit: Some(10),
+                offset: 0,
             }
         );
+    }
+
+    #[test]
+    fn parses_offset() {
+        match parse("SELECT * FROM users ORDER BY id LIMIT 10 OFFSET 20").unwrap() {
+            Statement::Select { limit, offset, .. } => {
+                assert_eq!(limit, Some(10));
+                assert_eq!(offset, 20);
+            }
+            other => panic!("expected select, got {other:?}"),
+        }
+        assert!(parse("SELECT * FROM users OFFSET -1").is_err());
     }
 
     #[test]
@@ -1411,6 +1487,7 @@ mod tests {
                 having: None,
                 order: vec![],
                 limit: None,
+                offset: 0,
             }
         );
         // COUNT(*).
@@ -1432,6 +1509,7 @@ mod tests {
                 having: None,
                 order: vec![],
                 limit: None,
+                offset: 0,
             }
         );
         // ORDER BY ... DESC.
@@ -1450,6 +1528,7 @@ mod tests {
                     descending: true,
                 }],
                 limit: None,
+                offset: 0,
             }
         );
     }
@@ -1594,6 +1673,7 @@ mod tests {
                 having: None,
                 order: vec![],
                 limit: None,
+                offset: 0,
             }
         );
         // SUM(*) is rejected; only COUNT may use `*`.
@@ -1617,6 +1697,7 @@ mod tests {
                 having: None,
                 order: vec![],
                 limit: None,
+                offset: 0,
             }
         );
         assert!(parse("SELECT AVG(*) FROM t").is_err());
@@ -1648,6 +1729,7 @@ mod tests {
                 having: None,
                 order: vec![],
                 limit: None,
+                offset: 0,
             }
         );
         // A column literally named `sum` (no parens) is still a column.
@@ -1663,6 +1745,7 @@ mod tests {
                 having: None,
                 order: vec![],
                 limit: None,
+                offset: 0,
             }
         );
     }

@@ -29,6 +29,8 @@ extension sandbox; an SQL front-end; and the WebAssembly and npm bindings.
   native tools, SBOMs, checksums, and provenance attestations.
 - **Compatibility foundations:** reusable prepared statements, column constraints,
   equality `INNER`/`LEFT JOIN`, and atomic in-memory transaction wrappers.
+- **Everyday SQL and inspection:** multi-row inserts, `LIMIT`/`OFFSET`, projected
+  and distinct equality joins, and `pv history` snapshot inspection.
 - **Durable browser path:** an OPFS wrapper and Web Worker RPC entry point keep
   storage durable and queries off the UI thread.
 
@@ -74,21 +76,26 @@ changes the public API or breaks 1.x file compatibility (a newer build always re
 an older 1.x file). Order is by impact (informed by where evaluators say the engine
 is weakest) and is direction, not a schedule.
 
-### Next: Filesystem transactions
+### 1.5: Crash-safe filesystem transactions
 
 `BEGIN` / `COMMIT` / `ROLLBACK` for filesystem workspaces and native bindings, built on
 the MVCC machinery that already exists: multi-statement atomicity and rollback, not
 just per-statement autocommit. The most-requested correctness feature.
 
-### Then: Richer JOINs
+This is the next engine milestone. It requires a write-ahead or copy-on-write
+commit protocol plus power-loss tests; it will not be implemented as a
+best-effort rollback wrapper.
 
-Basic two-table equality `INNER JOIN` and `LEFT JOIN` now use a hash-style lookup.
-Next are qualified projections, filters/order/limits over joined rows, and N-table
-plans.
+### 1.5: Finish richer JOINs
+
+Basic two-table equality `INNER JOIN` and `LEFT JOIN` now use a hash-style lookup,
+and projected/`DISTINCT` output is available on main. Next are dotted identifier
+syntax, filters/order/limits over joined rows, and N-table plans.
 
 ### SQL ergonomics
 
-`OFFSET`, `CASE WHEN`, more scalar functions (string / number), and simple scalar
+`OFFSET` and multi-row inserts are now on main. Next are `CASE WHEN`, more scalar
+functions (string / number), richer DDL defaults, and simple scalar
 subqueries in `WHERE` / `IN`. Incremental polish that closes the gap with everyday
 SQL.
 
@@ -101,7 +108,8 @@ SQL.
   transposition ([`storage/page.rs`](src/storage/page.rs)) to a background worker.
 - **Forward format migration.** Read older `FORMAT_VERSION`s in place rather than
   requiring a re-bake.
-- **CLI follow-ups.** Add time-travel diffs, Parquet, and binary SQLite import.
+- **CLI follow-ups.** `pv history` now summarizes recent snapshots. Add row-level
+  time-travel diffs, Parquet, and binary SQLite import.
 
 ## Bindings and extensions
 
