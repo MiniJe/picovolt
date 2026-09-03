@@ -3,4 +3,11 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PicoVolt browser starter</title>
 <main><h1>PicoVolt + OPFS</h1><pre id="output">Opening…</pre></main>
-<script type="module" src="/src.js"></script>
+<script type="module">
+  const output = document.querySelector("#output");
+  if (location.protocol === "file:") {
+    output.textContent = "This app needs an HTTP origin for ES modules and OPFS.\n\nRun:\n  npm install\n  npm run dev\n\nThen open the localhost URL printed by Vite.";
+  } else {
+    await import("./src.js");
+  }
+</script>

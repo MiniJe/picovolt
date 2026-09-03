@@ -1,7 +1,5 @@
-import init from "picovolt";
 import { PersistentDb } from "picovolt/browser";
 
-await init();
 const db = await PersistentDb.open("starter.pvdb");
 let result;
 try {
