@@ -790,6 +790,22 @@ impl Database {
                 )?;
                 Ok(QueryResult::Done)
             }
+            Statement::CreateTableIfNotExists {
+                name,
+                columns,
+                unique_columns,
+                not_null_columns,
+            } => {
+                if !self.tables.contains_key(&name) {
+                    self.create_table_with_constraints(
+                        &name,
+                        columns,
+                        unique_columns,
+                        not_null_columns,
+                    )?;
+                }
+                Ok(QueryResult::Done)
+            }
             Statement::CreateIndex {
                 table,
                 column,
@@ -907,6 +923,10 @@ impl Database {
                 left_column,
                 right_column,
                 left_join,
+                filter,
+                order,
+                limit,
+                offset,
             } => self.select_join(
                 &left_table,
                 &right_table,
@@ -915,6 +935,10 @@ impl Database {
                 left_join,
                 projection,
                 distinct,
+                filter.as_ref(),
+                &order,
+                limit,
+                offset,
                 budget.as_deref_mut(),
             ),
             Statement::Update { table, set, filter } => {
@@ -933,6 +957,12 @@ impl Database {
             }
             Statement::DropTable { table } => {
                 self.drop_table(&table)?;
+                Ok(QueryResult::Done)
+            }
+            Statement::DropTableIfExists { table } => {
+                if self.tables.contains_key(&table) {
+                    self.drop_table(&table)?;
+                }
                 Ok(QueryResult::Done)
             }
         }
@@ -1243,14 +1273,18 @@ impl Database {
         left_join: bool,
         projection: Projection,
         distinct: bool,
+        filter: Option<&Predicate>,
+        order: &[OrderBy],
+        limit: Option<usize>,
+        offset: usize,
         mut budget: Option<&mut QueryBudget>,
     ) -> Result<QueryResult> {
         let (left_columns, left_rows) =
             self.select_filtered_bounded(left_table, None, None, budget.as_deref_mut())?;
         let (right_columns, right_rows) =
             self.select_filtered_bounded(right_table, None, None, budget.as_deref_mut())?;
-        let left_key = col_pos(&left_columns, left_column)?;
-        let right_key = col_pos(&right_columns, right_column)?;
+        let left_key = join_side_col_pos(&left_columns, left_table, left_column)?;
+        let right_key = join_side_col_pos(&right_columns, right_table, right_column)?;
 
         let mut right_by_key: BTreeMap<Value, Vec<&Row>> = BTreeMap::new();
         for row in &right_rows {
@@ -1288,7 +1322,7 @@ impl Database {
             }
         }
 
-        let columns = left_columns
+        let columns: Vec<String> = left_columns
             .iter()
             .map(|column| format!("{left_table}.{column}"))
             .chain(
@@ -1297,7 +1331,18 @@ impl Database {
                     .map(|column| format!("{right_table}.{column}")),
             )
             .collect();
-        project_select(columns, rows, projection, &[], distinct, None, 0)
+        if let Some(filter) = filter {
+            check_predicate_columns(&columns, filter)?;
+            rows = rows
+                .into_iter()
+                .filter_map(|row| match row_matches(filter, &columns, &row) {
+                    Ok(true) => Some(Ok(row)),
+                    Ok(false) => None,
+                    Err(error) => Some(Err(error)),
+                })
+                .collect::<Result<Vec<_>>>()?;
+        }
+        project_select(columns, rows, projection, order, distinct, limit, offset)
     }
 
     /// The column names of `table`, in order.
@@ -2026,17 +2071,21 @@ fn projection_col_pos(columns: &[String], name: &str) -> Result<usize> {
     Ok(ix)
 }
 
+fn join_side_col_pos(columns: &[String], table: &str, reference: &str) -> Result<usize> {
+    match reference.split_once('.') {
+        Some((qualifier, column)) if qualifier == table => col_pos(columns, column),
+        Some((qualifier, _)) => Err(PvError::Schema(format!(
+            "join column `{reference}` belongs to `{qualifier}`, expected `{table}`"
+        ))),
+        None => col_pos(columns, reference),
+    }
+}
+
 /// Resolve `order` into `(column index, descending)` keys against `columns`.
 fn order_keys(columns: &[String], order: &[OrderBy]) -> Result<Vec<(usize, bool)>> {
     order
         .iter()
-        .map(|ob| {
-            columns
-                .iter()
-                .position(|c| c == &ob.column)
-                .map(|ix| (ix, ob.descending))
-                .ok_or_else(|| PvError::Schema(format!("no column `{}` to order by", ob.column)))
-        })
+        .map(|ob| projection_col_pos(columns, &ob.column).map(|ix| (ix, ob.descending)))
         .collect()
 }
 
@@ -2167,13 +2216,7 @@ fn check_predicate_columns(columns: &[String], pred: &Predicate) -> Result<()> {
         Predicate::Compare { column, .. }
         | Predicate::In { column, .. }
         | Predicate::Between { column, .. }
-        | Predicate::IsNull { column, .. } => {
-            if columns.iter().any(|c| c == column) {
-                Ok(())
-            } else {
-                Err(PvError::Schema(format!("no column `{column}`")))
-            }
-        }
+        | Predicate::IsNull { column, .. } => projection_col_pos(columns, column).map(|_| ()),
     }
 }
 
@@ -2182,15 +2225,17 @@ fn row_matches(pred: &Predicate, columns: &[String], row: &[Value]) -> Result<bo
     match pred {
         Predicate::And(a, b) => Ok(row_matches(a, columns, row)? && row_matches(b, columns, row)?),
         Predicate::Or(a, b) => Ok(row_matches(a, columns, row)? || row_matches(b, columns, row)?),
-        Predicate::Compare { column, op, value } => {
-            Ok(eval_compare(&row[col_pos(columns, column)?], *op, value))
-        }
+        Predicate::Compare { column, op, value } => Ok(eval_compare(
+            &row[projection_col_pos(columns, column)?],
+            *op,
+            value,
+        )),
         Predicate::In {
             column,
             values,
             negated,
         } => {
-            let x = &row[col_pos(columns, column)?];
+            let x = &row[projection_col_pos(columns, column)?];
             // A null column value matches neither IN nor NOT IN.
             if matches!(x, Value::Null) {
                 return Ok(false);
@@ -2221,7 +2266,7 @@ fn row_matches(pred: &Predicate, columns: &[String], row: &[Value]) -> Result<bo
             high,
             negated,
         } => {
-            let x = &row[col_pos(columns, column)?];
+            let x = &row[projection_col_pos(columns, column)?];
             // A null column value matches neither BETWEEN nor NOT BETWEEN.
             if matches!(x, Value::Null) {
                 return Ok(false);
@@ -2231,7 +2276,7 @@ fn row_matches(pred: &Predicate, columns: &[String], row: &[Value]) -> Result<bo
             Ok(in_range != *negated)
         }
         Predicate::IsNull { column, negated } => {
-            let is_null = matches!(row[col_pos(columns, column)?], Value::Null);
+            let is_null = matches!(row[projection_col_pos(columns, column)?], Value::Null);
             Ok(is_null != *negated)
         }
     }

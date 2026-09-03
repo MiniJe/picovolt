@@ -10,10 +10,15 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 - SQL pagination with `OFFSET`, including indexed and grouped query paths.
 - Multi-row `INSERT ... VALUES (...), (...)` statements.
+- Idempotent `CREATE TABLE IF NOT EXISTS` and `DROP TABLE IF EXISTS` statements.
 - Column projection and `DISTINCT` for two-table equality joins, with ambiguity
   errors for duplicate unqualified column names.
+- Qualified `table.column` references plus `WHERE`, `ORDER BY`, `LIMIT`, and
+  `OFFSET` over joined rows.
 - `pv history` for quickly inspecting MVCC row counts across recent snapshots.
 - A copyable Node.js starter using the npm compatibility adapter.
+- Clean-room post-publish smoke tests for Cargo, npm, PyPI, and each native CLI
+  build.
 
 ### Fixed
 

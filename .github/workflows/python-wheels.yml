@@ -138,3 +138,27 @@ jobs:
           merge-multiple: true
       - name: Publish with PyPI trusted publishing
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+
+  smoke:
+    name: clean install (PyPI)
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.9"
+      - name: Install and query the published wheel
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          for attempt in 1 2 3 4 5; do
+            python -m pip install "picovolt==$ver" && break
+            if [ "$attempt" = 5 ]; then exit 1; fi
+            sleep 15
+          done
+          python - <<'PY'
+          from picovolt import Database
+          db = Database.open_memory()
+          db.query("CREATE TABLE smoke (id)")
+          db.query("INSERT INTO smoke VALUES (1)")
+          assert db.query("SELECT * FROM smoke")["rows"] == [[1]]
+          PY

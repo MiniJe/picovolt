@@ -564,6 +564,28 @@ fn offset_multi_insert_and_join_projection_compose() {
     };
     assert_eq!(distinct_rows.len(), 2);
 
+    let result = db
+        .query(
+            "SELECT users.name AS person, orders.item \
+             FROM users JOIN orders ON users.id = orders.user_id \
+             WHERE orders.item != 'book' ORDER BY orders.item DESC LIMIT 1 OFFSET 0",
+        )
+        .unwrap();
+    assert_eq!(result.columns().unwrap(), ["person", "orders.item"]);
+    assert_eq!(
+        result.rows().unwrap(),
+        &[vec![Value::Text("bob".into()), Value::Text("pen".into())]]
+    );
+
+    assert_eq!(
+        rows(
+            &mut db,
+            "SELECT name FROM users LEFT JOIN orders ON users.id = orders.user_id \
+             WHERE orders.item IS NULL",
+        ),
+        vec![vec![Value::Text("cara".into())]]
+    );
+
     assert!(db
         .query("INSERT INTO users VALUES (4, 'dan'), (4, 'duplicate')")
         .is_err());
@@ -582,6 +604,24 @@ fn offset_multi_insert_and_join_projection_compose() {
             Value::Text("numeric match".into()),
         ]]
     );
+    assert!(db
+        .query("SELECT id FROM users JOIN decimal_keys ON users.id = decimal_keys.id")
+        .unwrap_err()
+        .to_string()
+        .contains("ambiguous column `id`"));
+}
+
+#[test]
+fn conditional_table_ddl_is_idempotent() {
+    let mut db = Database::open_memory();
+    db.query("CREATE TABLE IF NOT EXISTS cache (id PRIMARY KEY)")
+        .unwrap();
+    db.query("CREATE TABLE IF NOT EXISTS cache (ignored)")
+        .unwrap();
+    assert_eq!(db.column_names("cache").unwrap(), ["id"]);
+    db.query("DROP TABLE IF EXISTS missing").unwrap();
+    db.query("DROP TABLE IF EXISTS cache").unwrap();
+    assert!(!db.table_names().contains(&"cache".to_string()));
 }
 
 #[test]

@@ -66,7 +66,8 @@ were blocked by an SBOM filename mismatch, now fixed on main. Python wheels buil
 on all current targets, but PyPI rejected the OIDC identity because its trusted
 publisher has not yet been configured to match repository `MiniJe/picovolt`,
 workflow `python-wheels.yml`, environment `pypi`. The support matrix now lives in
-[`SUPPORT.md`](SUPPORT.md).
+[`SUPPORT.md`](SUPPORT.md). Clean-room Cargo, npm, PyPI, and native CLI smoke
+checks are now part of the release workflows on main.
 
 Exit criterion: one version tag produces installable Cargo, npm, PyPI, and GitHub
 artifacts, and clean-room smoke tests execute a first query through each.
@@ -160,12 +161,12 @@ until users explicitly ask for product telemetry.
 1. Configure the `pypi` GitHub environment and PyPI pending trusted publisher for
    `MiniJe/picovolt`, workflow `python-wheels.yml`, environment `pypi`; configure
    npm's trusted publisher for `release.yml` and then revoke its long-lived token.
-2. Re-run native artifact generation with the corrected CycloneDX output and add
-   clean-room installation smoke tests for Cargo, npm, PyPI, and GitHub binaries.
+2. Re-run native artifact generation with the corrected CycloneDX output and
+   verify the new clean-room installation smoke tests.
 3. Implement crash-safe filesystem transactions with power-loss injection tests;
    this is the largest remaining adoption blocker.
-4. Finish joined-row filtering/ordering and add `CASE` plus common scalar
-   functions from real starter-app compatibility tests.
+4. Extend the shipped joined-row filtering/ordering to N-table plans, and add
+   `CASE` plus common scalar functions from real starter-app compatibility tests.
 5. Add Parquet and direct binary SQLite import, then a row-level `pv diff` command.
 6. Publish the starters as standalone templates, make the browser demo the primary
    homepage action, and start the public weekly adoption dashboard.

@@ -88,9 +88,9 @@ best-effort rollback wrapper.
 
 ### 1.5: Finish richer JOINs
 
-Basic two-table equality `INNER JOIN` and `LEFT JOIN` now use a hash-style lookup,
-and projected/`DISTINCT` output is available on main. Next are dotted identifier
-syntax, filters/order/limits over joined rows, and N-table plans.
+Two-table equality `INNER JOIN` and `LEFT JOIN` now use a hash-style lookup and
+support dotted identifiers, projection, `DISTINCT`, filtering, ordering, and
+pagination. Next are N-table plans, aliases, and index-assisted planning.
 
 ### SQL ergonomics
 

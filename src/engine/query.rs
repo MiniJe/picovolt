@@ -25,6 +25,17 @@ pub enum Statement {
         /// Columns declared `PRIMARY KEY` or `NOT NULL`.
         not_null_columns: Vec<String>,
     },
+    /// `CREATE TABLE IF NOT EXISTS ...`
+    CreateTableIfNotExists {
+        /// Table name.
+        name: String,
+        /// Declared column names.
+        columns: Vec<String>,
+        /// Columns declared `PRIMARY KEY` or `UNIQUE`.
+        unique_columns: Vec<String>,
+        /// Columns declared `PRIMARY KEY` or `NOT NULL`.
+        not_null_columns: Vec<String>,
+    },
     /// `INSERT INTO name VALUES (v, v, ...)`
     Insert {
         /// Target table.
@@ -89,6 +100,14 @@ pub enum Statement {
         right_column: String,
         /// Preserve unmatched left rows when true.
         left_join: bool,
+        /// Optional predicate over the combined row.
+        filter: Option<Predicate>,
+        /// Sort keys over the combined row.
+        order: Vec<OrderBy>,
+        /// Optional result cap.
+        limit: Option<usize>,
+        /// Number of joined result rows to skip.
+        offset: usize,
     },
     /// `UPDATE name SET col = value WHERE <pred>`
     Update {
@@ -109,6 +128,11 @@ pub enum Statement {
     /// `DROP TABLE name`
     DropTable {
         /// Table to drop.
+        table: String,
+    },
+    /// `DROP TABLE IF EXISTS name`
+    DropTableIfExists {
+        /// Table to drop when present.
         table: String,
     },
 }
@@ -306,6 +330,7 @@ enum Tok {
     Gt,
     Ge,
     Star,
+    Dot,
 }
 
 /// Build a fixed-point decimal mantissa (scaled by `10^DECIMAL_SCALE`) from the
@@ -483,6 +508,10 @@ fn tokenize(sql: &str) -> Result<Vec<(Tok, usize)>> {
             ',' => {
                 lx.bump();
                 toks.push((Tok::Comma, start));
+            }
+            '.' => {
+                lx.bump();
+                toks.push((Tok::Dot, start));
             }
             '=' => {
                 lx.bump();
@@ -686,6 +715,16 @@ impl Cursor {
         }
     }
 
+    fn column_ref(&mut self) -> Result<String> {
+        let mut name = self.ident()?;
+        if matches!(self.peek(), Some(Tok::Dot)) {
+            self.next()?;
+            name.push('.');
+            name.push_str(&self.ident()?);
+        }
+        Ok(name)
+    }
+
     fn expect(&mut self, tok: Tok) -> Result<()> {
         let at = self.here();
         let got = self.next()?;
@@ -737,6 +776,14 @@ fn parse_create(cur: &mut Cursor) -> Result<Statement> {
     let at = cur.here();
     match cur.next()? {
         Tok::Word(w) if w.eq_ignore_ascii_case("table") => {
+            let if_not_exists = if peek_kw(cur, "if") {
+                cur.next()?;
+                cur.keyword("not")?;
+                cur.keyword("exists")?;
+                true
+            } else {
+                false
+            };
             let name = cur.ident()?;
             cur.expect(Tok::LParen)?;
             let mut columns = Vec::new();
@@ -771,12 +818,21 @@ fn parse_create(cur: &mut Cursor) -> Result<Statement> {
                     }
                 }
             }
-            Ok(Statement::CreateTable {
-                name,
-                columns,
-                unique_columns,
-                not_null_columns,
-            })
+            if if_not_exists {
+                Ok(Statement::CreateTableIfNotExists {
+                    name,
+                    columns,
+                    unique_columns,
+                    not_null_columns,
+                })
+            } else {
+                Ok(Statement::CreateTable {
+                    name,
+                    columns,
+                    unique_columns,
+                    not_null_columns,
+                })
+            }
         }
         Tok::Word(w) if w.eq_ignore_ascii_case("index") => {
             cur.keyword("on")?;
@@ -909,7 +965,7 @@ fn parse_having_compare(cur: &mut Cursor) -> Result<HavingPred> {
     let term = if is_agg {
         HavingTerm::Aggregate(parse_aggregate(cur)?)
     } else {
-        HavingTerm::Column(cur.ident()?)
+        HavingTerm::Column(cur.column_ref()?)
     };
     let op_at = cur.here();
     let op = match cur.next()? {
@@ -966,7 +1022,7 @@ fn parse_select_item(cur: &mut Cursor) -> Result<SelectItem> {
     let expr = if is_agg {
         SelectExpr::Aggregate(parse_aggregate(cur)?)
     } else {
-        SelectExpr::Column(cur.ident()?)
+        SelectExpr::Column(cur.column_ref()?)
     };
     // Optional `AS alias`. The alias may not be a clause keyword, so a forgotten
     // alias (`SELECT a AS FROM t`) is a clear error rather than silently eating FROM.
@@ -998,6 +1054,7 @@ fn is_reserved_word(w: &str) -> bool {
             | "order"
             | "before"
             | "limit"
+            | "offset"
             | "by"
             | "as"
             | "and"
@@ -1017,7 +1074,7 @@ fn parse_aggregate(cur: &mut Cursor) -> Result<Aggregate> {
         cur.next()?;
         None
     } else {
-        Some(cur.ident()?)
+        Some(cur.column_ref()?)
     };
     cur.expect(Tok::RParen)?;
     if column.is_none() && func != AggFunc::Count {
@@ -1055,7 +1112,7 @@ fn parse_comparison(cur: &mut Cursor) -> Result<Predicate> {
         cur.expect(Tok::RParen)?;
         return Ok(inner);
     }
-    let column = cur.ident()?;
+    let column = cur.column_ref()?;
 
     // Keyword-led predicate forms come before the binary operators: `[NOT] IN`,
     // `[NOT] BETWEEN`, `IS [NOT] NULL`, and `NOT LIKE`.
@@ -1159,7 +1216,7 @@ fn parse_between(cur: &mut Cursor, column: String, negated: bool) -> Result<Pred
 
 /// Parse one `ORDER BY` key: a column with an optional `ASC`/`DESC` direction.
 fn parse_order_key(cur: &mut Cursor) -> Result<OrderBy> {
-    let column = cur.ident()?;
+    let column = cur.column_ref()?;
     let descending = match cur.peek() {
         Some(Tok::Word(w)) if w.eq_ignore_ascii_case("desc") => {
             cur.next()?;
@@ -1172,6 +1229,32 @@ fn parse_order_key(cur: &mut Cursor) -> Result<OrderBy> {
         _ => false,
     };
     Ok(OrderBy { column, descending })
+}
+
+fn parse_row_count(cur: &mut Cursor, keyword: &str) -> Result<Option<usize>> {
+    if !peek_kw(cur, keyword) {
+        return Ok(None);
+    }
+    cur.next()?;
+    let at = cur.here();
+    match cur.next()? {
+        Tok::Int(i) if i >= 0 => usize::try_from(i).map(Some).map_err(|_| {
+            cur.err_at(
+                at,
+                format!(
+                    "{} is too large for this platform",
+                    keyword.to_ascii_uppercase()
+                ),
+            )
+        }),
+        other => Err(cur.err_at(
+            at,
+            format!(
+                "{} expects a non-negative integer, found {other:?}",
+                keyword.to_ascii_uppercase()
+            ),
+        )),
+    }
 }
 
 fn parse_select(cur: &mut Cursor) -> Result<Statement> {
@@ -1205,9 +1288,29 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
         cur.keyword("join")?;
         let right_table = cur.ident()?;
         cur.keyword("on")?;
-        let left_column = cur.ident()?;
+        let left_column = cur.column_ref()?;
         cur.expect(Tok::Eq)?;
-        let right_column = cur.ident()?;
+        let right_column = cur.column_ref()?;
+        let filter = if peek_kw(cur, "where") {
+            cur.next()?;
+            Some(parse_predicate(cur)?)
+        } else {
+            None
+        };
+        let order = if peek_kw(cur, "order") {
+            cur.next()?;
+            cur.keyword("by")?;
+            let mut keys = vec![parse_order_key(cur)?];
+            while matches!(cur.peek(), Some(Tok::Comma)) {
+                cur.next()?;
+                keys.push(parse_order_key(cur)?);
+            }
+            keys
+        } else {
+            Vec::new()
+        };
+        let limit = parse_row_count(cur, "limit")?;
+        let offset = parse_row_count(cur, "offset")?.unwrap_or(0);
         return Ok(Statement::SelectJoin {
             projection,
             distinct,
@@ -1216,6 +1319,10 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
             left_column,
             right_column,
             left_join,
+            filter,
+            order,
+            limit,
+            offset,
         });
     }
 
@@ -1275,37 +1382,8 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
         Vec::new()
     };
 
-    let limit = if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("limit")) {
-        cur.next()?; // consume LIMIT
-        let at = cur.here();
-        match cur.next()? {
-            Tok::Int(i) if i >= 0 => Some(i as usize),
-            other => {
-                return Err(cur.err_at(
-                    at,
-                    format!("LIMIT expects a non-negative integer, found {other:?}"),
-                ))
-            }
-        }
-    } else {
-        None
-    };
-
-    let offset = if peek_kw(cur, "offset") {
-        cur.next()?;
-        let at = cur.here();
-        match cur.next()? {
-            Tok::Int(i) if i >= 0 => i as usize,
-            other => {
-                return Err(cur.err_at(
-                    at,
-                    format!("OFFSET expects a non-negative integer, found {other:?}"),
-                ))
-            }
-        }
-    } else {
-        0
-    };
+    let limit = parse_row_count(cur, "limit")?;
+    let offset = parse_row_count(cur, "offset")?.unwrap_or(0);
 
     Ok(Statement::Select {
         table,
@@ -1338,8 +1416,19 @@ fn parse_update(cur: &mut Cursor) -> Result<Statement> {
 
 fn parse_drop(cur: &mut Cursor) -> Result<Statement> {
     cur.keyword("table")?;
+    let if_exists = if peek_kw(cur, "if") {
+        cur.next()?;
+        cur.keyword("exists")?;
+        true
+    } else {
+        false
+    };
     let table = cur.ident()?;
-    Ok(Statement::DropTable { table })
+    if if_exists {
+        Ok(Statement::DropTableIfExists { table })
+    } else {
+        Ok(Statement::DropTable { table })
+    }
 }
 
 fn parse_delete(cur: &mut Cursor) -> Result<Statement> {
@@ -1363,6 +1452,20 @@ mod tests {
                 columns: vec!["id".into(), "name".into(), "status".into()],
                 unique_columns: vec![],
                 not_null_columns: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn parses_conditional_table_ddl() {
+        assert!(matches!(
+            parse("CREATE TABLE IF NOT EXISTS cache (id PRIMARY KEY)").unwrap(),
+            Statement::CreateTableIfNotExists { name, .. } if name == "cache"
+        ));
+        assert_eq!(
+            parse("DROP TABLE IF EXISTS cache").unwrap(),
+            Statement::DropTableIfExists {
+                table: "cache".into()
             }
         );
     }

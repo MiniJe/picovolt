@@ -39,9 +39,9 @@ PicoVolt is not SQLite, so some better-sqlite3 features are intentionally absent
 - Parameters are positional `?` only. Named parameters (`:id`) are not supported.
 - No `pragma`.
 - Blob parameters are unsupported.
-- JOIN support covers equality `INNER JOIN` and `LEFT JOIN`, including column
-  projection and `DISTINCT`; joined-row filters, ordering, and N-table plans are
-  not yet supported.
+- JOIN support covers two-table equality `INNER JOIN` and `LEFT JOIN`, including
+  qualified references, projection, `DISTINCT`, filtering, ordering, and
+  pagination; aliases and N-table plans are not yet supported.
 
 The raw engine API (`import { Db } from "picovolt"`) remains available if you want
 the JSON-returning `db.query(sql, params)` directly.

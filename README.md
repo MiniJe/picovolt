@@ -117,17 +117,18 @@ Install the first-class CLI with `cargo install picovolt`, then use `pv query`,
 Rust, Python, Go, Node, and browser projects are in [`starters/`](starters/README.md); supported adapters
 are catalogued in [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
 
-SQL supported: `CREATE TABLE` with `PRIMARY KEY`, `UNIQUE`, and `NOT NULL`,
+SQL supported: `CREATE TABLE [IF NOT EXISTS]` with `PRIMARY KEY`, `UNIQUE`, and `NOT NULL`,
 `CREATE [UNIQUE] INDEX ON t (col)`, single- and multi-row `INSERT`,
-`UPDATE ... SET ... WHERE`, `DELETE ... WHERE`, `DROP TABLE`, and
+`UPDATE ... SET ... WHERE`, `DELETE ... WHERE`, `DROP TABLE [IF EXISTS]`, and
 `SELECT [DISTINCT] {* | col [AS alias], ... | COUNT/SUM/MIN/MAX/AVG(...) [AS alias]}
 FROM t [WHERE <pred>] [GROUP BY cols] [HAVING <pred>] [BEFORE tx]
 [ORDER BY col [ASC|DESC], ...] [LIMIT n] [OFFSET n]`, where `<pred>` combines
 `col <op> value` (`=`, `!=`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`),
 `col [NOT] IN (...)`, `col [NOT] BETWEEN a AND b`, and `col IS [NOT] NULL` with
 `AND`, `OR`, and parentheses. Integer and decimal values compare by magnitude.
-Two-table equality `INNER`/`LEFT JOIN` queries support `*`, column projection,
-aliases, and `DISTINCT`. Rust callers can cache `Database::prepare(...)` templates and use
+Two-table equality `INNER`/`LEFT JOIN` queries support qualified references,
+projection, aliases, `DISTINCT`, filters, ordering, and pagination. Rust callers
+can cache `Database::prepare(...)` templates and use
 atomic `Database::transaction(...)` closures with in-memory databases.
 Durability is selectable via `Database::set_durability` (`Fast` OS-cache default,
 or crash-safe `Sync` with fsync and an atomic manifest).
