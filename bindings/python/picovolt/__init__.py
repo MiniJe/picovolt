@@ -30,7 +30,7 @@ import sys
 from ctypes import POINTER, byref, c_char_p, c_size_t, c_uint8, c_uint64, c_void_p
 
 __all__ = ["Database", "PicoVoltError", "version", "__version__"]
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 
 class PicoVoltError(RuntimeError):
@@ -90,6 +90,14 @@ _lib.pv_import_sql.restype = c_void_p
 _lib.pv_import_sql.argtypes = [c_void_p, c_char_p]
 _lib.pv_current_tx.restype = c_uint64
 _lib.pv_current_tx.argtypes = [c_void_p]
+_lib.pv_begin_transaction.restype = ctypes.c_int32
+_lib.pv_begin_transaction.argtypes = [c_void_p]
+_lib.pv_commit_transaction.restype = ctypes.c_int32
+_lib.pv_commit_transaction.argtypes = [c_void_p]
+_lib.pv_rollback_transaction.restype = ctypes.c_int32
+_lib.pv_rollback_transaction.argtypes = [c_void_p]
+_lib.pv_in_transaction.restype = ctypes.c_int32
+_lib.pv_in_transaction.argtypes = [c_void_p]
 _lib.pv_export.restype = c_void_p
 _lib.pv_export.argtypes = [c_void_p, POINTER(c_size_t)]
 _lib.pv_import.restype = c_void_p
@@ -100,7 +108,7 @@ _lib.pv_close.argtypes = [c_void_p]
 
 
 def version() -> str:
-    """Return the PicoVolt library version, e.g. ``"0.4.0"``."""
+    """Return the PicoVolt library version, e.g. ``"1.6.0"``."""
     return _lib.pv_version().decode("utf-8")
 
 
@@ -200,6 +208,31 @@ class Database:
             return 0
         return int(_lib.pv_current_tx(self._ptr))
 
+    def begin(self) -> None:
+        """Begin an explicit multi-statement transaction."""
+        self._transaction_call(_lib.pv_begin_transaction)
+
+    def commit(self) -> None:
+        """Commit the active transaction."""
+        self._transaction_call(_lib.pv_commit_transaction)
+
+    def rollback(self) -> None:
+        """Roll back the active transaction."""
+        self._transaction_call(_lib.pv_rollback_transaction)
+
+    @property
+    def in_transaction(self) -> bool:
+        """Whether an explicit transaction is active."""
+        if not self._ptr:
+            return False
+        return bool(_lib.pv_in_transaction(self._ptr))
+
+    def _transaction_call(self, function: object) -> None:
+        if not self._ptr:
+            raise PicoVoltError("database is closed")
+        if not function(self._ptr):
+            raise _last_error()
+
     def export(self) -> bytes:
         """Export the whole database as a ``.pvdb`` byte image."""
         if not self._ptr:
@@ -217,8 +250,12 @@ class Database:
     def close(self) -> None:
         """Close the database and release its resources. Safe to call twice."""
         if self._ptr:
-            _lib.pv_close(self._ptr)
-            self._ptr = None
+            try:
+                if self.in_transaction:
+                    self.rollback()
+            finally:
+                _lib.pv_close(self._ptr)
+                self._ptr = None
 
     # --- lifecycle sugar --------------------------------------------------
     def __enter__(self) -> "Database":

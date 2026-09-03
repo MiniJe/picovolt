@@ -39,7 +39,7 @@ type DB struct {
 // fallible wrappers below pin the goroutine with runtime.LockOSThread for the
 // whole call-plus-read window so both transitions hit the same OS thread.
 
-// Version returns the PicoVolt library version, e.g. "0.4.0".
+// Version returns the PicoVolt library version, e.g. "1.6.0".
 func Version() string {
 	return C.GoString(C.pv_version())
 }
@@ -171,6 +171,50 @@ func (db *DB) CurrentTx() uint64 {
 	return uint64(C.pv_current_tx(db.ptr))
 }
 
+// Begin starts an explicit multi-statement transaction.
+func (db *DB) Begin() error {
+	return db.transactionControl(0)
+}
+
+// Commit makes the active transaction durable.
+func (db *DB) Commit() error {
+	return db.transactionControl(1)
+}
+
+// Rollback restores the state from before Begin.
+func (db *DB) Rollback() error {
+	return db.transactionControl(2)
+}
+
+// InTransaction reports whether Begin has not yet been committed or rolled back.
+func (db *DB) InTransaction() bool {
+	if db.ptr == nil {
+		return false
+	}
+	return C.pv_in_transaction(db.ptr) != 0
+}
+
+func (db *DB) transactionControl(action int) error {
+	if db.ptr == nil {
+		return errors.New("picovolt: database is closed")
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	var ok C.int32_t
+	switch action {
+	case 0:
+		ok = C.pv_begin_transaction(db.ptr)
+	case 1:
+		ok = C.pv_commit_transaction(db.ptr)
+	default:
+		ok = C.pv_rollback_transaction(db.ptr)
+	}
+	if ok == 0 {
+		return lastError()
+	}
+	return nil
+}
+
 // Export returns the database as a .pvdb byte image.
 func (db *DB) Export() ([]byte, error) {
 	if db.ptr == nil {
@@ -195,6 +239,9 @@ func (db *DB) Export() ([]byte, error) {
 // is `defer db.Close()` right after a successful open.
 func (db *DB) Close() {
 	if db.ptr != nil {
+		if db.InTransaction() {
+			_ = db.Rollback()
+		}
 		C.pv_close(db.ptr)
 		db.ptr = nil
 	}

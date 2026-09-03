@@ -19,8 +19,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+#[cfg(feature = "enterprise")]
+use std::sync::Arc;
 use std::time::Instant;
 
+#[cfg(not(target_arch = "wasm32"))]
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use crate::core::errors::{PvError, Result};
@@ -48,6 +52,12 @@ use crate::storage::vle::{
 
 /// Manifest file name within a development workspace.
 pub const MANIFEST_FILE: &str = "pv_manifest.json";
+/// Recovery marker written before a filesystem transaction may mutate pages.
+pub const TRANSACTION_MARKER_FILE: &str = ".pv_transaction_active";
+/// Private copy of the last committed workspace used for crash recovery.
+pub const TRANSACTION_BACKUP_DIR: &str = ".pv_transaction_backup";
+/// Lock file used to distinguish a live filesystem transaction from a crash.
+pub const TRANSACTION_LOCK_FILE: &str = ".pv_transaction.lock";
 const MAX_STREAM_TAIL_BYTES: usize = 64 * 1024 * 1024;
 
 /// Largest record (envelope + body) that fits on a fresh page.
@@ -335,6 +345,20 @@ pub enum Durability {
     Sync,
 }
 
+enum TransactionRollback {
+    Memory(Vec<u8>),
+    Filesystem(PathBuf),
+}
+
+struct ActiveTransaction {
+    rollback: TransactionRollback,
+    previous_autocommit: bool,
+    previous_durability: Durability,
+    /// Held from before backup preparation through commit or rollback. The file
+    /// itself persists, but the OS lock is released automatically on drop.
+    _filesystem_lock: Option<File>,
+}
+
 /// A PicoVolt database handle.
 pub struct Database {
     cache: RefCell<PageCache>,
@@ -347,6 +371,9 @@ pub struct Database {
     durability: Durability,
     /// Cached write handle for the manifest, so autocommit doesn't reopen it.
     manifest_file: RefCell<Option<File>>,
+    active_transaction: Option<ActiveTransaction>,
+    #[cfg(feature = "enterprise")]
+    enterprise: crate::enterprise::EnterpriseRuntime,
 }
 
 impl Database {
@@ -354,6 +381,9 @@ impl Database {
     pub fn open_dev(path: impl AsRef<Path>) -> Result<Self> {
         let root = path.as_ref().to_path_buf();
         fs::create_dir_all(&root)?;
+        let recovery_lock = acquire_transaction_lock(&root)?;
+        recover_workspace_transaction(&root)?;
+        drop(recovery_lock);
         let manifest_path = root.join(MANIFEST_FILE);
 
         if manifest_path.exists() {
@@ -374,6 +404,9 @@ impl Database {
                 autocommit: true,
                 durability: Durability::Fast,
                 manifest_file: RefCell::new(None),
+                active_transaction: None,
+                #[cfg(feature = "enterprise")]
+                enterprise: crate::enterprise::EnterpriseRuntime::default(),
             })
         } else {
             let dev = DevStore::create(&root)?;
@@ -387,6 +420,9 @@ impl Database {
                 autocommit: true,
                 durability: Durability::Fast,
                 manifest_file: RefCell::new(None),
+                active_transaction: None,
+                #[cfg(feature = "enterprise")]
+                enterprise: crate::enterprise::EnterpriseRuntime::default(),
             })
         }
     }
@@ -428,6 +464,9 @@ impl Database {
             autocommit: false,
             durability: Durability::Fast,
             manifest_file: RefCell::new(None),
+            active_transaction: None,
+            #[cfg(feature = "enterprise")]
+            enterprise: crate::enterprise::EnterpriseRuntime::default(),
         })
     }
 
@@ -536,6 +575,9 @@ impl Database {
             autocommit: false,
             durability: Durability::Fast,
             manifest_file: RefCell::new(None),
+            active_transaction: None,
+            #[cfg(feature = "enterprise")]
+            enterprise: crate::enterprise::EnterpriseRuntime::default(),
         })
     }
 
@@ -558,6 +600,9 @@ impl Database {
             autocommit: false,
             durability: Durability::Fast,
             manifest_file: RefCell::new(None),
+            active_transaction: None,
+            #[cfg(feature = "enterprise")]
+            enterprise: crate::enterprise::EnterpriseRuntime::default(),
         }
     }
 
@@ -628,6 +673,9 @@ impl Database {
             autocommit: false,
             durability: Durability::Fast,
             manifest_file: RefCell::new(None),
+            active_transaction: None,
+            #[cfg(feature = "enterprise")]
+            enterprise: crate::enterprise::EnterpriseRuntime::default(),
         })
     }
 
@@ -722,30 +770,192 @@ impl Database {
         })
     }
 
-    /// Run a closure atomically against an in-memory database.
+    /// Run a closure atomically against an in-memory database or development
+    /// workspace.
     ///
-    /// If the closure returns an error, the complete database image is restored.
-    /// Filesystem workspaces still use statement-level autocommit; their future
-    /// transaction implementation requires a write-ahead log rather than a
-    /// potentially misleading best-effort rollback.
+    /// Filesystem transactions make a durable copy of the last committed
+    /// workspace before the callback runs. This is intentionally conservative:
+    /// transaction start is O(database size), but an error or process crash can
+    /// restore the complete prior state rather than attempting best-effort page
+    /// rollback. Use the explicit begin, commit, and rollback methods when a
+    /// closure does not fit the caller's control flow.
     pub fn transaction<T>(
         &mut self,
         operation: impl FnOnce(&mut Database) -> Result<T>,
     ) -> Result<T> {
-        self.ensure_writable()?;
-        if self.root.is_some() {
-            return Err(PvError::Schema(
-                "multi-statement transactions currently require an in-memory database".into(),
-            ));
-        }
-        let snapshot = self.bake_to_bytes()?;
+        self.begin_transaction()?;
         match operation(self) {
-            Ok(value) => Ok(value),
+            Ok(value) => {
+                if !self.in_transaction() {
+                    return Err(PvError::Transaction(
+                        "transaction callback changed the transaction state".into(),
+                    ));
+                }
+                match self.commit_transaction() {
+                    Ok(()) => Ok(value),
+                    Err(commit_error) => {
+                        let _ = self.rollback_transaction();
+                        Err(commit_error)
+                    }
+                }
+            }
             Err(error) => {
-                *self = Database::import_bytes(&snapshot)?;
+                self.rollback_transaction().map_err(|rollback_error| {
+                    PvError::Transaction(format!(
+                        "operation failed ({error}); rollback also failed ({rollback_error})"
+                    ))
+                })?;
                 Err(error)
             }
         }
+    }
+
+    /// Begin an explicit multi-statement transaction.
+    ///
+    /// Nested transactions are rejected. For a development workspace, this
+    /// writes and syncs a recovery copy plus a marker before returning.
+    pub fn begin_transaction(&mut self) -> Result<()> {
+        self.ensure_writable()?;
+        if self.active_transaction.is_some() {
+            return Err(PvError::Transaction(
+                "a transaction is already active".into(),
+            ));
+        }
+
+        let previous_autocommit = self.autocommit;
+        let previous_durability = self.durability;
+        let (rollback, filesystem_lock) = if let Some(root) = self.root.clone() {
+            let lock = acquire_transaction_lock(&root)?;
+            self.durability = Durability::Sync;
+            if let Err(error) = self.flush() {
+                self.durability = previous_durability;
+                return Err(error);
+            }
+            self.durability = previous_durability;
+            prepare_workspace_transaction(&root)?;
+            (TransactionRollback::Filesystem(root), Some(lock))
+        } else {
+            (TransactionRollback::Memory(self.bake_to_bytes()?), None)
+        };
+
+        self.autocommit = false;
+        self.active_transaction = Some(ActiveTransaction {
+            rollback,
+            previous_autocommit,
+            previous_durability,
+            _filesystem_lock: filesystem_lock,
+        });
+        #[cfg(feature = "enterprise")]
+        self.enterprise.emit(crate::enterprise::AuditEvent::pending(
+            crate::enterprise::AuditEventKind::TransactionBegan,
+            self.current_tx(),
+        ));
+        Ok(())
+    }
+
+    /// Commit the active transaction.
+    ///
+    /// Filesystem data and the manifest are synced before the recovery marker is
+    /// removed. Removing that marker is the commit point: before it, reopening
+    /// rolls back; after it, reopening keeps the new state.
+    pub fn commit_transaction(&mut self) -> Result<()> {
+        let (filesystem_root, previous_durability) = match self.active_transaction.as_ref() {
+            Some(state) => (
+                match &state.rollback {
+                    TransactionRollback::Filesystem(root) => Some(root.clone()),
+                    TransactionRollback::Memory(_) => None,
+                },
+                state.previous_durability,
+            ),
+            None => return Err(PvError::Transaction("no transaction is active".into())),
+        };
+
+        if filesystem_root.is_some() {
+            self.durability = Durability::Sync;
+        }
+        if let Err(error) = self.flush() {
+            self.durability = previous_durability;
+            return Err(error);
+        }
+
+        if let Some(root) = &filesystem_root {
+            commit_workspace_transaction(root)?;
+        }
+
+        let state = self
+            .active_transaction
+            .take()
+            .expect("transaction state checked above");
+        self.autocommit = state.previous_autocommit;
+        self.durability = state.previous_durability;
+        if let TransactionRollback::Filesystem(root) = state.rollback {
+            // The marker is already gone, so cleanup failure cannot make the
+            // committed data ambiguous. A later open also removes an orphan.
+            let _ = fs::remove_dir_all(root.join(TRANSACTION_BACKUP_DIR));
+        }
+        #[cfg(feature = "enterprise")]
+        self.enterprise.emit(crate::enterprise::AuditEvent::pending(
+            crate::enterprise::AuditEventKind::TransactionCommitted,
+            self.current_tx(),
+        ));
+        Ok(())
+    }
+
+    /// Restore the state captured by begin_transaction.
+    pub fn rollback_transaction(&mut self) -> Result<()> {
+        let Some(mut state) = self.active_transaction.take() else {
+            return Err(PvError::Transaction("no transaction is active".into()));
+        };
+
+        #[cfg(feature = "enterprise")]
+        let enterprise = self.enterprise.clone();
+        match state.rollback {
+            TransactionRollback::Memory(snapshot) => {
+                let mut restored = Database::import_bytes(&snapshot)?;
+                restored.autocommit = state.previous_autocommit;
+                restored.durability = state.previous_durability;
+                #[cfg(feature = "enterprise")]
+                {
+                    restored.enterprise = enterprise;
+                    restored
+                        .enterprise
+                        .emit(crate::enterprise::AuditEvent::pending(
+                            crate::enterprise::AuditEventKind::TransactionRolledBack,
+                            restored.current_tx(),
+                        ));
+                }
+                *self = restored;
+            }
+            TransactionRollback::Filesystem(root) => {
+                // Drop all cached filesystem handles before replacing live files.
+                *self = Database::open_memory();
+                restore_workspace_transaction(&root)?;
+                // Recovery is complete and its marker is gone. Release the
+                // transaction lock before the normal open path acquires it for
+                // its own recovery check.
+                drop(state._filesystem_lock.take());
+                let mut restored = Database::open_dev(&root)?;
+                restored.autocommit = state.previous_autocommit;
+                restored.durability = state.previous_durability;
+                #[cfg(feature = "enterprise")]
+                {
+                    restored.enterprise = enterprise;
+                    restored
+                        .enterprise
+                        .emit(crate::enterprise::AuditEvent::pending(
+                            crate::enterprise::AuditEventKind::TransactionRolledBack,
+                            restored.current_tx(),
+                        ));
+                }
+                *self = restored;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether this handle currently owns an explicit transaction.
+    pub fn in_transaction(&self) -> bool {
+        self.active_transaction.is_some()
     }
 
     /// Execute a parameterized statement with explicit resource limits. This is
@@ -776,6 +986,18 @@ impl Database {
         mut budget: Option<&mut QueryBudget>,
     ) -> Result<QueryResult> {
         match statement {
+            Statement::Begin => {
+                self.begin_transaction()?;
+                Ok(QueryResult::Done)
+            }
+            Statement::Commit => {
+                self.commit_transaction()?;
+                Ok(QueryResult::Done)
+            }
+            Statement::Rollback => {
+                self.rollback_transaction()?;
+                Ok(QueryResult::Done)
+            }
             Statement::CreateTable {
                 name,
                 columns,
@@ -1684,7 +1906,27 @@ impl Database {
         Ok(count)
     }
 
-    // --- compliance & extensions -------------------------------------------
+    // --- enterprise integration, compliance & extensions -------------------
+
+    /// Attach a stable identity used by optional enterprise event sinks.
+    #[cfg(feature = "enterprise")]
+    pub fn configure_enterprise(&mut self, config: crate::enterprise::EnterpriseConfig) {
+        self.enterprise.configure(config);
+    }
+
+    /// Borrow the configured enterprise identity, if any.
+    #[cfg(feature = "enterprise")]
+    pub fn enterprise_config(&self) -> Option<&crate::enterprise::EnterpriseConfig> {
+        self.enterprise.config()
+    }
+
+    /// Attach a host-owned transaction audit destination.
+    ///
+    /// Events contain no SQL, values, paths, credentials, or user identities.
+    #[cfg(feature = "enterprise")]
+    pub fn set_audit_sink(&mut self, sink: Arc<dyn crate::enterprise::AuditSink>) {
+        self.enterprise.set_sink(sink);
+    }
 
     /// Run the licensing compliance hook against the supplied metrics.
     pub fn assert_compliance(&self, metrics: &RuntimeMetrics) -> Result<()> {
@@ -1965,6 +2207,224 @@ pub fn pv_open_dev(path: impl AsRef<Path>) -> Result<Database> {
 /// Open a production-mode (baked) database. See [`Database::open_prod`].
 pub fn pv_open_prod(path: impl AsRef<Path>) -> Result<Database> {
     Database::open_prod(path)
+}
+
+fn prepare_workspace_transaction(root: &Path) -> Result<()> {
+    let marker = root.join(TRANSACTION_MARKER_FILE);
+    let marker_tmp = root.join(".pv_transaction_active.tmp");
+    let backup = root.join(TRANSACTION_BACKUP_DIR);
+    if marker.exists() {
+        return Err(PvError::Transaction(
+            "workspace already has an active recovery marker".into(),
+        ));
+    }
+    if backup.exists() {
+        fs::remove_dir_all(&backup)?;
+    }
+    if marker_tmp.exists() {
+        fs::remove_file(&marker_tmp)?;
+    }
+
+    fs::create_dir(&backup)?;
+    for name in [MANIFEST_FILE, "chunks", "blobs"] {
+        let source = root.join(name);
+        if source.exists() {
+            copy_tree_synced(&source, &backup.join(name))?;
+        }
+    }
+    sync_directory(&backup)?;
+
+    {
+        let mut file = File::create(&marker_tmp)?;
+        file.write_all(b"PVTX1\n")?;
+        file.sync_all()?;
+    }
+    fs::rename(&marker_tmp, &marker)?;
+    sync_directory(root)?;
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn acquire_transaction_lock(root: &Path) -> Result<File> {
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join(TRANSACTION_LOCK_FILE))?;
+    lock.try_lock_exclusive().map_err(|error| {
+        PvError::Transaction(format!(
+            "workspace transaction is active in another handle or process: {error}"
+        ))
+    })?;
+    Ok(lock)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn acquire_transaction_lock(root: &Path) -> Result<File> {
+    // Browser databases use the in-memory/OPFS wrapper and never enter this
+    // filesystem transaction path. Keep the native API compilable for wasm.
+    Ok(OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join(TRANSACTION_LOCK_FILE))?)
+}
+
+fn commit_workspace_transaction(root: &Path) -> Result<()> {
+    let marker = root.join(TRANSACTION_MARKER_FILE);
+    if !marker.exists() {
+        return Err(PvError::Transaction(
+            "filesystem transaction recovery marker is missing".into(),
+        ));
+    }
+    fs::remove_file(marker)?;
+    sync_directory(root)
+}
+
+fn recover_workspace_transaction(root: &Path) -> Result<()> {
+    let marker = root.join(TRANSACTION_MARKER_FILE);
+    let marker_tmp = root.join(".pv_transaction_active.tmp");
+    let backup = root.join(TRANSACTION_BACKUP_DIR);
+
+    if marker.exists() {
+        if !backup.join(MANIFEST_FILE).is_file() {
+            return Err(PvError::Transaction(
+                "active transaction has no valid recovery manifest".into(),
+            ));
+        }
+        restore_workspace_transaction(root)?;
+    } else if backup.exists() {
+        // A backup without a marker is either from before mutations began or
+        // after the commit point. In both cases the live workspace is canonical.
+        fs::remove_dir_all(&backup)?;
+    }
+    if marker_tmp.exists() {
+        fs::remove_file(marker_tmp)?;
+    }
+    Ok(())
+}
+
+fn restore_workspace_transaction(root: &Path) -> Result<()> {
+    let marker = root.join(TRANSACTION_MARKER_FILE);
+    let backup = root.join(TRANSACTION_BACKUP_DIR);
+    if !marker.exists() || !backup.join(MANIFEST_FILE).is_file() {
+        return Err(PvError::Transaction(
+            "workspace transaction recovery files are incomplete".into(),
+        ));
+    }
+
+    // Validate the complete recovery image before touching live data. This
+    // keeps a corrupted or attacker-modified backup from producing a partial
+    // restore and ensures links never escape the workspace boundary.
+    for name in [MANIFEST_FILE, "chunks", "blobs"] {
+        let saved = backup.join(name);
+        if saved.exists() {
+            validate_copy_tree(&saved)?;
+        }
+    }
+
+    for name in [MANIFEST_FILE, "chunks", "blobs"] {
+        let live = root.join(name);
+        if let Ok(metadata) = fs::symlink_metadata(&live) {
+            if metadata.file_type().is_symlink() {
+                return Err(PvError::Transaction(format!(
+                    "refusing to replace symlink during transaction recovery: {}",
+                    live.display()
+                )));
+            }
+            if metadata.is_dir() {
+                fs::remove_dir_all(&live)?;
+            } else {
+                fs::remove_file(&live)?;
+            }
+        }
+        let saved = backup.join(name);
+        if saved.exists() {
+            copy_tree_synced(&saved, &live)?;
+        }
+    }
+    sync_directory(root)?;
+
+    // Removing the marker is the recovery commit point. Keep the backup until
+    // after this succeeds so an interrupted restore can be repeated.
+    fs::remove_file(&marker)?;
+    sync_directory(root)?;
+    fs::remove_dir_all(backup)?;
+    Ok(())
+}
+
+fn validate_copy_tree(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(PvError::Transaction(format!(
+            "refusing to copy symlink in workspace transaction: {}",
+            path.display()
+        )));
+    }
+    if metadata.is_file() {
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        return Err(PvError::Transaction(format!(
+            "unsupported workspace entry during transaction: {}",
+            path.display()
+        )));
+    }
+    for entry in fs::read_dir(path)? {
+        validate_copy_tree(&entry?.path())?;
+    }
+    Ok(())
+}
+
+fn copy_tree_synced(source: &Path, destination: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(source)?;
+    if metadata.file_type().is_symlink() {
+        return Err(PvError::Transaction(format!(
+            "refusing to copy symlink in workspace transaction: {}",
+            source.display()
+        )));
+    }
+    if metadata.is_file() {
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(source, destination)?;
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(destination)?
+            .sync_all()?;
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        return Err(PvError::Transaction(format!(
+            "unsupported workspace entry during transaction: {}",
+            source.display()
+        )));
+    }
+
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        copy_tree_synced(&entry.path(), &destination.join(entry.file_name()))?;
+    }
+    sync_directory(destination)
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> Result<()> {
+    File::open(path)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> Result<()> {
+    // Rust does not expose portable directory fsync on Windows. File data and
+    // markers are still individually synced; rename/remove provide the commit
+    // boundary supported by the platform.
+    Ok(())
 }
 
 /// Compile a development workspace at `workspace` into a monolith at `out_path`.
@@ -3904,6 +4364,154 @@ mod tests {
         );
         // The atomic-commit temp file must not linger.
         assert!(!ws.join("pv_manifest.json.tmp").exists());
+    }
+
+    #[test]
+    fn filesystem_transaction_commits_all_statements() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        {
+            let mut db = Database::open_dev(&ws).unwrap();
+            db.query("CREATE TABLE accounts (id PRIMARY KEY, balance)")
+                .unwrap();
+            db.transaction(|tx| {
+                tx.query("INSERT INTO accounts VALUES (1, 40)")?;
+                tx.query("INSERT INTO accounts VALUES (2, 60)")?;
+                Ok(())
+            })
+            .unwrap();
+            assert!(!db.in_transaction());
+        }
+
+        let mut reopened = Database::open_dev(&ws).unwrap();
+        let rows = reopened
+            .query("SELECT * FROM accounts ORDER BY id")
+            .unwrap();
+        assert_eq!(rows.rows().unwrap().len(), 2);
+        assert!(!ws.join(TRANSACTION_MARKER_FILE).exists());
+        assert!(!ws.join(TRANSACTION_BACKUP_DIR).exists());
+    }
+
+    #[test]
+    fn sql_transaction_control_works_for_filesystem_workspaces() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        let mut db = Database::open_dev(&ws).unwrap();
+        db.query("CREATE TABLE t (id)").unwrap();
+        db.query("BEGIN TRANSACTION").unwrap();
+        db.query("INSERT INTO t VALUES (1)").unwrap();
+        db.query("ROLLBACK").unwrap();
+        assert_eq!(
+            db.query("SELECT COUNT(*) FROM t").unwrap().rows().unwrap(),
+            &[vec![Value::Int(0)]]
+        );
+
+        db.query("BEGIN").unwrap();
+        db.query("INSERT INTO t VALUES (2)").unwrap();
+        db.query("COMMIT TRANSACTION").unwrap();
+        assert_eq!(
+            db.query("SELECT * FROM t").unwrap().rows().unwrap(),
+            &[vec![Value::Int(2)]]
+        );
+    }
+
+    #[test]
+    fn filesystem_transaction_error_restores_complete_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        let mut db = Database::open_dev(&ws).unwrap();
+        db.query("CREATE TABLE accounts (id PRIMARY KEY, balance)")
+            .unwrap();
+        db.query("INSERT INTO accounts VALUES (1, 100)").unwrap();
+        let before_tx = db.current_tx();
+
+        let result = db.transaction(|tx| {
+            tx.query("UPDATE accounts SET balance = 20 WHERE id = 1")?;
+            tx.query("INSERT INTO accounts VALUES (2, 80)")?;
+            Err::<(), _>(PvError::Schema("application rejected transfer".into()))
+        });
+        assert!(matches!(result, Err(PvError::Schema(_))));
+        assert_eq!(db.current_tx(), before_tx);
+        let rows = db.query("SELECT * FROM accounts ORDER BY id").unwrap();
+        assert_eq!(
+            rows.rows().unwrap(),
+            &[vec![Value::Int(1), Value::Int(100)]]
+        );
+
+        drop(db);
+        let mut reopened = Database::open_dev(&ws).unwrap();
+        assert_eq!(
+            reopened
+                .query("SELECT * FROM accounts")
+                .unwrap()
+                .rows()
+                .unwrap(),
+            &[vec![Value::Int(1), Value::Int(100)]]
+        );
+    }
+
+    #[test]
+    fn unfinished_filesystem_transaction_recovers_on_open() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        {
+            let mut db = Database::open_dev(&ws).unwrap();
+            db.set_durability(Durability::Sync);
+            db.query("CREATE TABLE events (id PRIMARY KEY, state)")
+                .unwrap();
+            db.query("INSERT INTO events VALUES (1, 'committed')")
+                .unwrap();
+            db.begin_transaction().unwrap();
+            db.query("UPDATE events SET state = 'partial' WHERE id = 1")
+                .unwrap();
+            db.query("INSERT INTO events VALUES (2, 'partial')")
+                .unwrap();
+            // Simulate dirty pages reaching disk before the process disappears.
+            db.flush_now().unwrap();
+            assert!(ws.join(TRANSACTION_MARKER_FILE).exists());
+        }
+
+        let mut recovered = Database::open_dev(&ws).unwrap();
+        let rows = recovered.query("SELECT * FROM events ORDER BY id").unwrap();
+        assert_eq!(
+            rows.rows().unwrap(),
+            &[vec![Value::Int(1), Value::Text("committed".into())]]
+        );
+        assert!(!ws.join(TRANSACTION_MARKER_FILE).exists());
+        assert!(!ws.join(TRANSACTION_BACKUP_DIR).exists());
+    }
+
+    #[test]
+    fn live_filesystem_transaction_cannot_be_mistaken_for_a_crash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        let mut owner = Database::open_dev(&ws).unwrap();
+        owner.query("CREATE TABLE t (id)").unwrap();
+        owner.begin_transaction().unwrap();
+        owner.query("INSERT INTO t VALUES (1)").unwrap();
+
+        assert!(matches!(
+            Database::open_dev(&ws),
+            Err(PvError::Transaction(_))
+        ));
+        owner.rollback_transaction().unwrap();
+        assert!(Database::open_dev(&ws).is_ok());
+    }
+
+    #[test]
+    fn explicit_transactions_reject_invalid_lifecycle() {
+        let mut db = Database::open_memory();
+        assert!(matches!(
+            db.commit_transaction(),
+            Err(PvError::Transaction(_))
+        ));
+        db.begin_transaction().unwrap();
+        assert!(matches!(
+            db.begin_transaction(),
+            Err(PvError::Transaction(_))
+        ));
+        db.rollback_transaction().unwrap();
+        assert!(!db.in_transaction());
     }
 
     #[test]

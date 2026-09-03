@@ -29,7 +29,7 @@ extern "C" {
 /* Opaque database handle. Allocate with pv_open_*, free with pv_close. */
 typedef struct PvDb PvDb;
 
-/* Library version, e.g. "0.4.0". Static; never NULL; do not free. */
+/* Library version, e.g. "1.6.0". Static; never NULL; do not free. */
 const char *pv_version(void);
 
 /*
@@ -74,6 +74,13 @@ char *pv_import_sql(PvDb *db, const char *dump);
 
 /* Most recently committed transaction id (the upper bound for BEFORE tx). */
 uint64_t pv_current_tx(const PvDb *db);
+
+/* Explicit multi-statement transaction lifecycle. Return 1 on success, 0 on
+ * error. Development workspaces recover an unfinished transaction on reopen. */
+int32_t pv_begin_transaction(PvDb *db);
+int32_t pv_commit_transaction(PvDb *db);
+int32_t pv_rollback_transaction(PvDb *db);
+int32_t pv_in_transaction(const PvDb *db);
 
 /*
  * Export the database as a .pvdb byte image. On success returns a buffer of

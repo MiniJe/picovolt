@@ -93,7 +93,7 @@ fn string_to_c(s: String) -> *mut c_char {
     }
 }
 
-/// The PicoVolt library version, e.g. `"0.4.0"`, as a static NUL-terminated
+/// The PicoVolt library version, e.g. `"1.6.0"`, as a static NUL-terminated
 /// string. Never NULL; do not free.
 #[no_mangle]
 pub extern "C" fn pv_version() -> *const c_char {
@@ -357,6 +357,81 @@ pub unsafe extern "C" fn pv_current_tx(db: *const PvDb) -> u64 {
     })
 }
 
+fn transaction_control(
+    db: *mut PvDb,
+    function: &str,
+    operation: impl FnOnce(&mut Database) -> crate::Result<()>,
+) -> i32 {
+    clear_last_error();
+    let Some(db) = (unsafe { db.as_mut() }) else {
+        set_last_error(format!("{function}: db handle is NULL"));
+        return 0;
+    };
+    match operation(&mut db.inner) {
+        Ok(()) => 1,
+        Err(error) => {
+            set_last_error(error.to_string());
+            0
+        }
+    }
+}
+
+/// Begin an explicit multi-statement transaction. Returns 1 on success and 0 on
+/// error. A development workspace creates a crash-recovery point before return.
+///
+/// # Safety
+/// `db` must be a live handle from `pv_open_*`.
+#[no_mangle]
+pub unsafe extern "C" fn pv_begin_transaction(db: *mut PvDb) -> i32 {
+    guard(0, || {
+        transaction_control(db, "pv_begin_transaction", Database::begin_transaction)
+    })
+}
+
+/// Commit an explicit transaction. Returns 1 on success and 0 on error.
+///
+/// # Safety
+/// `db` must be a live handle from `pv_open_*`.
+#[no_mangle]
+pub unsafe extern "C" fn pv_commit_transaction(db: *mut PvDb) -> i32 {
+    guard(0, || {
+        transaction_control(db, "pv_commit_transaction", Database::commit_transaction)
+    })
+}
+
+/// Roll back an explicit transaction. Returns 1 on success and 0 on error.
+///
+/// # Safety
+/// `db` must be a live handle from `pv_open_*`.
+#[no_mangle]
+pub unsafe extern "C" fn pv_rollback_transaction(db: *mut PvDb) -> i32 {
+    guard(0, || {
+        transaction_control(
+            db,
+            "pv_rollback_transaction",
+            Database::rollback_transaction,
+        )
+    })
+}
+
+/// Return 1 when an explicit transaction is active, otherwise 0.
+///
+/// # Safety
+/// `db` must be a live handle from `pv_open_*`.
+#[no_mangle]
+pub unsafe extern "C" fn pv_in_transaction(db: *const PvDb) -> i32 {
+    guard(0, || {
+        clear_last_error();
+        match unsafe { db.as_ref() } {
+            Some(db) => i32::from(db.inner.in_transaction()),
+            None => {
+                set_last_error("pv_in_transaction: db handle is NULL");
+                0
+            }
+        }
+    })
+}
+
 /// Export the whole database as a `.pvdb` byte image. On success returns a
 /// buffer of `*out_len` bytes (free it with `pv_bytes_free`) and writes the
 /// length through `out_len`; returns NULL on error (see `pv_last_error`).
@@ -451,9 +526,15 @@ pub unsafe extern "C" fn pv_bytes_free(ptr: *mut u8, len: usize) {
 /// closed.
 #[no_mangle]
 pub unsafe extern "C" fn pv_close(db: *mut PvDb) {
-    if !db.is_null() {
-        drop(unsafe { Box::from_raw(db) });
-    }
+    guard((), || {
+        if !db.is_null() {
+            let mut db = unsafe { Box::from_raw(db) };
+            if db.inner.in_transaction() {
+                let _ = db.inner.rollback_transaction();
+            }
+            drop(db);
+        }
+    });
 }
 
 #[cfg(test)]
@@ -538,6 +619,26 @@ mod tests {
             pv_bytes_free(bytes, len);
             pv_close(db);
             pv_close(db2);
+        }
+    }
+
+    #[test]
+    fn explicit_transaction_round_trips_through_c_abi() {
+        unsafe {
+            let db = pv_open_memory();
+            run(db, "CREATE TABLE t (id)").unwrap();
+            assert_eq!(pv_begin_transaction(db), 1);
+            assert_eq!(pv_in_transaction(db), 1);
+            run(db, "INSERT INTO t VALUES (1)").unwrap();
+            assert_eq!(pv_rollback_transaction(db), 1);
+            assert_eq!(pv_in_transaction(db), 0);
+            assert!(run(db, "SELECT COUNT(*) FROM t").unwrap().contains("[[0]]"));
+
+            assert_eq!(pv_begin_transaction(db), 1);
+            run(db, "INSERT INTO t VALUES (2)").unwrap();
+            assert_eq!(pv_commit_transaction(db), 1);
+            assert!(run(db, "SELECT COUNT(*) FROM t").unwrap().contains("[[1]]"));
+            pv_close(db);
         }
     }
 

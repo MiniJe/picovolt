@@ -29,7 +29,7 @@ locally before opening a pull request.
 ## Versioning
 
 PicoVolt follows [Semantic Versioning](https://semver.org). While the project is
-pre-1.0, breaking changes are released as minor-version bumps.
+stable 1.x, breaking public API or file-format changes require a major-version bump.
 
 ## License of contributions
 

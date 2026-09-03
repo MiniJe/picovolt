@@ -104,6 +104,10 @@ pub enum PvError {
     #[error("query resource limit exceeded: {0}")]
     ResourceLimit(String),
 
+    /// An explicit transaction could not begin, commit, roll back, or recover.
+    #[error("transaction error: {0}")]
+    Transaction(String),
+
     /// Failure (de)serializing the JSON manifest.
     #[error("manifest error: {0}")]
     Manifest(#[from] serde_json::Error),

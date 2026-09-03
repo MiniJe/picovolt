@@ -6,6 +6,26 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-03
+
+### Added
+
+- Crash-recoverable filesystem transactions with explicit
+  `BEGIN`/`COMMIT`/`ROLLBACK`, deterministic reopen recovery, nesting errors,
+  read-your-writes behavior, in-memory parity, and an OS lock that prevents a
+  live transaction from being mistaken for crash residue by another opener.
+- Transaction lifecycle support across Rust, SQL, C, WebAssembly, Python,
+  Python DB-API 2.0, Go, and the Go `database/sql` adapter.
+- An optional `enterprise` Cargo feature with versioned, data-minimizing
+  transaction audit events, host-owned sinks, deployment identity, and honest
+  capability discovery for future fleet integrations.
+
+### Changed
+
+- Filesystem transaction callbacks now use a synced rollback image and recovery
+  marker. This favors a simple, verifiable recovery contract in 1.6; an
+  incremental commit log remains planned for the 2.0 concurrency work.
+
 ## [1.5.0] - 2026-09-03
 
 ### Added
@@ -496,7 +516,8 @@ runs both natively and in the browser through WebAssembly.
   test plus a `cargo-fuzz` crate), and `cargo audit` blocks vulnerability
   advisories. Both run in CI; non-blocking audit warnings are reviewed separately.
 
-[Unreleased]: https://github.com/MiniJe/picovolt/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/MiniJe/picovolt/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/MiniJe/picovolt/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/MiniJe/picovolt/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/MiniJe/picovolt/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/MiniJe/picovolt/compare/v1.2.0...v1.3.0

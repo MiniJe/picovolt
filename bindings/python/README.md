@@ -17,9 +17,6 @@ Rust compiler:
 python -m pip install picovolt
 ```
 
-To work from a source checkout instead, build the shared library from the
-repository root:
-
 Build the shared library from the repository root:
 
 ```sh
@@ -50,7 +47,9 @@ with Database.open_memory() as db:
 `query` returns the already-parsed result (a `dict`): `{"columns": [...],
 "rows": [[...]]}` for a `SELECT`, `{"mutated": n}` for a mutation, or
 `{"done": True}` otherwise. Other methods: `open_dev`, `open_prod`, `from_bytes`,
-`export`, `current_tx`, and the module-level `version()`.
+`export`, `begin`, `commit`, `rollback`, `in_transaction`, `current_tx`, and the
+module-level `version()`. A PEP 249 adapter is available as
+`picovolt.dbapi2`.
 
 Run the demo:
 

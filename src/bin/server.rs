@@ -37,6 +37,7 @@ const MAX_RESULT_ROWS: usize = 10_000;
 const MAX_MATERIALIZED_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
+use picovolt::engine::query::{parse, Statement};
 use picovolt::{Database, QueryLimits, QueryResult, Value};
 use serde_json::json;
 use tiny_http::{Header, Method, Request, Response, Server};
@@ -283,6 +284,15 @@ fn handle_query(mut request: Request, engine: &SyncSender<Command>, token: Optio
         Some(s) => s.to_string(),
         None => return respond(request, 400, json!({ "error": "missing \"sql\" string" })),
     };
+    if is_transaction_control(&sql) {
+        return respond(
+            request,
+            400,
+            json!({
+                "error": "explicit transactions require a session-bound embedded handle and are not available through /v1/query"
+            }),
+        );
+    }
     let params = match parse_params(parsed.get("params")) {
         Ok(p) => p,
         Err(e) => return respond(request, 400, json!({ "error": e })),
@@ -308,6 +318,13 @@ fn handle_query(mut request: Request, engine: &SyncSender<Command>, token: Optio
             respond(request, 503, json!({ "error": "engine unavailable" }))
         }
     }
+}
+
+fn is_transaction_control(sql: &str) -> bool {
+    matches!(
+        parse(sql),
+        Ok(Statement::Begin | Statement::Commit | Statement::Rollback)
+    )
 }
 
 fn respond_queue_error(request: Request, error: TrySendError<Command>) {
@@ -468,5 +485,13 @@ mod tests {
         assert!(constant_time_eq(b"secret", b"secret"));
         assert!(!constant_time_eq(b"secret", b"different"));
         assert!(!constant_time_eq(b"secret", b"secret-longer"));
+    }
+
+    #[test]
+    fn rejects_sessionless_transaction_control() {
+        assert!(is_transaction_control("BEGIN TRANSACTION"));
+        assert!(is_transaction_control("commit"));
+        assert!(is_transaction_control("ROLLBACK;"));
+        assert!(!is_transaction_control("SELECT * FROM users"));
     }
 }

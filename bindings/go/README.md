@@ -5,7 +5,7 @@ database engine, via its C ABI and `cgo`.
 
 These bindings expose what PicoVolt is good at: a single-writer, embedded engine
 with SQL, MVCC time-travel, and a compile-to-single-file (`.pvdb`) path. They do
-not add JOINs, transactions, or concurrent writers, so this is for embedded use
+not add concurrent writers, so this is for embedded use
 (CLI tools, desktop apps, local caches, an embedded analytics store), not as a
 drop-in for a concurrent web backend's primary database.
 
@@ -61,6 +61,5 @@ fmt.Println(rows) // {"columns":["id","name"],"rows":[[1,"alice"]]}
 `Query` returns the result as a JSON string
 (`{"columns":[...],"rows":[[...]]}` / `{"mutated":n}` / `{"done":true}`);
 decode it with `encoding/json`. Other entry points: `OpenDev`, `OpenProd`,
-`Import`, `Export`, `CurrentTx`, and `Version`.
-
-A `database/sql` driver is a natural next step but is not provided yet.
+`Import`, `Export`, `Begin`, `Commit`, `Rollback`, `InTransaction`, `CurrentTx`,
+and `Version`. The `pvsql` subpackage provides a `database/sql` driver.

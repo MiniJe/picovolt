@@ -9,7 +9,8 @@ model hypothesis lives in [docs/MONETIZATION.md](docs/MONETIZATION.md).
 
 ## Where PicoVolt is now
 
-Version **1.5.0** is published on crates.io, npm, and PyPI. The current engine
+Version **1.5.0** is published on crates.io, npm, and PyPI; **1.6.0** is the next
+release built on main. The current engine
 includes page-backed storage, MVCC time-travel queries, persisted secondary
 indexes, a stable 1.x file format, Rust/JavaScript/Python/Go/C bindings, a CLI,
 an optional bounded HTTP server, and a durable browser path using OPFS and a Web
@@ -18,29 +19,32 @@ Worker.
 PicoVolt is still deliberately narrow:
 
 - the filesystem engine is single-writer;
-- filesystem workspaces do not yet support multi-statement transactions;
+- filesystem transactions currently take a complete rollback image rather than
+  writing an incremental commit log;
 - SQL is a practical subset, not a compatibility claim;
 - the project has extensive automated hardening but no independent security
   audit yet.
 
 Those constraints determine the order below.
 
-## 1.6 — Crash-safe transactions
+## 1.6 — Crash-safe transactions (built on main)
 
 **Outcome:** an application can group filesystem writes and trust that an
 interrupted commit is either fully visible or not visible at all.
 
-Planned scope:
+Delivered scope:
 
 - explicit `BEGIN`, `COMMIT`, and `ROLLBACK` for filesystem workspaces;
 - a write-ahead or copy-on-write commit protocol with deterministic recovery;
-- transaction parity across Rust, JavaScript, Python, Go, C, CLI, and server
-  entry points;
-- process-kill and torn-write injection tests for every durability mode;
-- documented behavior for nesting, errors, and read-your-writes.
+- transaction parity across persistent Rust, JavaScript, Python, Go, and C
+  handles; sessionless CLI and HTTP calls intentionally remain atomic
+  single-statement operations;
+- documented behavior for nesting, errors, and read-your-writes;
+- an optional `enterprise` feature with data-minimizing transaction audit events
+  and honest capability discovery for future fleet/control-plane integrations.
 
-Release gate: 10,000 randomized crash/recovery cycles without a partial commit,
-plus golden-file coverage proving that every earlier 1.x image still opens.
+Remaining release validation: extended randomized crash/recovery cycles and
+golden-file coverage proving that every earlier 1.x image still opens.
 
 ## 1.7 — Application compatibility
 
@@ -132,6 +136,8 @@ Release gates:
 - Maintain the stable-format promise: later 1.x builds read all earlier 1.x files.
 - Measure download growth together with successful installs, dependents, starter
   completions, and issue resolution—not as an isolated vanity number.
+- Keep enterprise integration host-owned and data-minimizing. The engine never
+  gains mandatory telemetry, an account requirement, or a proprietary format.
 
 ## Beyond 2.0
 

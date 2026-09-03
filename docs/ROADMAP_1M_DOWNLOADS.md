@@ -65,7 +65,7 @@ These are release blockers, not optional marketing work.
 Current status (2026-09-03): version 1.5.0 is live on crates.io, npm, and PyPI.
 The trusted-publishing identities are configured, the native SBOM filename issue
 is fixed, and clean-room Cargo, npm, PyPI, and native CLI smoke checks are part of
-the release workflows. The support matrix lives in [`SUPPORT.md`](../SUPPORT.md).
+the release workflows. The support matrix lives in [`SUPPORT.md`](SUPPORT.md).
 
 Exit criterion: one version tag produces installable Cargo, npm, PyPI, and GitHub
 artifacts, and clean-room smoke tests execute a first query through each.
@@ -93,7 +93,8 @@ remain open.
 
 Implement in this order:
 
-1. Explicit `BEGIN`, `COMMIT`, and `ROLLBACK` across every binding.
+1. Explicit `BEGIN`, `COMMIT`, and `ROLLBACK` across every binding. **Shipped on
+   main for 1.6.0.**
 2. `INNER JOIN` and `LEFT JOIN`, first with index-assisted nested loops and then a
    hash join where measurement justifies it.
 3. Primary-key and unique constraints with clear conflict errors.
@@ -133,7 +134,7 @@ behind the items above.
 |---|---:|---|
 | 30 days | 10,000 | All release channels green; three external starter completions |
 | 90 days | 50,000 | Four starters; two import formats; 20 public dependents |
-| 6 months | 150,000 | Transactions and basic JOINs; 10,000 weekly downloads |
+| 6 months | 150,000 | Transaction adoption and richer JOINs; 10,000 weekly downloads |
 | 12 months | 400,000 | OPFS/Worker browser path; 25,000 weekly downloads; 100 dependents |
 | 24 months | 1,000,000 | 50,000+ weekly downloads sustained across multiple channels |
 
@@ -156,8 +157,8 @@ until users explicitly ask for product telemetry.
 
 ## Immediate next sprint
 
-1. Implement crash-safe filesystem transactions with power-loss injection tests;
-   this is the largest remaining adoption blocker.
+1. Run extended power-loss and process-kill campaigns against the shipped
+   crash-recovery protocol and publish the methodology.
 2. Extend the shipped joined-row filtering/ordering to N-table plans, and add
    `CASE` plus common scalar functions from real starter-app compatibility tests.
 3. Add Parquet and direct binary SQLite import, then a row-level `pv diff` command.
@@ -166,4 +167,5 @@ until users explicitly ask for product telemetry.
 5. Start the public weekly adoption dashboard and recruit the first three
    applications for the 1.6 release-candidate trial.
 6. Validate the commercial-support and PicoVolt Hub hypotheses described in
-   [MONETIZATION.md](MONETIZATION.md) without gating the open-source engine.
+   [MONETIZATION.md](MONETIZATION.md) using the host-owned integration seams in
+   [ENTERPRISE.md](ENTERPRISE.md), without gating the open-source engine.

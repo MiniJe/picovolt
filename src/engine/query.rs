@@ -14,6 +14,12 @@ use crate::core::value::Value;
 /// A parsed statement.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
+    /// `BEGIN [TRANSACTION]`
+    Begin,
+    /// `COMMIT [TRANSACTION]`
+    Commit,
+    /// `ROLLBACK [TRANSACTION]`
+    Rollback,
     /// `CREATE TABLE name (col, col, ...)`
     CreateTable {
         /// Table name.
@@ -760,6 +766,18 @@ pub fn parse(sql: &str) -> Result<Statement> {
     let mut cur = Cursor::new(tokenize(sql)?, sql);
     let at = cur.here();
     let stmt = match cur.next()? {
+        Tok::Word(w) if w.eq_ignore_ascii_case("begin") => {
+            consume_optional_transaction(&mut cur);
+            Statement::Begin
+        }
+        Tok::Word(w) if w.eq_ignore_ascii_case("commit") => {
+            consume_optional_transaction(&mut cur);
+            Statement::Commit
+        }
+        Tok::Word(w) if w.eq_ignore_ascii_case("rollback") => {
+            consume_optional_transaction(&mut cur);
+            Statement::Rollback
+        }
         Tok::Word(w) if w.eq_ignore_ascii_case("create") => parse_create(&mut cur)?,
         Tok::Word(w) if w.eq_ignore_ascii_case("insert") => parse_insert(&mut cur)?,
         Tok::Word(w) if w.eq_ignore_ascii_case("select") => parse_select(&mut cur)?,
@@ -770,6 +788,12 @@ pub fn parse(sql: &str) -> Result<Statement> {
     };
     cur.finish()?;
     Ok(stmt)
+}
+
+fn consume_optional_transaction(cur: &mut Cursor) {
+    if peek_kw(cur, "transaction") {
+        let _ = cur.next();
+    }
 }
 
 fn parse_create(cur: &mut Cursor) -> Result<Statement> {
@@ -1442,6 +1466,15 @@ fn parse_delete(cur: &mut Cursor) -> Result<Statement> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_transaction_control() {
+        assert_eq!(parse("BEGIN").unwrap(), Statement::Begin);
+        assert_eq!(parse("BEGIN TRANSACTION").unwrap(), Statement::Begin);
+        assert_eq!(parse("COMMIT").unwrap(), Statement::Commit);
+        assert_eq!(parse("ROLLBACK TRANSACTION").unwrap(), Statement::Rollback);
+        assert!(parse("COMMIT NOW").is_err());
+    }
 
     #[test]
     fn parses_create_table() {

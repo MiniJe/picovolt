@@ -13,8 +13,7 @@ PicoVolt with minimal change::
     print(cur.fetchall())                   # [(1, 'alice')]
 
 Limitations: parameters are positional ``?`` only (``paramstyle = "qmark"``);
-there are no multi-statement transactions, so ``commit`` and ``rollback`` are
-no-ops; blob parameters are unsupported.
+blob parameters are unsupported.
 """
 
 from __future__ import annotations
@@ -60,6 +59,7 @@ class Connection:
             self._db = Database.open_prod(database[5:])
         else:
             self._db = Database.open_dev(database)
+        self._read_only = database.startswith("prod:")
 
     def cursor(self) -> "Cursor":
         return Cursor(self)
@@ -68,18 +68,32 @@ class Connection:
         return self.cursor().execute(sql, params)
 
     def commit(self) -> None:
-        """No-op: PicoVolt autocommits each statement."""
+        """Commit pending statements."""
+        if self._db.in_transaction:
+            self._db.commit()
 
     def rollback(self) -> None:
-        """No-op: PicoVolt has no multi-statement transactions."""
+        """Roll back pending statements."""
+        if self._db.in_transaction:
+            self._db.rollback()
 
     def close(self) -> None:
+        if self._db.in_transaction:
+            self._db.rollback()
         self._db.close()
+
+    def _ensure_transaction(self) -> None:
+        if not self._read_only and not self._db.in_transaction:
+            self._db.begin()
 
     def __enter__(self) -> "Connection":
         return self
 
-    def __exit__(self, *exc: object) -> None:
+    def __exit__(self, exc_type: object, _exc: object, _tb: object) -> None:
+        if exc_type is None:
+            self.commit()
+        else:
+            self.rollback()
         self.close()
 
 
@@ -94,6 +108,7 @@ class Cursor:
 
     def execute(self, sql: str, params=None) -> "Cursor":
         try:
+            self._con._ensure_transaction()
             res = self._con._db.query(sql, list(params) if params else None)
         except PicoVoltError as exc:
             raise ProgrammingError(str(exc)) from None

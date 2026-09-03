@@ -40,3 +40,44 @@ func TestParameterizedQueries(t *testing.T) {
 		t.Fatalf("count = %d, the injection was not contained", n)
 	}
 }
+
+func TestTransactionsCommitAndRollback(t *testing.T) {
+	db, err := sql.Open("picovolt", "memory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("CREATE TABLE ledger (id PRIMARY KEY, amount)"); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec("INSERT INTO ledger VALUES (1, 10)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err = db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec("INSERT INTO ledger VALUES (2, 20)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	if err := db.QueryRow("SELECT COUNT(*) FROM ledger").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("count = %d, want 1 after rollback", n)
+	}
+}

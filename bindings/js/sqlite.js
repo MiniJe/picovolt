@@ -94,19 +94,21 @@ class Database {
     throw new Error("picovolt: pragma is not supported");
   }
 
-  // Wrap a synchronous callback in an atomic unit. A compact PVDB snapshot is
-  // restored if the callback throws, matching better-sqlite3's common pattern.
+  // Wrap a synchronous callback in an engine transaction, matching
+  // better-sqlite3's common pattern.
   transaction(fn) {
     if (typeof fn !== "function") throw new TypeError("transaction expects a function");
     const db = this;
     function wrapped(...args) {
       if (db._inTransaction) return fn(...args);
-      const snapshot = db.serialize();
+      db._db.beginTransaction();
       db._inTransaction = true;
       try {
-        return fn(...args);
+        const value = fn(...args);
+        db._db.commitTransaction();
+        return value;
       } catch (error) {
-        db._db = Db.fromBytes(snapshot);
+        if (db._db.inTransaction()) db._db.rollbackTransaction();
         throw error;
       } finally {
         db._inTransaction = false;

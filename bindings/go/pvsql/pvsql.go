@@ -11,7 +11,7 @@
 //	rows, _ := db.Query("SELECT * FROM t")
 //
 // Query parameters are supported through `?` placeholders, each substituted as a
-// safely-escaped SQL literal. Transactions are not supported.
+// safely-escaped SQL literal. Transactions use the engine's explicit lifecycle.
 package pvsql
 
 import (
@@ -58,7 +58,45 @@ type conn struct {
 
 func (c *conn) Prepare(q string) (driver.Stmt, error) { return &stmt{c: c, q: q}, nil }
 func (c *conn) Close() error                          { c.db.Close(); return nil }
-func (c *conn) Begin() (driver.Tx, error)             { return nil, errors.New("picovolt: transactions are not supported") }
+func (c *conn) Begin() (driver.Tx, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.db.Begin(); err != nil {
+		return nil, err
+	}
+	return &tx{c: c}, nil
+}
+
+type tx struct {
+	c    *conn
+	done bool
+}
+
+func (t *tx) Commit() error {
+	t.c.mu.Lock()
+	defer t.c.mu.Unlock()
+	if t.done {
+		return errors.New("picovolt: transaction is already closed")
+	}
+	if err := t.c.db.Commit(); err != nil {
+		return err
+	}
+	t.done = true
+	return nil
+}
+
+func (t *tx) Rollback() error {
+	t.c.mu.Lock()
+	defer t.c.mu.Unlock()
+	if t.done {
+		return errors.New("picovolt: transaction is already closed")
+	}
+	if err := t.c.db.Rollback(); err != nil {
+		return err
+	}
+	t.done = true
+	return nil
+}
 
 func (c *conn) run(q string) (string, error) {
 	c.mu.Lock()
@@ -129,7 +167,7 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 
 type result struct{ n int64 }
 
-func (result) LastInsertId() (int64, error) { return 0, errors.New("picovolt: no LastInsertId") }
+func (result) LastInsertId() (int64, error)   { return 0, errors.New("picovolt: no LastInsertId") }
 func (r result) RowsAffected() (int64, error) { return r.n, nil }
 
 type rows struct {

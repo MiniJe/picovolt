@@ -30,7 +30,10 @@ browsers isolate local-file origins; run `npm install && npm run dev` in
 
 - The engine has one writer. The HTTP server serializes queries through that
   writer rather than providing multi-writer transactions.
-- Rollback transactions currently apply to in-memory Rust and JavaScript
-  databases. Filesystem `BEGIN`/`COMMIT`/`ROLLBACK` remains planned until a
-  crash-safe write-ahead design lands.
+- Explicit `BEGIN`/`COMMIT`/`ROLLBACK` works for in-memory and filesystem
+  databases across the maintained bindings. Filesystem transactions currently
+  create a complete rollback image, so their start cost scales with workspace
+  size; an incremental commit log remains a 2.0 design goal.
+- A live filesystem transaction holds an OS-level transaction lock. Another
+  opener fails instead of treating the live marker as crash residue.
 - SQL intentionally covers a practical embedded subset, not full SQL-92.

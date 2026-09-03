@@ -75,6 +75,36 @@ impl Db {
         self.inner.current_tx() as u32
     }
 
+    /// Begin an explicit multi-statement in-memory transaction.
+    #[wasm_bindgen(js_name = beginTransaction)]
+    pub fn begin_transaction(&mut self) -> Result<(), JsValue> {
+        self.inner
+            .begin_transaction()
+            .map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+
+    /// Commit the active transaction.
+    #[wasm_bindgen(js_name = commitTransaction)]
+    pub fn commit_transaction(&mut self) -> Result<(), JsValue> {
+        self.inner
+            .commit_transaction()
+            .map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+
+    /// Roll back the active transaction.
+    #[wasm_bindgen(js_name = rollbackTransaction)]
+    pub fn rollback_transaction(&mut self) -> Result<(), JsValue> {
+        self.inner
+            .rollback_transaction()
+            .map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+
+    /// Whether an explicit transaction is active.
+    #[wasm_bindgen(js_name = inTransaction)]
+    pub fn in_transaction(&self) -> bool {
+        self.inner.in_transaction()
+    }
+
     /// A JSON array of the table names in this database (for introspecting an
     /// uploaded `.pvdb` whose schema is unknown).
     pub fn tables(&self) -> Result<String, JsValue> {

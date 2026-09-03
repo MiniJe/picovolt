@@ -47,17 +47,18 @@ and builds on its public surface:
 
 ```toml
 [dependencies]
-picovolt = "0.1"
+picovolt = "1.6"
 ```
 
 The types intended for building on are re-exported at the crate root:
 
 | Surface | Use it to |
 |---------|-----------|
-| [`Database`], [`QueryResult`], [`Durability`] | drive the engine and choose flush semantics |
+| [`Database`], [`QueryResult`], [`Durability`] | drive the engine, group transactions, and choose flush semantics |
 | [`Value`], [`Row`] | read and construct rows |
 | [`WasmExec`], [`WasmRuntime`], [`WasmModule`] | run or embed sandboxed guest code |
 | [`ComplianceMonitor`], [`RuntimeMetrics`] | hook usage-policy checks |
+| `enterprise` feature: [`EnterpriseConfig`], [`AuditSink`], [`EnterpriseCapabilities`] | attach a host-owned audit/control plane without sending data from the engine |
 | `core::types` (page and file headers, `RecordEnvelope`) | parse or emit the on-disk format |
 
 A downstream crate depends on PicoVolt through this public API and implements its
@@ -65,12 +66,11 @@ feature on top, without modifying the engine itself.
 
 ## Stability
 
-PicoVolt is pre-1.0, so the public API can still change between minor versions.
-The crate-root re-exports above are the surface treated as the extension contract
-and kept as stable as possible. The deeper module internals are public for
-flexibility but may move. If you are building on something that is not re-exported
-at the root and want it stabilized, open an issue. That feedback is what shapes
-the 1.0 surface.
+PicoVolt follows Semantic Versioning. The crate-root re-exports above are the
+stable 1.x extension contract; incompatible changes require a major release.
+Deeper module internals remain public for flexibility but may be deprecated and
+moved across minor releases. If you depend on an internal surface, open an issue
+so it can be considered for the stable contract.
 
 [`Database`]: ../src/db.rs
 [`QueryResult`]: ../src/db.rs
@@ -81,4 +81,7 @@ the 1.0 surface.
 [`WasmModule`]: ../src/engine/wasm.rs
 [`ComplianceMonitor`]: ../src/engine/compliance.rs
 [`RuntimeMetrics`]: ../src/engine/compliance.rs
+[`EnterpriseConfig`]: ../src/enterprise.rs
+[`AuditSink`]: ../src/enterprise.rs
+[`EnterpriseCapabilities`]: ../src/enterprise.rs
 [`wasmi`]: https://docs.rs/wasmi

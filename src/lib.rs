@@ -53,6 +53,8 @@
 
 pub mod core;
 pub mod engine;
+#[cfg(feature = "enterprise")]
+pub mod enterprise;
 pub mod storage;
 
 mod db;
@@ -82,7 +84,8 @@ pub use crate::core::value::{Row, Value};
 #[doc(inline)]
 pub use crate::db::{
     pv_bake, pv_open_dev, pv_open_prod, Database, Durability, PreparedStatement, QueryLimits,
-    QueryResult, MANIFEST_FILE,
+    QueryResult, MANIFEST_FILE, TRANSACTION_BACKUP_DIR, TRANSACTION_LOCK_FILE,
+    TRANSACTION_MARKER_FILE,
 };
 #[doc(inline)]
 pub use crate::engine::compliance::{ComplianceMonitor, RuntimeMetrics};
@@ -92,5 +95,11 @@ pub use crate::engine::interp::{Interpreter, PvModule};
 pub use crate::engine::mvcc::{Snapshot, TxManager};
 #[doc(inline)]
 pub use crate::engine::wasm::{WasmExec, WasmModule, WasmRuntime};
+#[cfg(feature = "enterprise")]
+#[doc(inline)]
+pub use crate::enterprise::{
+    AuditEvent, AuditEventKind, AuditSink, EnterpriseCapabilities, EnterpriseConfig,
+    AUDIT_EVENT_SCHEMA_VERSION,
+};
 #[doc(inline)]
 pub use crate::migrate::ImportReport;

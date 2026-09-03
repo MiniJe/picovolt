@@ -40,6 +40,10 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Clippy (capi)
         run: cargo clippy --all-targets --features capi -- -D warnings
+      - name: Clippy + test (enterprise integration)
+        run: |
+          cargo clippy --all-targets --features enterprise -- -D warnings
+          cargo test --all-targets --features enterprise
       - name: Test
         run: cargo test --all-targets
       - name: Test (capi)

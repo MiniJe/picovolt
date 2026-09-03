@@ -63,7 +63,12 @@ jobs:
           from picovolt import Database, __version__, version
           db = Database.open_memory()
           db.query("CREATE TABLE t (x)")
+          db.begin()
           db.query("INSERT INTO t VALUES (1)")
+          db.commit()
+          db.begin()
+          db.query("INSERT INTO t VALUES (2)")
+          db.rollback()
           assert db.query("SELECT * FROM t")["rows"] == [[1]]
           assert __version__ == version()
           print("wheel ok:", version())
@@ -111,7 +116,12 @@ jobs:
           from picovolt import Database, __version__, version
           db = Database.open_memory()
           db.query("CREATE TABLE t (x)")
+          db.begin()
           db.query("INSERT INTO t VALUES (1)")
+          db.commit()
+          db.begin()
+          db.query("INSERT INTO t VALUES (2)")
+          db.rollback()
           assert db.query("SELECT * FROM t")["rows"] == [[1]]
           assert __version__ == version()
           print("manylinux wheel ok:", version())
@@ -159,6 +169,11 @@ jobs:
           from picovolt import Database
           db = Database.open_memory()
           db.query("CREATE TABLE smoke (id)")
+          db.begin()
           db.query("INSERT INTO smoke VALUES (1)")
+          db.commit()
+          db.begin()
+          db.query("INSERT INTO smoke VALUES (2)")
+          db.rollback()
           assert db.query("SELECT * FROM smoke")["rows"] == [[1]]
           PY

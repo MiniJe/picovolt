@@ -1,7 +1,7 @@
 # PicoVolt (PVDB)
 
 [![CI](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml/badge.svg)](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.5.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.6.0-blue.svg)](CHANGELOG.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Status: 1.0 stable](https://img.shields.io/badge/status-1.0%20stable-brightgreen.svg)
 [![GitHub stars](https://img.shields.io/github/stars/MiniJe/picovolt?style=social)](https://github.com/MiniJe/picovolt)
@@ -58,6 +58,7 @@ Linux and Windows. Changes are tracked in [CHANGELOG.md](CHANGELOG.md).
 | [`engine/interp.rs`](src/engine/interp.rs) | `pv-wasm`: a from-scratch WASM interpreter (integer subset) |
 | [`engine/query.rs`](src/engine/query.rs) | SQL front-end (CREATE/INSERT/UPDATE/DELETE/DROP, `SELECT` with projection, `AS` aliases, `DISTINCT`, aggregates, `GROUP BY`/`HAVING`, `WHERE` predicates incl. `IN`/`BETWEEN`/`IS NULL`/`LIKE`, `BEFORE`, multi-column `ORDER BY`, `LIMIT`/`OFFSET`) |
 | [`engine/compliance.rs`](src/engine/compliance.rs) | optional, app-driven usage-policy hook (not a license requirement) |
+| [`enterprise.rs`](src/enterprise.rs) | optional, host-owned audit events and honest capability discovery for fleet integrations |
 | [`db.rs`](src/db.rs) | the `Database` surface that ties it together |
 | [`ffi.rs`](src/ffi.rs) | C ABI (the `capi` feature): a panic-safe, C-callable surface wrapping the engine for Go, Python, and C bindings |
 
@@ -86,6 +87,10 @@ Linux and Windows. Changes are tracked in [CHANGELOG.md](CHANGELOG.md).
   each flush `fsync` the data and commit the manifest atomically (write to a temp
   file, `fsync`, then rename). The default `Fast` mode uses the OS cache only:
   fast and durable on a clean exit, but not power-loss-safe.
+- **Crash-recoverable transactions.** Explicit `BEGIN`, `COMMIT`, and
+  `ROLLBACK` group filesystem or in-memory writes. Filesystem transactions keep
+  a synced rollback image and recovery marker; reopening after interruption
+  restores the last committed state before loading the workspace.
 - **Hardened against untrusted input.** Opening a `.pvdb` or workspace, or running
   a WASM module, validates manifest hashes (no path traversal), bounds-checks CAS
   offsets and page chains (no out-of-bounds reads or infinite loops on a crafted
@@ -128,8 +133,9 @@ FROM t [WHERE <pred>] [GROUP BY cols] [HAVING <pred>] [BEFORE tx]
 `AND`, `OR`, and parentheses. Integer and decimal values compare by magnitude.
 Two-table equality `INNER`/`LEFT JOIN` queries support qualified references,
 projection, aliases, `DISTINCT`, filters, ordering, and pagination. Rust callers
-can cache `Database::prepare(...)` templates and use
-atomic `Database::transaction(...)` closures with in-memory databases.
+can cache `Database::prepare(...)` templates and use explicit transaction
+lifecycle methods or atomic `Database::transaction(...)` closures with both
+filesystem and in-memory databases.
 Durability is selectable via `Database::set_durability` (`Fast` OS-cache default,
 or crash-safe `Sync` with fsync and an atomic manifest).
 
@@ -140,8 +146,9 @@ around 33k rows/s, linear), larger-than-RAM reads through a bounded buffer pool 
 lookups roughly 11,000 times faster than a scan, plus range predicates), MVCC
 time-travel, opt-in crash-safe durability (`Durability::Sync`), and a fast
 compile-and-publish path (CAS dedup, columnar compression, memory-mappable
-single-file artifacts). Current limits include no filesystem `BEGIN`/`COMMIT`
-transactions, only basic two-table equality joins, and no concurrent writers.
+single-file artifacts). Current limits include full-workspace transaction
+backups rather than an incremental WAL, only basic two-table equality joins,
+and no concurrent writers.
 
 ## Install and distribution
 
@@ -149,7 +156,7 @@ transactions, only basic two-table equality joins, and no concurrent writers.
 |--------|-----|
 | **Rust** (crates.io) | `cargo add picovolt` |
 | **JavaScript / npm** (WebAssembly, browser and Node) | `npm install picovolt` |
-| **Python** (native wheels) | `python -m pip install picovolt` (after the first PyPI release) |
+| **Python** (native wheels) | `python -m pip install picovolt` |
 | **C / Go** (native, via the C ABI) | `cargo build --release --features capi`, then see [`bindings/`](bindings) |
 | **In-memory** (native, no filesystem) | `Database::open_memory()`, export with `bake_to_bytes()` |
 
@@ -172,7 +179,8 @@ JavaScript API (`import Database from "picovolt/sqlite"`), a Python DB-API 2.0
 module (`import picovolt.dbapi2 as sqlite`), and the Go `database/sql` driver
 ([`bindings/go/pvsql`](bindings/go/pvsql)). Shared limits include positional `?`
 only and the intentionally compact SQL grammar; JavaScript and in-memory Rust
-also expose rollback-capable transaction wrappers.
+also expose rollback-capable transaction wrappers. Native bindings expose the
+same transaction lifecycle through the C ABI.
 
 ## Server mode
 
@@ -197,6 +205,11 @@ result rows, and response size are bounded. TLS is not built in, so network
 deployments still belong behind a TLS-terminating reverse proxy. See
 [src/bin/server.rs](src/bin/server.rs).
 
+The HTTP API is sessionless, so each request is an atomic statement and explicit
+transaction-control statements are rejected. Applications needing a
+multi-statement transaction should use an embedded language binding, where the
+transaction belongs to one database handle.
+
 Applications accepting SQL from users can also call `Database::query_with_limits`
 directly and choose their own scan, result, memory, and deadline budgets.
 
@@ -213,6 +226,7 @@ native modules built on the public API. Both are documented in
 | Roadmap | [ROADMAP.md](ROADMAP.md) |
 | One-million-download plan | [docs/ROADMAP_1M_DOWNLOADS.md](docs/ROADMAP_1M_DOWNLOADS.md) |
 | Monetization thesis | [docs/MONETIZATION.md](docs/MONETIZATION.md) |
+| Enterprise integration foundation | [docs/ENTERPRISE.md](docs/ENTERPRISE.md) |
 | Platform and file support | [docs/SUPPORT.md](docs/SUPPORT.md) |
 | Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Code of conduct | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) |
