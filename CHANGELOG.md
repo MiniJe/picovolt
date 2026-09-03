@@ -6,6 +6,8 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-03
+
 ### Added
 
 - SQL pagination with `OFFSET`, including indexed and grouped query paths.
@@ -491,10 +493,11 @@ runs both natively and in the browser through WebAssembly.
   validated manifest hashes (no path traversal), bounds-checked CAS offsets and
   page-chain links (no out-of-bounds reads or infinite loops on crafted files),
   and capped WASM resource counts. Decoders are fuzzed (a cross-platform fuzz-lite
-  test plus a `cargo-fuzz` crate), and `cargo audit` reports no advisories. Both
-  run in CI.
+  test plus a `cargo-fuzz` crate), and `cargo audit` blocks vulnerability
+  advisories. Both run in CI; non-blocking audit warnings are reviewed separately.
 
-[Unreleased]: https://github.com/MiniJe/picovolt/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/MiniJe/picovolt/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/MiniJe/picovolt/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/MiniJe/picovolt/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/MiniJe/picovolt/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/MiniJe/picovolt/compare/v1.1.0...v1.2.0
