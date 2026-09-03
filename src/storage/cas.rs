@@ -153,11 +153,7 @@ impl CasStore {
             let data = fs::read(&path)?;
             // Verify the file content actually hashes to the claimed digest, so a
             // tampered workspace cannot substitute blob contents.
-            if blake3::hash(&data).as_bytes() != &expected {
-                return Err(PvError::Corruption(format!(
-                    "CAS blob {hex_hash} failed integrity check"
-                )));
-            }
+            verify_blob_hash(&data, &expected, hex_hash)?;
             store.put(&data)?;
         }
         Ok(store)
@@ -170,6 +166,7 @@ impl CasStore {
     pub fn from_mapped(
         mmap: Arc<Mmap>,
         base: usize,
+        pool_end: usize,
         dir: &[(u64, u64)],
         hashes: &[String],
     ) -> Result<Self> {
@@ -179,6 +176,11 @@ impl CasStore {
             ));
         }
         let map_len = mmap.len();
+        if base > pool_end || pool_end > map_len {
+            return Err(PvError::Corruption(
+                "CAS pool bounds are inconsistent".into(),
+            ));
+        }
         let mut store = Self::new_memory();
         for (id, (&(rel_off, len), hex_hash)) in dir.iter().zip(hashes).enumerate() {
             let hash = parse_hex32(hex_hash)?;
@@ -190,11 +192,12 @@ impl CasStore {
             let end = offset
                 .checked_add(len as usize)
                 .ok_or_else(|| PvError::Corruption("CAS extent overflow".into()))?;
-            if end > map_len {
+            if end > pool_end {
                 return Err(PvError::Corruption(format!(
-                    "CAS blob {id} extends past end of file ({end} > {map_len})"
+                    "CAS blob {id} extends past end of pool ({end} > {pool_end})"
                 )));
             }
+            verify_blob_hash(&mmap[offset..end], &hash, hex_hash)?;
             store.entries.push(CasEntry {
                 hash,
                 blob: Blob::Mapped {
@@ -207,6 +210,21 @@ impl CasStore {
         }
         Ok(store)
     }
+}
+
+/// Verify a blob against a manifest hash before admitting it to the CAS.
+pub(crate) fn verify_blob_hash_hex(data: &[u8], hex_hash: &str) -> Result<()> {
+    let expected = parse_hex32(hex_hash)?;
+    verify_blob_hash(data, &expected, hex_hash)
+}
+
+fn verify_blob_hash(data: &[u8], expected: &[u8; 32], label: &str) -> Result<()> {
+    if blake3::hash(data).as_bytes() != expected {
+        return Err(PvError::Corruption(format!(
+            "CAS blob {label} failed integrity check"
+        )));
+    }
+    Ok(())
 }
 
 fn blob_path(root: &Path, hex_hash: &str) -> PathBuf {
@@ -340,7 +358,30 @@ mod tests {
         let mmap = Arc::new(unsafe { Mmap::map(&file).unwrap() });
         let valid_hash = "00".repeat(32); // 64 hex chars
                                           // A blob claiming to extend past the 64-byte mapping must be rejected.
-        let result = CasStore::from_mapped(mmap, 0, &[(0, 1_000)], &[valid_hash]);
+        let result = CasStore::from_mapped(mmap, 0, 64, &[(0, 1_000)], &[valid_hash]);
+        assert!(matches!(result, Err(PvError::Corruption(_))));
+    }
+
+    #[test]
+    fn from_mapped_rejects_a_hash_mismatch() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("pool");
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(b"different contents")
+            .unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        // SAFETY: the temporary file is private and immutable for this test.
+        let mmap = Arc::new(unsafe { Mmap::map(&file).unwrap() });
+        let claimed = hex(blake3::hash(b"claimed contents").as_bytes());
+        let result = CasStore::from_mapped(
+            mmap,
+            0,
+            b"different contents".len(),
+            &[(0, b"different contents".len() as u64)],
+            &[claimed],
+        );
         assert!(matches!(result, Err(PvError::Corruption(_))));
     }
 }

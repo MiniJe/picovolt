@@ -139,3 +139,46 @@ fn streamed_rejects_a_truncated_image() {
     // must surface as a clean error, not a panic.
     assert!(Database::open_streamed(reader, bytes.len() as u64 + 4096).is_err());
 }
+
+#[test]
+fn imports_reject_tampered_cas_contents() {
+    let mut db = Database::open_memory();
+    db.query("CREATE TABLE docs (body)").unwrap();
+    db.query("INSERT INTO docs VALUES ('this payload is stored in the CAS')")
+        .unwrap();
+    let mut bytes = db.bake_to_bytes().unwrap();
+    let header = picovolt::FileHeader::decode(&bytes).unwrap();
+    bytes[header.cas_offset as usize] ^= 0x01;
+
+    assert!(matches!(
+        Database::import_bytes(&bytes),
+        Err(PvError::Corruption(_))
+    ));
+    let reader = Box::new(CountingReader {
+        data: bytes.clone(),
+        calls: Rc::new(Cell::new(0)),
+    });
+    assert!(matches!(
+        Database::open_streamed(reader, bytes.len() as u64),
+        Err(PvError::Corruption(_))
+    ));
+}
+
+#[test]
+fn streamed_rejects_short_ranges_without_panicking() {
+    struct ShortReader(Vec<u8>);
+    impl RangeReader for ShortReader {
+        fn read_at(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
+            let start = offset as usize;
+            let available = self.0.len().saturating_sub(start);
+            let short = len.saturating_sub(1).min(available);
+            Ok(self.0[start..start + short].to_vec())
+        }
+    }
+
+    let bytes = sample_bytes();
+    assert!(matches!(
+        Database::open_streamed(Box::new(ShortReader(bytes.clone())), bytes.len() as u64),
+        Err(PvError::Corruption(_))
+    ));
+}

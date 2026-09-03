@@ -1,7 +1,7 @@
 # PicoVolt (PVDB)
 
 [![CI](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml/badge.svg)](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](CHANGELOG.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Status: 1.0 stable](https://img.shields.io/badge/status-1.0%20stable-brightgreen.svg)
 [![GitHub stars](https://img.shields.io/github/stars/MiniJe/picovolt?style=social)](https://github.com/MiniJe/picovolt)
@@ -28,7 +28,7 @@ cache efficiency.
 
 ## Status
 
-The engine is built out across four phases, all implemented, with 103 unit and
+The engine is built out across four phases, all implemented, with over 180 unit and
 integration tests plus doctests passing and a clean `cargo clippy -D warnings` on
 Linux and Windows. Changes are tracked in [CHANGELOG.md](CHANGELOG.md).
 
@@ -52,7 +52,7 @@ Linux and Windows. Changes are tracked in [CHANGELOG.md](CHANGELOG.md).
 | [`storage/compress.rs`](src/storage/compress.rs) | Delta-Z, LEB128 varints, dictionary bit-packing |
 | [`storage/index.rs`](src/storage/index.rs) | in-memory ordered secondary index (value to record addresses; point and range) |
 | [`storage/record.rs`](src/storage/record.rs) | row and record-body serialization with CAS interception |
-| [`storage/vle.rs`](src/storage/vle.rs) | dev directory store, prod mmap monolith, `bake` |
+| [`storage/vle.rs`](src/storage/vle.rs) | dev directory store, owned prod snapshot, streamed reads, `bake` |
 | [`engine/mvcc.rs`](src/engine/mvcc.rs) | transaction clock and snapshot visibility |
 | [`engine/wasm.rs`](src/engine/wasm.rs) | sandboxed `wasmi` extension runtime and the `WasmExec` backend trait |
 | [`engine/interp.rs`](src/engine/interp.rs) | `pv-wasm`: a from-scratch WASM interpreter (integer subset) |
@@ -89,11 +89,14 @@ Linux and Windows. Changes are tracked in [CHANGELOG.md](CHANGELOG.md).
 - **Hardened against untrusted input.** Opening a `.pvdb` or workspace, or running
   a WASM module, validates manifest hashes (no path traversal), bounds-checks CAS
   offsets and page chains (no out-of-bounds reads or infinite loops on a crafted
-  file), and caps WASM resource counts. The decoders are fuzzed (a cross-platform
+  file), and meters WASM instructions, memory, and output. The decoders are fuzzed (a cross-platform
   fuzz-lite test and a [`fuzz/`](fuzz) cargo-fuzz crate), and `cargo audit`
-  reports no advisories. Both run in CI. See [SECURITY.md](SECURITY.md).
+  currently reports no vulnerability failures. Both run in CI. See
+  [SECURITY.md](SECURITY.md).
 
 ## Build
+
+Rust 1.86 or newer is required.
 
 ```sh
 cargo build
@@ -126,9 +129,9 @@ around 33k rows/s, linear), larger-than-RAM reads through a bounded buffer pool 
 667-page dataset serves from a 16-page pool), ordered secondary indexes (point
 lookups roughly 11,000 times faster than a scan, plus range predicates), MVCC
 time-travel, opt-in crash-safe durability (`Durability::Sync`), and a fast
-compile-and-publish path (CAS dedup, columnar compression, single-file mmap
-artifacts). Current limits: indexes are in-memory (rebuilt on open) and there is
-no concurrency.
+compile-and-publish path (CAS dedup, columnar compression, memory-mappable
+single-file artifacts). Current limits include no explicit multi-statement SQL
+transactions, no JOINs, and no concurrent writers.
 
 ## Install and distribution
 
@@ -136,7 +139,8 @@ no concurrency.
 |--------|-----|
 | **Rust** (crates.io) | `cargo add picovolt` |
 | **JavaScript / npm** (WebAssembly, browser and Node) | `npm install picovolt` |
-| **C / Go / Python** (native, via the C ABI) | `cargo build --release --features capi`, then see [`bindings/`](bindings) |
+| **Python** (native wheels) | `python -m pip install picovolt` (after the first PyPI release) |
+| **C / Go** (native, via the C ABI) | `cargo build --release --features capi`, then see [`bindings/`](bindings) |
 | **In-memory** (native, no filesystem) | `Database::open_memory()`, export with `bake_to_bytes()` |
 
 PicoVolt runs in the browser through its in-memory backend. Build the WebAssembly
@@ -169,12 +173,21 @@ thread over a channel, so the single-threaded core is unchanged.
 ```sh
 cargo build --release --features server
 ./target/release/picovolt-server --memory --addr 127.0.0.1:8080
-curl -s localhost:8080/v1/query -d '{"sql":"SELECT 1 + 1","params":[]}'
+curl -s localhost:8080/v1/query \
+  -H 'Content-Type: application/json' \
+  -d '{"sql":"CREATE TABLE demo (value)","params":[]}'
 ```
 
-Endpoints are `POST /v1/query`, `GET /v1/tx`, and `GET /v1/health`. There is no
-authentication or TLS, so run it behind a reverse proxy. See
+Endpoints are `POST /v1/query`, `GET /v1/tx`, and `GET /v1/health`. Loopback use
+may omit authentication. A non-loopback bind is refused unless a bearer token is
+provided with `--token-file` or `PICOVOLT_SERVER_TOKEN`; send it as
+`Authorization: Bearer ...`. Query bodies, queues, execution time, rows scanned,
+result rows, and response size are bounded. TLS is not built in, so network
+deployments still belong behind a TLS-terminating reverse proxy. See
 [src/bin/server.rs](src/bin/server.rs).
+
+Applications accepting SQL from users can also call `Database::query_with_limits`
+directly and choose their own scan, result, memory, and deadline budgets.
 
 ## Extending PicoVolt
 
@@ -187,6 +200,7 @@ native modules built on the public API. Both are documented in
 | | |
 |--|--|
 | Roadmap | [ROADMAP.md](ROADMAP.md) |
+| One-million-download plan | [docs/ROADMAP_1M_DOWNLOADS.md](docs/ROADMAP_1M_DOWNLOADS.md) |
 | Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Code of conduct | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) |
 | Changelog | [CHANGELOG.md](CHANGELOG.md) |

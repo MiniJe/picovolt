@@ -8,7 +8,17 @@ Like the engine itself, this is for embedded use (single writer, SQL with MVCC
 time-travel, compile-to-`.pvdb`), not a drop-in for a concurrent server's
 primary database.
 
-## Setup
+## Install
+
+Platform wheels bundle the native library, so released builds install without a
+Rust compiler:
+
+```sh
+python -m pip install picovolt
+```
+
+To work from a source checkout instead, build the shared library from the
+repository root:
 
 Build the shared library from the repository root:
 
@@ -48,5 +58,5 @@ Run the demo:
 python example.py
 ```
 
-Packaging per-platform wheels that bundle the compiled library is future work;
-for now this wraps a library you build or ship yourself.
+Release wheels are built for Linux, macOS, and Windows by GitHub Actions. Source
+checkouts can instead use `PICOVOLT_LIB` to select a locally built library.

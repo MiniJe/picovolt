@@ -84,7 +84,7 @@ pub enum PvError {
     #[error("wasm runtime error: {0}")]
     Wasm(String),
 
-    /// A mutation was attempted against a read-only (production / mmap) database.
+    /// A mutation was attempted against a read-only production database.
     #[error("database is read-only (production mode); mutations are not permitted")]
     ReadOnly,
 
@@ -99,6 +99,10 @@ pub enum PvError {
     /// A query string could not be parsed.
     #[error("query parse error: {0}")]
     Query(String),
+
+    /// A bounded query exceeded its configured work, time, or output budget.
+    #[error("query resource limit exceeded: {0}")]
+    ResourceLimit(String),
 
     /// Failure (de)serializing the JSON manifest.
     #[error("manifest error: {0}")]

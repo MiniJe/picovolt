@@ -23,9 +23,11 @@ use crate::engine::wasm::WasmExec;
 
 const PAGE_BYTES: usize = 65_536;
 const MAX_CALL_DEPTH: usize = 256;
-/// Cap on a guest module's declared linear-memory pages (256 MiB), bounds the
+const MAX_INSTRUCTIONS: u64 = 10_000_000;
+/// Cap on a guest module's declared linear-memory pages (64 MiB), bounds the
 /// allocation in [`Instance`] against a malicious `min` in the memory section.
-const MAX_MEMORY_PAGES: u32 = 4096;
+const MAX_MEMORY_PAGES: u32 = 1024;
+const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 /// Cap on any LEB128-encoded vector length in the decoder, bounds allocation
 /// and loop counts against malicious section headers.
 const MAX_VEC_LEN: usize = 1 << 20;
@@ -700,6 +702,7 @@ struct CtrlFrame {
 struct Instance<'a> {
     module: &'a PvModule,
     mem: Vec<u8>,
+    fuel: u64,
 }
 
 impl PvModule {
@@ -715,6 +718,7 @@ impl PvModule {
         Instance {
             module: self,
             mem: vec![0u8; self.mem_pages as usize * PAGE_BYTES],
+            fuel: MAX_INSTRUCTIONS,
         }
     }
 
@@ -757,9 +761,16 @@ impl WasmExec for PvModule {
         inst.write_mem(0, input)?;
         let out = inst.call_func(idx, &[Val::I32(0), Val::I32(input.len() as i32)], 0)?;
         let out_len = match out.first() {
-            Some(Val::I32(v)) => *v as usize,
+            Some(Val::I32(v)) => {
+                usize::try_from(*v).map_err(|_| trap("guest returned a negative output length"))?
+            }
             _ => return Err(trap("expected an i32 length result")),
         };
+        if out_len > MAX_OUTPUT_BYTES {
+            return Err(trap(format!(
+                "guest output length exceeds the {MAX_OUTPUT_BYTES}-byte limit"
+            )));
+        }
         let slice = inst
             .mem
             .get(0..out_len)
@@ -812,6 +823,10 @@ impl Instance<'_> {
 
         let mut pc = 0usize;
         loop {
+            self.fuel = self
+                .fuel
+                .checked_sub(1)
+                .ok_or_else(|| trap("instruction budget exhausted"))?;
             let instr = func
                 .code
                 .get(pc)
@@ -1307,6 +1322,35 @@ mod tests {
         let bytes = wat::parse_str(wat).unwrap();
         assert!(matches!(
             Interpreter::new().load(&bytes),
+            Err(PvError::Wasm(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_negative_output_length() {
+        let module = compile(
+            r#"(module
+                (memory (export "memory") 1)
+                (func (export "bad") (param i32 i32) (result i32)
+                  (i32.const -1)))"#,
+        );
+        assert!(matches!(
+            module.apply_in_place("bad", &[]),
+            Err(PvError::Wasm(_))
+        ));
+    }
+
+    #[test]
+    fn traps_an_infinite_loop_when_budget_is_exhausted() {
+        let module = compile(
+            r#"(module
+                (memory (export "memory") 1)
+                (func (export "spin") (param i32 i32) (result i32)
+                  (loop $forever (br $forever))
+                  (i32.const 0)))"#,
+        );
+        assert!(matches!(
+            module.call_scalar("spin", &[]),
             Err(PvError::Wasm(_))
         ));
     }

@@ -13,9 +13,35 @@
 //! input at offset `0`; the return value is interpreted per call site (a scalar
 //! result, or an output length for [`WasmModule::apply_in_place`]).
 
-use wasmi::{Engine, Linker, Module, Store};
+use wasmi::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};
 
 use crate::core::errors::{PvError, Result};
+
+/// Maximum instructions a guest may execute during one invocation.
+pub const DEFAULT_WASM_FUEL: u64 = 10_000_000;
+/// Maximum linear-memory size available to a guest (64 MiB).
+pub const MAX_WASM_MEMORY_BYTES: usize = 64 * 1024 * 1024;
+/// Maximum byte-stream result copied from guest memory (16 MiB).
+pub const MAX_WASM_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Debug)]
+struct StoreState {
+    limits: StoreLimits,
+}
+
+fn new_store(engine: &Engine) -> Result<Store<StoreState>> {
+    let limits = StoreLimitsBuilder::new()
+        .memory_size(MAX_WASM_MEMORY_BYTES)
+        .instances(1)
+        .memories(1)
+        .tables(1)
+        .trap_on_grow_failure(true)
+        .build();
+    let mut store = Store::new(engine, StoreState { limits });
+    store.limiter(|state| &mut state.limits);
+    store.set_fuel(DEFAULT_WASM_FUEL).map_err(wasm_err)?;
+    Ok(store)
+}
 
 fn wasm_err<E: std::fmt::Display>(e: E) -> PvError {
     PvError::Wasm(e.to_string())
@@ -52,8 +78,10 @@ pub struct WasmRuntime {
 impl WasmRuntime {
     /// Create a runtime with the default engine configuration.
     pub fn new() -> Self {
+        let mut config = Config::default();
+        config.consume_fuel(true);
         Self {
-            engine: Engine::default(),
+            engine: Engine::new(&config),
         }
     }
 
@@ -86,8 +114,8 @@ impl WasmModule {
     /// Steps 1–6 of the spec's bridge: allocate (instantiate) → copy bytes in →
     /// invoke exported function → read the returned scalar.
     pub fn call_scalar(&self, func_name: &str, input: &[u8]) -> Result<i32> {
-        let mut store = Store::new(&self.engine, ());
-        let linker = <Linker<()>>::new(&self.engine);
+        let mut store = new_store(&self.engine)?;
+        let linker = <Linker<StoreState>>::new(&self.engine);
         let instance = linker
             .instantiate_and_start(&mut store, &self.module)
             .map_err(wasm_err)?;
@@ -108,8 +136,8 @@ impl WasmModule {
     ///
     /// [`call_scalar`]: WasmModule::call_scalar
     pub fn apply_in_place(&self, func_name: &str, input: &[u8]) -> Result<Vec<u8>> {
-        let mut store = Store::new(&self.engine, ());
-        let linker = <Linker<()>>::new(&self.engine);
+        let mut store = new_store(&self.engine)?;
+        let linker = <Linker<StoreState>>::new(&self.engine);
         let instance = linker
             .instantiate_and_start(&mut store, &self.module)
             .map_err(wasm_err)?;
@@ -121,7 +149,19 @@ impl WasmModule {
             .get_typed_func::<(i32, i32), i32>(&store, func_name)
             .map_err(wasm_err)?;
         let len = i32::try_from(input.len()).map_err(wasm_err)?;
-        let out_len = func.call(&mut store, (0, len)).map_err(wasm_err)? as usize;
+        let raw_len = func.call(&mut store, (0, len)).map_err(wasm_err)?;
+        let out_len = usize::try_from(raw_len)
+            .map_err(|_| PvError::Wasm("guest returned a negative output length".into()))?;
+        if out_len > MAX_WASM_OUTPUT_BYTES {
+            return Err(PvError::Wasm(format!(
+                "guest output length {out_len} exceeds the {MAX_WASM_OUTPUT_BYTES}-byte limit"
+            )));
+        }
+        if out_len > memory.data_size(&store) {
+            return Err(PvError::Wasm(format!(
+                "guest output length {out_len} exceeds linear memory"
+            )));
+        }
         let mut out = vec![0u8; out_len];
         memory.read(&store, 0, &mut out).map_err(wasm_err)?;
         Ok(out)
@@ -188,6 +228,41 @@ mod tests {
         let module = rt.load(&wat::parse_str(SUM_WAT).unwrap()).unwrap();
         assert!(matches!(
             module.call_scalar("does_not_exist", &[]),
+            Err(PvError::Wasm(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_negative_and_oversized_output_lengths() {
+        for value in [-1, (MAX_WASM_OUTPUT_BYTES as i32) + 1] {
+            let wat = format!(
+                r#"(module
+                    (memory (export "memory") 1)
+                    (func (export "bad") (param i32 i32) (result i32)
+                      (i32.const {value})))"#
+            );
+            let module = WasmRuntime::new()
+                .load(&wat::parse_str(&wat).unwrap())
+                .unwrap();
+            assert!(matches!(
+                module.apply_in_place("bad", &[]),
+                Err(PvError::Wasm(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn traps_an_infinite_loop_when_fuel_is_exhausted() {
+        let wat = r#"(module
+            (memory (export "memory") 1)
+            (func (export "spin") (param i32 i32) (result i32)
+              (loop $forever (br $forever))
+              (i32.const 0)))"#;
+        let module = WasmRuntime::new()
+            .load(&wat::parse_str(wat).unwrap())
+            .unwrap();
+        assert!(matches!(
+            module.call_scalar("spin", &[]),
             Err(PvError::Wasm(_))
         ));
     }

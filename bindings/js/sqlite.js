@@ -14,7 +14,9 @@
 import { Db } from "./picovolt.js";
 
 function rowToObject(columns, row) {
-  const obj = {};
+  // A null prototype prevents hostile column names such as `__proto__` from
+  // changing the shape or prototype of the returned record.
+  const obj = Object.create(null);
   for (let i = 0; i < columns.length; i++) obj[columns[i]] = row[i];
   return obj;
 }

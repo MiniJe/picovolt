@@ -6,6 +6,35 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- `Database::query_with_limits` and `QueryLimits` let applications bound rows
+  scanned, retained result bytes, returned rows, and wall-clock execution time.
+
+### Security
+
+- Meter both WASM execution backends and cap guest memory and output allocation.
+- Validate CAS blob contents and all CAS/index extents in mmap, byte-import, and
+  streamed-open paths; reject dishonest short range responses and oversized
+  streamed tails.
+- Harden the optional HTTP server with bearer authentication for network binds,
+  loopback-safe defaults, JSON/origin checks, bounded queues, cancellable query
+  deadlines, and result/response limits.
+- Pin every third-party GitHub Action to a full commit SHA with least-privilege
+  workflow permissions, and publish npm artifacts with provenance.
+- Upgrade the memory-mapping and WASM runtime dependency lines used by the
+  hardened loaders.
+- Stop the Python loader from falling back to the operating system DLL search
+  path; fix oversized Go C-ABI exports and prototype-sensitive JavaScript rows.
+- Add HTTPS redirects and browser security headers to the project websites, and
+  upgrade the website build toolchain to versions with no reported npm audit
+  findings.
+
+### Changed
+
+- The declared minimum Rust version is now 1.86, matching the actual requirement
+  of the sandbox runtime dependency instead of advertising an unsupported 1.74.
+
 ## [1.3.0] - 2026-06-29
 
 Compact, binary persisted indexes.
@@ -434,7 +463,13 @@ runs both natively and in the browser through WebAssembly.
   test plus a `cargo-fuzz` crate), and `cargo audit` reports no advisories. Both
   run in CI.
 
-[Unreleased]: https://github.com/MiniJe/picovolt/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/MiniJe/picovolt/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/MiniJe/picovolt/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/MiniJe/picovolt/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/MiniJe/picovolt/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/MiniJe/picovolt/compare/v0.12.0...v1.0.0
+[0.12.0]: https://github.com/MiniJe/picovolt/compare/v0.11.0...v0.12.0
+[0.11.0]: https://github.com/MiniJe/picovolt/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/MiniJe/picovolt/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/MiniJe/picovolt/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/MiniJe/picovolt/compare/v0.8.0...v0.9.0

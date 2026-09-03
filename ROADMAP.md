@@ -3,6 +3,8 @@
 This describes the direction of the project, not a commitment. Priorities shift
 with what users need, and dates are deliberately omitted. Items are grouped by
 horizon. Changes that have landed are recorded in [CHANGELOG.md](CHANGELOG.md).
+The distribution and adoption plan behind the one-million-download goal lives in
+[docs/ROADMAP_1M_DOWNLOADS.md](docs/ROADMAP_1M_DOWNLOADS.md).
 
 PicoVolt reached **1.0**: the public API and the `.pvdb` on-disk format are stable
 under SemVer. Features arrive in minor releases, and breaking changes wait for a
@@ -18,6 +20,11 @@ extension sandbox; an SQL front-end; and the WebAssembly and npm bindings.
 
 ## Recently added (on main)
 
+- **Persisted binary secondary indexes:** baked version-2 images store compact
+  index regions and reopen without rebuilding every index from table scans.
+- **Bounded server execution:** network binds require bearer authentication, and
+  server queries now have queue, scan, memory, result, response, and time limits.
+
 - **Richer WHERE predicates:** comparison operators (`<`, `<=`, `>`, `>=`, `!=`,
   `<>`), `AND` and `OR` with parentheses, and `LIKE` (`%` and `_`) for `SELECT`,
   `UPDATE`, and `DELETE`.
@@ -31,9 +38,9 @@ extension sandbox; an SQL front-end; and the WebAssembly and npm bindings.
   read early.
 - **`GROUP BY`:** group rows by one or more columns and evaluate `COUNT`, `SUM`,
   `MIN`, and `MAX` per group.
-- **Fixed-point decimal values:** a `Value::Decimal` type (exact, totally ordered)
-  that `AVG` now returns instead of text. It is not yet storable on disk or
-  constructible from a literal.
+- **Fixed-point decimal values:** a storable `Value::Decimal` type (exact, totally
+  ordered) with SQL literals; `AVG` returns it instead of text. Packed columnar
+  pages still fall back to row storage when a decimal is present.
 - **`AVG`:** averages an integer column, on its own or under `GROUP BY`, returning
   an exact decimal.
 - **Positioned parse errors:** parse and tokenizer errors report the line and
@@ -60,32 +67,19 @@ changes the public API or breaks 1.x file compatibility (a newer build always re
 an older 1.x file). Order is by impact (informed by where evaluators say the engine
 is weakest) and is direction, not a schedule.
 
-### 1.1: Persistent secondary indexes
-
-Indexes are rebuilt by a full scan on every open today. Persist them in the
-workspace and the baked `.pvdb` (a new `FORMAT_VERSION` that newer builds read
-alongside v1), so a large table opens in roughly constant time instead of scanning
-every row. This is the single biggest "is this production-real?" gap.
-
-### 1.2: Explicit transactions
+### Next: Explicit transactions
 
 `BEGIN` / `COMMIT` / `ROLLBACK` across the engine API and every binding, built on
 the MVCC machinery that already exists: multi-statement atomicity and rollback, not
 just per-statement autocommit. The most-requested correctness feature.
 
-### 1.3: JOINs
+### Then: JOINs
 
 `INNER JOIN` and `LEFT JOIN` in `SELECT`: nested-loop first, an index/hash join
 when a join key is indexed. The largest single piece and the most-cited missing SQL
 feature; two-table joins first, then N-table.
 
-### 1.4: Server hardening
-
-Bearer-token authentication and optional TLS for `picovolt-server` (it already caps
-body size and times out slow statements). Turns the demonstration server into
-something that can safely sit on a network.
-
-### 1.5: SQL ergonomics
+### SQL ergonomics
 
 `OFFSET`, `CASE WHEN`, more scalar functions (string / number), and simple scalar
 subqueries in `WHERE` / `IN`. Incremental polish that closes the gap with everyday
@@ -112,11 +106,10 @@ The C ABI opens two directions that grow independently of the core engine.
   adapters and a documented C example. Because the bindings share one C ABI, new
   languages (Ruby, C#, Java, Zig) are wrappers rather than new engine work.
 - **Drop-in compatibility.** Parameterized queries (`?` placeholders) shipped in
-  0.6.0, the foundation for using PicoVolt the way other SQL databases are used.
-  Next: surface them in the Go `database/sql` driver, the C ABI, and Python, then
-  offer familiar adapter shapes (a `better-sqlite3`-style JavaScript API and a
-  Python DB-API 2.0 interface) so existing apps can swap PicoVolt in with minimal
-  change.
+  0.6.0 and now span the C ABI and language bindings. A Go `database/sql` driver,
+  `better-sqlite3`-style JavaScript adapter, and Python DB-API 2.0 module have also
+  shipped. Next: prepared-statement objects and compatibility test suites drawn
+  from real applications.
 - **Functional plugins.** The `WasmExec` trait is an existing extension seam.
   More seams of the same shape could allow:
   - additional index types behind `CREATE INDEX`, such as a full-text index or a

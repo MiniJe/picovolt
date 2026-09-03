@@ -38,7 +38,7 @@ A PicoVolt database exists in one of two shapes:
   JSON manifest (`pv_manifest.json`) and an append-only `chunks/` subdirectory of
   page files. Mutable; this is what `open_dev` reads and writes.
 - **Baked monolith** — a single, immutable, memory-mappable `.pvdb` file produced
-  by `bake`. Read-only; this is what `open_prod` mmaps and what `import_bytes`
+  by `bake`. Read-only; this is what `open_prod` snapshots and what `import_bytes`
   consumes as a byte image.
 
 Both share the same page and record encoding; they differ only in how pages, the

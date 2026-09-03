@@ -8,7 +8,9 @@
 //! §4 compression primitives.
 
 use crate::core::errors::{PvError, Result};
-use crate::core::types::{ColumnarPageHeader, RowPageHeader, NO_PAGE, PAGE_HEADER_SIZE, PAGE_SIZE};
+use crate::core::types::{
+    ColumnarPageHeader, RecordEnvelope, RowPageHeader, NO_PAGE, PAGE_HEADER_SIZE, PAGE_SIZE,
+};
 use crate::core::value::{Row, Value};
 use crate::storage::compress::{delta_z_decode, delta_z_encode, DictionaryColumn};
 
@@ -138,8 +140,17 @@ impl RowPage {
     /// Overwrite the `tx_deleted` field (bytes 8..16) of the envelope in slot
     /// `index`. Used by the MVCC layer to tombstone a version in place.
     pub fn patch_envelope_deleted(&mut self, index: u16, tx_deleted: u64) -> Result<()> {
-        let (offset, _len) = self.slot(index)?;
-        self.buf[offset + 8..offset + 16].copy_from_slice(&tx_deleted.to_le_bytes());
+        let (offset, len) = self.slot(index)?;
+        if len < RecordEnvelope::ENCODED_LEN {
+            return Err(PvError::Corruption(
+                "row record is shorter than its MVCC envelope".into(),
+            ));
+        }
+        let field = self
+            .buf
+            .get_mut(offset + 8..offset + 16)
+            .ok_or_else(|| PvError::Corruption("row envelope is out of page bounds".into()))?;
+        field.copy_from_slice(&tx_deleted.to_le_bytes());
         Ok(())
     }
 
@@ -529,6 +540,14 @@ mod tests {
         let stored = page.record(slot).unwrap();
         assert_eq!(stored[8], 0x99); // tx_deleted low byte
         assert_eq!(stored[24], 0xAB); // body untouched
+    }
+
+    #[test]
+    fn envelope_patch_rejects_a_short_record() {
+        let mut page = RowPage::new(1);
+        let slot = page.insert(b"not an envelope").unwrap();
+        let err = page.patch_envelope_deleted(slot, 1).unwrap_err();
+        assert!(matches!(err, PvError::Corruption(_)), "{err:?}");
     }
 
     #[test]

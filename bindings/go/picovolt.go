@@ -184,6 +184,10 @@ func (db *DB) Export() ([]byte, error) {
 		return nil, lastError()
 	}
 	defer C.pv_bytes_free(buf, n)
+	const maxCInt = uint64(1<<31 - 1)
+	if uint64(n) > maxCInt {
+		return nil, errors.New("picovolt: export exceeds the Go binding's 2 GiB copy limit")
+	}
 	return C.GoBytes(unsafe.Pointer(buf), C.int(n)), nil
 }
 

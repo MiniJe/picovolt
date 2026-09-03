@@ -1,11 +1,11 @@
 //! Virtualization Layer Engine (VLE), the router that hides whether pages live
 //! in a mutable `.pv/` directory (Development Mode) or inside a single immutable
-//! memory-mapped `.pvdb` monolith (Production Mode), per spec §2.
+//! snapshotted `.pvdb` monolith (Production Mode), per spec §2.
 //!
 //! * [`DevStore`], append-only 4096-byte pages spread across `chunks/*.pvd`
 //!   files capped at 64 MiB each.
-//! * [`Monolith`], a read-only mmap over a baked `.pvdb`, slicing pages and
-//!   exposing the CAS / manifest regions by absolute offset.
+//! * [`Monolith`], an owned read-only memory map snapshotted from a baked
+//!   `.pvdb`, slicing pages and exposing the CAS / manifest regions by offset.
 //! * [`bake_monolith`], compiles a dev workspace's pages + CAS pool + manifest
 //!   into the contiguous monolith layout.
 
@@ -273,27 +273,50 @@ impl DevStore {
 }
 
 // ---------------------------------------------------------------------------
-// Production Mode: read-only mmap over a baked monolith
+// Production Mode: owned read-only snapshot of a baked monolith
 // ---------------------------------------------------------------------------
 
-/// A memory-mapped, read-only `.pvdb` monolith.
+/// An owned, read-only snapshot of a `.pvdb` monolith.
 pub struct Monolith {
     mmap: Arc<Mmap>,
     header: FileHeader,
+    // Keeps the private snapshot alive on platforms where mappings retain a
+    // relationship with their source handle.
+    _snapshot_file: File,
 }
 
 impl Monolith {
     /// Open and validate a `.pvdb` file (checks magic, reads the offset header).
+    ///
+    /// The bytes are copied into a private unnamed snapshot before mapping and
+    /// parsing. Keeping a direct mapping of a publicly writable file behind a safe
+    /// Rust API would allow another process to mutate it while borrowed, violating
+    /// `Mmap`'s safety contract. The snapshot also gives every query one consistent
+    /// image without keeping the full file resident in memory.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let file = File::open(path)?;
-        // SAFETY: the file is opened read-only and the resulting `Mmap` is never
-        // written through; callers only ever read slices of it.
-        let mmap = unsafe { Mmap::map(&file)? };
-        if mmap.len() < FILE_HEADER_SIZE {
+        let source = File::open(path)?;
+        let source_len = source.metadata()?.len();
+        if source_len < FILE_HEADER_SIZE as u64 {
             return Err(PvError::Corruption(
                 "monolith smaller than file header".into(),
             ));
         }
+        usize::try_from(source_len)
+            .map_err(|_| PvError::Corruption("monolith is too large for this platform".into()))?;
+        let mut snapshot_file = tempfile::tempfile()?;
+        let copied = std::io::copy(&mut source.take(source_len), &mut snapshot_file)?;
+        if copied != source_len {
+            return Err(PvError::Corruption(
+                "monolith changed length while it was being opened".into(),
+            ));
+        }
+        snapshot_file.flush()?;
+        snapshot_file.seek(SeekFrom::Start(0))?;
+        // SAFETY: `snapshot_file` is a private, unnamed temporary file. It was
+        // fully written before mapping, is retained by `Monolith`, and no mutable
+        // handle or path is ever exposed, so its contents cannot change while
+        // the mapping is borrowed.
+        let mmap = unsafe { Mmap::map(&snapshot_file)? };
         let header = FileHeader::decode(&mmap[..FILE_HEADER_SIZE])?;
         if header.cas_offset < FILE_HEADER_SIZE as u64
             || header.manifest_offset < header.cas_offset
@@ -307,6 +330,7 @@ impl Monolith {
         Ok(Self {
             mmap: Arc::new(mmap),
             header,
+            _snapshot_file: snapshot_file,
         })
     }
 
@@ -329,6 +353,11 @@ impl Monolith {
     /// Absolute offset of the CAS blob pool within the file.
     pub fn cas_offset(&self) -> usize {
         self.header.cas_offset as usize
+    }
+
+    /// Absolute offset of the trailing JSON manifest.
+    pub fn manifest_offset(&self) -> usize {
+        self.header.manifest_offset as usize
     }
 
     /// The trailing JSON manifest payload.
@@ -468,7 +497,7 @@ pub enum Backend {
     Dev(DevStore),
     /// Mutable in-memory store (no filesystem).
     Mem(MemStore),
-    /// Read-only production monolith (mmap).
+    /// Read-only production monolith snapshot.
     Prod(Monolith),
     /// Read-only streamed monolith (pages fetched on demand by byte range).
     Remote(RemoteStore),
@@ -670,6 +699,12 @@ mod tests {
             &mono.mmap()[mono.cas_offset()..pool_end],
             cas_pool.as_slice()
         );
+
+        // The public API owns a stable snapshot: later mutations of the source
+        // path cannot race readers or alter the opened database.
+        std::fs::write(&out, vec![0u8; FILE_HEADER_SIZE]).unwrap();
+        assert_eq!(mono.read_page(0).unwrap()[10], 0x42);
+        assert_eq!(mono.manifest_bytes(), manifest.as_slice());
     }
 
     #[test]

@@ -7,6 +7,7 @@ metadata lives in pyproject.toml.
 """
 
 from setuptools import setup
+from setuptools.command.bdist_wheel import bdist_wheel
 from setuptools.dist import Distribution
 
 
@@ -15,4 +16,16 @@ class BinaryDistribution(Distribution):
         return True
 
 
-setup(distclass=BinaryDistribution)
+class PlatformWheel(bdist_wheel):
+    """The bundled C library is platform-specific but independent of Python's ABI."""
+
+    def finalize_options(self):
+        super().finalize_options()
+        self.root_is_pure = False
+
+    def get_tag(self):
+        platform = self.plat_name.replace("-", "_").replace(".", "_")
+        return "py3", "none", platform
+
+
+setup(distclass=BinaryDistribution, cmdclass={"bdist_wheel": PlatformWheel})

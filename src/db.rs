@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
@@ -36,7 +37,7 @@ use crate::engine::query::{
 };
 use crate::engine::wasm::WasmRuntime;
 use crate::storage::cache::{PageCache, DEFAULT_CACHE_PAGES};
-use crate::storage::cas::CasStore;
+use crate::storage::cas::{verify_blob_hash_hex, CasStore};
 use crate::storage::index::SecondaryIndex;
 use crate::storage::page::{RowPage, RowPageRef, SLOT_SIZE};
 use crate::storage::record::{decode_record, encode_record};
@@ -47,6 +48,7 @@ use crate::storage::vle::{
 
 /// Manifest file name within a development workspace.
 pub const MANIFEST_FILE: &str = "pv_manifest.json";
+const MAX_STREAM_TAIL_BYTES: usize = 64 * 1024 * 1024;
 
 /// Largest record (envelope + body) that fits on a fresh page.
 const MAX_RECORD: usize = PAGE_SIZE - PAGE_HEADER_SIZE - SLOT_SIZE;
@@ -182,6 +184,106 @@ impl QueryResult {
     }
 }
 
+/// Resource bounds for executing SQL supplied by an untrusted caller.
+#[derive(Debug, Clone, Copy)]
+pub struct QueryLimits {
+    /// Maximum record versions inspected by one statement.
+    pub max_rows_scanned: usize,
+    /// Approximate maximum bytes retained while building a result or mutation set.
+    pub max_materialized_bytes: usize,
+    /// Maximum rows returned to the caller.
+    pub max_result_rows: usize,
+    /// Optional wall-clock deadline, checked throughout scans and before returning.
+    pub deadline: Option<Instant>,
+}
+
+impl QueryLimits {
+    /// Construct explicit query limits.
+    pub const fn new(
+        max_rows_scanned: usize,
+        max_materialized_bytes: usize,
+        max_result_rows: usize,
+        deadline: Option<Instant>,
+    ) -> Self {
+        Self {
+            max_rows_scanned,
+            max_materialized_bytes,
+            max_result_rows,
+            deadline,
+        }
+    }
+}
+
+struct QueryBudget {
+    limits: QueryLimits,
+    rows_scanned: usize,
+    materialized_bytes: usize,
+}
+
+impl QueryBudget {
+    fn new(limits: QueryLimits) -> Self {
+        Self {
+            limits,
+            rows_scanned: 0,
+            materialized_bytes: 0,
+        }
+    }
+
+    fn checkpoint(&self) -> Result<()> {
+        if self
+            .limits
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err(PvError::ResourceLimit("deadline expired".into()));
+        }
+        Ok(())
+    }
+
+    fn scan_row(&mut self) -> Result<()> {
+        self.checkpoint()?;
+        self.rows_scanned = self.rows_scanned.saturating_add(1);
+        if self.rows_scanned > self.limits.max_rows_scanned {
+            return Err(PvError::ResourceLimit(format!(
+                "scanned more than {} rows",
+                self.limits.max_rows_scanned
+            )));
+        }
+        Ok(())
+    }
+
+    fn materialize(&mut self, row: &Row) -> Result<()> {
+        let bytes = row.iter().fold(std::mem::size_of::<Row>(), |total, value| {
+            total.saturating_add(match value {
+                Value::Null | Value::Int(_) | Value::Decimal(_) => std::mem::size_of::<Value>(),
+                Value::Text(value) => std::mem::size_of::<Value>().saturating_add(value.len()),
+                Value::Blob(value) => std::mem::size_of::<Value>().saturating_add(value.len()),
+            })
+        });
+        self.materialized_bytes = self.materialized_bytes.saturating_add(bytes);
+        if self.materialized_bytes > self.limits.max_materialized_bytes {
+            return Err(PvError::ResourceLimit(format!(
+                "materialized more than {} bytes",
+                self.limits.max_materialized_bytes
+            )));
+        }
+        Ok(())
+    }
+
+    fn check_result(&self, result: &QueryResult) -> Result<()> {
+        if let QueryResult::Rows { rows, .. } = result {
+            self.checkpoint()?;
+            if rows.len() > self.limits.max_result_rows {
+                return Err(PvError::ResourceLimit(format!(
+                    "result has more than {} rows; add or lower LIMIT",
+                    self.limits.max_result_rows
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Database
 // ---------------------------------------------------------------------------
@@ -254,7 +356,11 @@ impl Database {
         }
     }
 
-    /// Open a baked `.pvdb` monolith, read-only, via mmap + buffer pool.
+    /// Open a baked `.pvdb` monolith as an owned, read-only snapshot.
+    ///
+    /// Snapshotting prevents another process from mutating a file-backed mapping
+    /// while it is borrowed. For large images that should be fetched lazily, use
+    /// [`open_streamed`](Self::open_streamed).
     pub fn open_prod(path: impl AsRef<Path>) -> Result<Self> {
         let mono = Monolith::open(path)?;
         let manifest: Manifest = serde_json::from_slice(mono.manifest_bytes())?;
@@ -262,13 +368,19 @@ impl Database {
         let cas = CasStore::from_mapped(
             mono.mmap(),
             mono.cas_offset(),
+            cas_pool_end(&manifest, mono.cas_offset(), mono.manifest_offset())?,
             &manifest.cas_dir,
             &manifest.cas_hashes,
         )?;
         // Slice the binary index region out of the mapping. The `Arc<Mmap>` handle
         // keeps the mapping alive past the move of `mono` into the cache below.
         let map = mono.mmap();
-        let region = slice_index_region(&map, &manifest, mono.cas_offset() as u64)?;
+        let region = slice_index_region(
+            &map,
+            &manifest,
+            mono.cas_offset() as u64,
+            mono.manifest_offset(),
+        )?;
         let mut cache = PageCache::new(Backend::Prod(mono), DEFAULT_CACHE_PAGES);
         let tables = build_tables(&mut cache, &cas, &manifest, false, region)?;
         Ok(Self {
@@ -291,12 +403,22 @@ impl Database {
     /// length of the image (e.g. an HTTP `Content-Length`).
     pub fn open_streamed(reader: Box<dyn RangeReader>, total_size: u64) -> Result<Self> {
         let header_bytes = reader.read_at(0, FILE_HEADER_SIZE)?;
+        if header_bytes.len() != FILE_HEADER_SIZE {
+            return Err(PvError::Corruption(
+                "streamed: header range has the wrong length".into(),
+            ));
+        }
         let header = FileHeader::decode(&header_bytes)?; // validates magic + version
-        let cas_offset = header.cas_offset as usize;
-        let manifest_offset = header.manifest_offset as usize;
+        let total_size = usize::try_from(total_size).map_err(|_| {
+            PvError::Corruption("streamed: image is too large for this platform".into())
+        })?;
+        let cas_offset = usize::try_from(header.cas_offset)
+            .map_err(|_| PvError::Corruption("streamed: CAS offset is too large".into()))?;
+        let manifest_offset = usize::try_from(header.manifest_offset)
+            .map_err(|_| PvError::Corruption("streamed: manifest offset is too large".into()))?;
         if cas_offset < FILE_HEADER_SIZE
             || manifest_offset < cas_offset
-            || manifest_offset as u64 > total_size
+            || manifest_offset > total_size
             || (cas_offset - FILE_HEADER_SIZE) % PAGE_SIZE != 0
         {
             return Err(PvError::Corruption("streamed: inconsistent offsets".into()));
@@ -305,11 +427,30 @@ impl Database {
 
         // The tail (CAS pool + manifest) is small relative to the pages and is read
         // once on open; the pages themselves are fetched lazily through the cache.
-        let tail = reader.read_at(cas_offset as u64, (total_size as usize) - cas_offset)?;
+        let tail_len = total_size
+            .checked_sub(cas_offset)
+            .ok_or_else(|| PvError::Corruption("streamed: CAS offset past end of image".into()))?;
+        if tail_len > MAX_STREAM_TAIL_BYTES {
+            return Err(PvError::Corruption(format!(
+                "streamed: CAS/index/manifest tail exceeds the {MAX_STREAM_TAIL_BYTES}-byte limit"
+            )));
+        }
+        let tail = reader.read_at(cas_offset as u64, tail_len)?;
+        if tail.len() != tail_len {
+            return Err(PvError::Corruption(
+                "streamed: tail range has the wrong length".into(),
+            ));
+        }
         let split = manifest_offset - cas_offset;
-        let pool = &tail[..split];
+        if split > tail.len() {
+            return Err(PvError::Corruption(
+                "streamed: manifest offset is outside the returned tail".into(),
+            ));
+        }
         let manifest: Manifest = serde_json::from_slice(&tail[split..])?;
         check_manifest_version(&manifest)?;
+        let pool_end = cas_pool_end(&manifest, cas_offset, manifest_offset)? - cas_offset;
+        let pool = &tail[..pool_end];
 
         if manifest.cas_dir.len() != manifest.cas_hashes.len() {
             return Err(PvError::Corruption(
@@ -317,13 +458,15 @@ impl Database {
             ));
         }
         let mut cas = CasStore::new_memory();
-        for &(off, len) in &manifest.cas_dir {
+        for (&(off, len), expected_hash) in manifest.cas_dir.iter().zip(&manifest.cas_hashes) {
             let off = off as usize;
             let end = off
                 .checked_add(len as usize)
                 .filter(|&e| e <= pool.len())
                 .ok_or_else(|| PvError::Corruption("streamed: CAS blob out of bounds".into()))?;
-            cas.put(&pool[off..end])?;
+            let blob = &pool[off..end];
+            verify_blob_hash_hex(blob, expected_hash)?;
+            cas.put(blob)?;
         }
 
         // The binary index region (if any) was fetched as part of the tail; it sits
@@ -386,8 +529,8 @@ impl Database {
     /// Load a baked `.pvdb` **byte image** into a fresh, **writable** in-memory
     /// database, the inverse of [`bake_to_bytes`](Self::bake_to_bytes).
     ///
-    /// Unlike [`open_prod`](Self::open_prod) (read-only, mmap'd), this copies the
-    /// pages into RAM so editing can continue, and it preserves the full MVCC
+    /// Unlike [`open_prod`](Self::open_prod) (read-only), this copies the pages
+    /// into a writable store so editing can continue, and it preserves the full MVCC
     /// history (so `... BEFORE tx` time-travel survives a round trip). The input
     /// is untrusted: all offsets, the CAS directory, and the page chains are
     /// bounds-checked, so a malformed image yields an error, never a panic.
@@ -423,18 +566,21 @@ impl Database {
                 "import: CAS dir/hash length mismatch".into(),
             ));
         }
-        let pool = &bytes[cas_offset..manifest_offset];
+        let pool_end = cas_pool_end(&manifest, cas_offset, manifest_offset)?;
+        let pool = &bytes[cas_offset..pool_end];
         let mut cas = CasStore::new_memory();
-        for &(off, len) in &manifest.cas_dir {
+        for (&(off, len), expected_hash) in manifest.cas_dir.iter().zip(&manifest.cas_hashes) {
             let off = off as usize;
             let end = off
                 .checked_add(len as usize)
                 .filter(|&e| e <= pool.len())
                 .ok_or_else(|| PvError::Corruption("import: CAS blob out of bounds".into()))?;
-            cas.put(&pool[off..end])?;
+            let blob = &pool[off..end];
+            verify_blob_hash_hex(blob, expected_hash)?;
+            cas.put(blob)?;
         }
 
-        let region = slice_index_region(bytes, &manifest, cas_offset as u64)?;
+        let region = slice_index_region(bytes, &manifest, cas_offset as u64, manifest_offset)?;
         let mut cache = PageCache::new(Backend::Mem(mem), DEFAULT_CACHE_PAGES);
         let tables = build_tables(&mut cache, &cas, &manifest, true, region)?;
         Ok(Self {
@@ -522,15 +668,40 @@ impl Database {
         self.query(&bound)
     }
 
+    /// Execute a parameterized statement with explicit resource limits. This is
+    /// intended for servers and other trust boundaries; embedded callers can use
+    /// [`query_with`](Database::query_with) without imposed limits.
+    pub fn query_with_limits(
+        &mut self,
+        sql: &str,
+        params: &[Value],
+        limits: QueryLimits,
+    ) -> Result<QueryResult> {
+        let bound = crate::engine::query::bind_params(sql, params)?;
+        let mut budget = QueryBudget::new(limits);
+        budget.checkpoint()?;
+        let result = self.execute_statement(parse(&bound)?, Some(&mut budget))?;
+        budget.check_result(&result)?;
+        Ok(result)
+    }
+
     /// Execute a single SQL statement.
     pub fn query(&mut self, sql: &str) -> Result<QueryResult> {
-        match parse(sql)? {
+        self.execute_statement(parse(sql)?, None)
+    }
+
+    fn execute_statement(
+        &mut self,
+        statement: Statement,
+        mut budget: Option<&mut QueryBudget>,
+    ) -> Result<QueryResult> {
+        match statement {
             Statement::CreateTable { name, columns } => {
                 self.create_table(&name, columns)?;
                 Ok(QueryResult::Done)
             }
             Statement::CreateIndex { table, column } => {
-                self.create_index(&table, &column)?;
+                self.create_index_bounded(&table, &column, budget.as_deref_mut())?;
                 Ok(QueryResult::Done)
             }
             Statement::Insert { table, values } => {
@@ -559,7 +730,7 @@ impl Database {
                     && !distinct
                 {
                     if let Some(alias) = count_star_only(&projection) {
-                        let n = self.count_visible(&table, before)?;
+                        let n = self.count_visible(&table, before, budget.as_deref_mut())?;
                         return Ok(QueryResult::Rows {
                             columns: vec![alias.unwrap_or_else(|| "count".into())],
                             rows: vec![vec![Value::Int(n as i64)]],
@@ -576,12 +747,22 @@ impl Database {
                 if !grouped && filter.is_none() && !distinct && order.len() == 1 {
                     let ob = &order[0];
                     if self.has_index(&table, &ob.column) {
-                        let (columns, rows) =
-                            self.select_ordered_by_index(&table, ob, before, limit)?;
+                        let (columns, rows) = self.select_ordered_by_index(
+                            &table,
+                            ob,
+                            before,
+                            limit,
+                            budget.as_deref_mut(),
+                        )?;
                         return project_select(columns, rows, projection, &[], false, None);
                     }
                 }
-                let (columns, rows) = self.select_filtered(&table, filter.as_ref(), before)?;
+                let (columns, rows) = self.select_filtered_bounded(
+                    &table,
+                    filter.as_ref(),
+                    before,
+                    budget.as_deref_mut(),
+                )?;
                 if grouped {
                     let items = projection_to_items(projection)?;
                     project_grouped(
@@ -592,11 +773,17 @@ impl Database {
                 }
             }
             Statement::Update { table, set, filter } => {
-                let n = self.update_where(&table, &set.0, &set.1, &filter)?;
+                let n = self.update_where_bounded(
+                    &table,
+                    &set.0,
+                    &set.1,
+                    &filter,
+                    budget.as_deref_mut(),
+                )?;
                 Ok(QueryResult::Mutated(n))
             }
             Statement::Delete { table, filter } => {
-                let n = self.delete_where(&table, &filter)?;
+                let n = self.delete_where_bounded(&table, &filter, budget)?;
                 Ok(QueryResult::Mutated(n))
             }
             Statement::DropTable { table } => {
@@ -630,6 +817,15 @@ impl Database {
 
     /// Create an equality index on `column`, built from the current rows.
     pub fn create_index(&mut self, table_name: &str, column: &str) -> Result<()> {
+        self.create_index_bounded(table_name, column, None)
+    }
+
+    fn create_index_bounded(
+        &mut self,
+        table_name: &str,
+        column: &str,
+        mut budget: Option<&mut QueryBudget>,
+    ) -> Result<()> {
         let mut index = SecondaryIndex::new();
         {
             let table = self
@@ -639,9 +835,16 @@ impl Database {
             let col_ix = column_index(table, column)?;
             let mut cache = self.cache.borrow_mut();
             scan(&mut cache, table, &self.cas, |addr, _env, row| {
+                if let Some(budget) = budget.as_deref_mut() {
+                    budget.scan_row()?;
+                    budget.materialize(row)?;
+                }
                 index.insert(&row[col_ix], addr);
                 Ok(())
             })?;
+        }
+        if let Some(budget) = budget {
+            budget.checkpoint()?;
         }
         self.tables
             .get_mut(table_name)
@@ -709,10 +912,22 @@ impl Database {
 
     /// Delete rows matching `pred` (an MVCC tombstone). Returns the number deleted.
     pub fn delete_where(&mut self, table_name: &str, pred: &Predicate) -> Result<usize> {
+        self.delete_where_bounded(table_name, pred, None)
+    }
+
+    fn delete_where_bounded(
+        &mut self,
+        table_name: &str,
+        pred: &Predicate,
+        mut budget: Option<&mut QueryBudget>,
+    ) -> Result<usize> {
         self.ensure_writable()?;
-        let tx = self.txm.begin_write();
         let snapshot = self.txm.snapshot();
-        let matches = self.collect_matching(table_name, pred, &snapshot)?;
+        let matches = self.collect_matching(table_name, pred, &snapshot, budget.as_deref_mut())?;
+        if let Some(budget) = budget {
+            budget.checkpoint()?;
+        }
+        let tx = self.txm.begin_write();
 
         let table = self.tables.get_mut(table_name).expect("existence checked");
         {
@@ -733,6 +948,7 @@ impl Database {
         table_name: &str,
         pred: &Predicate,
         snapshot: &Snapshot,
+        mut budget: Option<&mut QueryBudget>,
     ) -> Result<Vec<(RecordAddr, Row)>> {
         let table = self
             .tables
@@ -744,14 +960,26 @@ impl Database {
         let mut cache = self.cache.borrow_mut();
         if let Some(addrs) = index_candidates(table, pred) {
             for addr in addrs {
+                if let Some(budget) = budget.as_deref_mut() {
+                    budget.scan_row()?;
+                }
                 let (env, row) = read_record_at(&mut cache, table, &self.cas, addr)?;
                 if snapshot.sees(&env) && row_matches(pred, &columns, &row)? {
+                    if let Some(budget) = budget.as_deref_mut() {
+                        budget.materialize(&row)?;
+                    }
                     hits.push((addr, row));
                 }
             }
         } else {
             scan(&mut cache, table, &self.cas, |addr, env, row| {
+                if let Some(budget) = budget.as_deref_mut() {
+                    budget.scan_row()?;
+                }
                 if snapshot.sees(env) && row_matches(pred, &columns, row)? {
+                    if let Some(budget) = budget.as_deref_mut() {
+                        budget.materialize(row)?;
+                    }
                     hits.push((addr, row.clone()));
                 }
                 Ok(())
@@ -843,6 +1071,16 @@ impl Database {
         filter: Option<&Predicate>,
         before: Option<u64>,
     ) -> Result<(Vec<String>, Vec<Row>)> {
+        self.select_filtered_bounded(table_name, filter, before, None)
+    }
+
+    fn select_filtered_bounded(
+        &self,
+        table_name: &str,
+        filter: Option<&Predicate>,
+        before: Option<u64>,
+        mut budget: Option<&mut QueryBudget>,
+    ) -> Result<(Vec<String>, Vec<Row>)> {
         let table = self
             .tables
             .get(table_name)
@@ -854,7 +1092,13 @@ impl Database {
         match filter {
             None => {
                 scan(&mut cache, table, &self.cas, |_a, env, row| {
+                    if let Some(budget) = budget.as_deref_mut() {
+                        budget.scan_row()?;
+                    }
                     if snapshot.sees(env) {
+                        if let Some(budget) = budget.as_deref_mut() {
+                            budget.materialize(row)?;
+                        }
                         rows.push(row.clone());
                     }
                     Ok(())
@@ -864,14 +1108,26 @@ impl Database {
                 check_predicate_columns(&columns, pred)?;
                 if let Some(addrs) = index_candidates(table, pred) {
                     for addr in addrs {
+                        if let Some(budget) = budget.as_deref_mut() {
+                            budget.scan_row()?;
+                        }
                         let (env, row) = read_record_at(&mut cache, table, &self.cas, addr)?;
                         if snapshot.sees(&env) && row_matches(pred, &columns, &row)? {
+                            if let Some(budget) = budget.as_deref_mut() {
+                                budget.materialize(&row)?;
+                            }
                             rows.push(row);
                         }
                     }
                 } else {
                     scan(&mut cache, table, &self.cas, |_a, env, row| {
+                        if let Some(budget) = budget.as_deref_mut() {
+                            budget.scan_row()?;
+                        }
                         if snapshot.sees(env) && row_matches(pred, &columns, row)? {
+                            if let Some(budget) = budget.as_deref_mut() {
+                                budget.materialize(row)?;
+                            }
                             rows.push(row.clone());
                         }
                         Ok(())
@@ -885,7 +1141,12 @@ impl Database {
     /// Count records visible as of `before` (or the latest tx) by reading only the
     /// MVCC envelopes, skipping all row-body decoding. Powers the bare `COUNT(*)`
     /// fast path.
-    fn count_visible(&self, table_name: &str, before: Option<u64>) -> Result<u64> {
+    fn count_visible(
+        &self,
+        table_name: &str,
+        before: Option<u64>,
+        mut budget: Option<&mut QueryBudget>,
+    ) -> Result<u64> {
         let table = self
             .tables
             .get(table_name)
@@ -894,6 +1155,9 @@ impl Database {
         let mut count = 0u64;
         let mut cache = self.cache.borrow_mut();
         scan_envelopes(&mut cache, table, |env| {
+            if let Some(budget) = budget.as_deref_mut() {
+                budget.scan_row()?;
+            }
             if snapshot.sees(env) {
                 count += 1;
             }
@@ -919,6 +1183,7 @@ impl Database {
         ob: &OrderBy,
         before: Option<u64>,
         limit: Option<usize>,
+        mut budget: Option<&mut QueryBudget>,
     ) -> Result<(Vec<String>, Vec<Row>)> {
         let table = self
             .tables
@@ -933,8 +1198,14 @@ impl Database {
         let mut rows = Vec::new();
         let mut cache = self.cache.borrow_mut();
         for addr in index.ordered_addrs(ob.descending) {
+            if let Some(budget) = budget.as_deref_mut() {
+                budget.scan_row()?;
+            }
             let (env, row) = read_record_at(&mut cache, table, &self.cas, addr)?;
             if snapshot.sees(&env) {
+                if let Some(budget) = budget.as_deref_mut() {
+                    budget.materialize(&row)?;
+                }
                 rows.push(row);
                 if limit.is_some_and(|n| rows.len() >= n) {
                     break;
@@ -972,6 +1243,17 @@ impl Database {
         set_value: &Value,
         pred: &Predicate,
     ) -> Result<usize> {
+        self.update_where_bounded(table_name, set_column, set_value, pred, None)
+    }
+
+    fn update_where_bounded(
+        &mut self,
+        table_name: &str,
+        set_column: &str,
+        set_value: &Value,
+        pred: &Predicate,
+        mut budget: Option<&mut QueryBudget>,
+    ) -> Result<usize> {
         self.ensure_writable()?;
         let set_ix = {
             let table = self
@@ -981,10 +1263,13 @@ impl Database {
             column_index(table, set_column)?
         };
         let snapshot = self.txm.snapshot();
-        let matches = self.collect_matching(table_name, pred, &snapshot)?;
+        let matches = self.collect_matching(table_name, pred, &snapshot, budget.as_deref_mut())?;
         let count = matches.len();
         if count == 0 {
             return Ok(0);
+        }
+        if let Some(budget) = budget {
+            budget.checkpoint()?;
         }
 
         // Tombstone the old versions, then insert updated copies.
@@ -2170,6 +2455,7 @@ fn slice_index_region<'a>(
     image: &'a [u8],
     manifest: &Manifest,
     cas_offset: u64,
+    manifest_offset: usize,
 ) -> Result<&'a [u8]> {
     match manifest.index_region {
         None => Ok(&[]),
@@ -2182,11 +2468,27 @@ fn slice_index_region<'a>(
             let off = off as usize;
             let end = off
                 .checked_add(len as usize)
-                .filter(|&e| e <= image.len())
+                .filter(|&e| e <= image.len() && e <= manifest_offset)
                 .ok_or_else(|| PvError::Corruption("index region out of bounds".into()))?;
             Ok(&image[off..end])
         }
     }
+}
+
+/// Return the exclusive end of the CAS pool. Version-2 images place the binary
+/// index immediately after it; older images place the manifest there directly.
+fn cas_pool_end(manifest: &Manifest, cas_offset: usize, manifest_offset: usize) -> Result<usize> {
+    let end = match manifest.index_region {
+        Some((off, _)) => usize::try_from(off)
+            .map_err(|_| PvError::Corruption("index region offset is too large".into()))?,
+        None => manifest_offset,
+    };
+    if end < cas_offset || end > manifest_offset {
+        return Err(PvError::Corruption(
+            "CAS pool / index region bounds are inconsistent".into(),
+        ));
+    }
+    Ok(end)
 }
 
 /// Reconstruct in-memory table metadata (and indexes) from a manifest.
@@ -3297,5 +3599,40 @@ mod tests {
         // Malformed images error rather than panic.
         assert!(Database::import_bytes(&[0u8; 10]).is_err());
         assert!(Database::import_bytes(&bytes[..bytes.len() / 2]).is_err());
+    }
+
+    #[test]
+    fn bounded_queries_stop_before_untrusted_work_grows_without_limit() {
+        let mut db = Database::open_memory();
+        db.query("CREATE TABLE t (id, body)").unwrap();
+        for id in 0..10 {
+            db.query(&format!("INSERT INTO t VALUES ({id}, 'payload')"))
+                .unwrap();
+        }
+
+        let scan_limited = QueryLimits::new(3, usize::MAX, usize::MAX, None);
+        assert!(matches!(
+            db.query_with_limits("SELECT * FROM t", &[], scan_limited),
+            Err(PvError::ResourceLimit(_))
+        ));
+
+        let result_limited = QueryLimits::new(100, usize::MAX, 2, None);
+        assert!(matches!(
+            db.query_with_limits("SELECT * FROM t", &[], result_limited),
+            Err(PvError::ResourceLimit(_))
+        ));
+
+        let expired = QueryLimits::new(100, usize::MAX, 100, Some(Instant::now()));
+        assert!(matches!(
+            db.query_with_limits("SELECT * FROM t", &[], expired),
+            Err(PvError::ResourceLimit(_))
+        ));
+
+        let mutation_limited = QueryLimits::new(3, usize::MAX, 100, None);
+        assert!(matches!(
+            db.query_with_limits("DELETE FROM t WHERE id >= 0", &[], mutation_limited),
+            Err(PvError::ResourceLimit(_))
+        ));
+        assert_eq!(db.row_count("t", None).unwrap(), 10);
     }
 }

@@ -89,6 +89,17 @@ impl Db {
     #[wasm_bindgen(js_name = openRemote)]
     pub fn open_remote(read: js_sys::Function, total_size: f64) -> Result<Db, JsValue> {
         console_error_panic_hook::set_once();
+        const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+        if !total_size.is_finite()
+            || total_size.fract() != 0.0
+            || total_size < crate::FILE_HEADER_SIZE as f64
+            || total_size > MAX_SAFE_INTEGER
+            || total_size > usize::MAX as f64
+        {
+            return Err(JsValue::from_str(
+                "totalSize must be a finite, exact, platform-sized byte length",
+            ));
+        }
         let reader = Box::new(JsRangeReader { read });
         Database::open_streamed(reader, total_size as u64)
             .map(|inner| Db { inner })
@@ -116,7 +127,14 @@ impl crate::storage::vle::RangeReader for JsRangeReader {
         let arr: js_sys::Uint8Array = res.dyn_into().map_err(|_| {
             crate::PvError::Corruption("range reader did not return a Uint8Array".into())
         })?;
-        Ok(arr.to_vec())
+        let bytes = arr.to_vec();
+        if bytes.len() != len {
+            return Err(crate::PvError::Corruption(format!(
+                "range reader returned {} bytes; expected {len}",
+                bytes.len()
+            )));
+        }
+        Ok(bytes)
     }
 }
 
