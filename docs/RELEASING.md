@@ -7,7 +7,8 @@ with patch releases as soon as a security or data-integrity fix is ready.
 
 1. Triage open regressions and update `CHANGELOG.md`.
 2. Run the complete Rust, WASM, Go, Python, npm, CLI, and benchmark smoke matrix.
-3. Confirm the package version is identical in Cargo, Python, npm, the Go module
+3. Confirm the committed root `Cargo.lock` is current and the package version is
+   identical in Cargo, Python, npm, the Go module
    tag, and native version output.
 4. Tag an annotated `vX.Y.Z` release.
 5. Verify crates.io, npm, PyPI, `proxy.golang.org`, native binaries, C ABI
@@ -55,6 +56,9 @@ registries and provenance-attested native artifacts have succeeded.
 Both workflows serialize runs per tag. Publishing steps detect immutable
 artifacts that already exist, so a rerun resumes safely; an unpublished crate
 with no Cargo credential is a failure, never a silent skip.
+The release compiler and `wasm-pack` version are pinned, Cargo commands use the
+committed lockfile, and build paths are remapped out of the npm WebAssembly
+binary so a pre-release package checksum can be reproduced on Linux.
 
 After public artifacts exist, the same checks can be reproduced locally (the Go
 native test currently requires Linux):

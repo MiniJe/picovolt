@@ -1,8 +1,11 @@
 # Rust build artifacts
 target/
 
-# Library crate: lockfile is not committed
+# PicoVolt also ships binaries and WebAssembly artifacts, so the root lockfile
+# is committed for reproducible releases. Nested example/fuzz lockfiles remain
+# local unless explicitly listed.
 Cargo.lock
+!/Cargo.lock
 
 # Editor backups
 **/*.rs.bk

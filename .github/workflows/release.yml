@@ -26,6 +26,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
+          toolchain: 1.98.1
           components: clippy, rustfmt
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -57,11 +58,11 @@ jobs:
           python -m unittest discover -s scripts/tests -v
           python scripts/check_registry_starters.py policy
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Test
-        run: cargo test --all-targets --all-features
+        run: cargo test --locked --all-targets --all-features
       - name: Build native C ABI for Go
-        run: cargo build --features capi
+        run: cargo build --locked --features capi
       - name: Test and vet the Go binding
         working-directory: bindings/go
         env:
@@ -73,15 +74,15 @@ jobs:
       - name: Extended crash/recovery soak
         env:
           PICOVOLT_CRASH_CYCLES: "1000"
-        run: cargo test --test crash_recovery randomized_cross_process_crashes_are_atomic
+        run: cargo test --locked --test crash_recovery randomized_cross_process_crashes_are_atomic
       - name: Doc tests
-        run: cargo test --doc
+        run: cargo test --locked --doc
       - name: API documentation
         env:
           RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --all-features --no-deps
+        run: cargo doc --locked --all-features --no-deps
       - name: Build wasm32
-        run: cargo build --lib --target wasm32-unknown-unknown --release --features wasm
+        run: cargo build --locked --lib --target wasm32-unknown-unknown --release --features wasm
       - name: Audit
         run: cargo audit
 
@@ -94,6 +95,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.98.1
       - name: cargo publish
         env:
           TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -113,8 +116,7 @@ jobs:
             echo "::error::CARGO_REGISTRY_TOKEN is required for an unpublished version"
             exit 1
           fi
-          # No --locked: Cargo.lock is intentionally not committed (library).
-          cargo publish --token "$TOKEN"
+          cargo publish --locked --token "$TOKEN"
 
   # 3. Build the wasm package and publish to npm through the package's trusted
   # publisher. OIDC avoids storing a long-lived npm credential in GitHub.
@@ -129,18 +131,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
+          toolchain: 1.98.1
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
-          tool: wasm-pack
+          tool: wasm-pack@0.15.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
       - name: Build npm package
-        run: wasm-pack build --target bundler --release --out-dir pkg -- --features wasm
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
+          export RUSTFLAGS="--remap-path-prefix=$GITHUB_WORKSPACE=/src/picovolt --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$rustup_home=/rustup"
+          wasm-pack build --target bundler --release --out-dir pkg -- --locked --features wasm
       - name: Add the better-sqlite3-inspired adapter to the package
         run: |
           cp bindings/js/sqlite.js pkg/sqlite.js
@@ -173,6 +182,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.98.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
@@ -261,6 +272,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
@@ -269,7 +282,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release --features "server capi" \
+          cargo build --locked --release --features "server capi" \
             --lib --bin pv --bin picovolt-server
           "target/release/pv${{ matrix.ext }}" --help
           mkdir -p dist

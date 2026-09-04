@@ -9,7 +9,7 @@ model hypothesis lives in [docs/MONETIZATION.md](docs/MONETIZATION.md).
 
 ## Where PicoVolt is now
 
-Version **1.7.0** is the current release. The engine
+Version **1.7.1** is the current release. The engine
 includes page-backed storage, MVCC time-travel queries, persisted secondary
 indexes, a stable 1.x file format, Rust/JavaScript/Python/Go/C bindings, a CLI,
 an optional bounded HTTP server, and a durable browser path using OPFS and a Web

@@ -21,7 +21,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: 1.86.0
-      - run: cargo check --all-features
+      - run: cargo check --locked --all-features
 
   test:
     name: test (${{ matrix.os }})
@@ -37,28 +37,28 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
       - name: Clippy (capi)
-        run: cargo clippy --all-targets --features capi -- -D warnings
+        run: cargo clippy --locked --all-targets --features capi -- -D warnings
       - name: Clippy + test (enterprise integration)
         run: |
-          cargo clippy --all-targets --features enterprise -- -D warnings
-          cargo test --all-targets --features enterprise
+          cargo clippy --locked --all-targets --features enterprise -- -D warnings
+          cargo test --locked --all-targets --features enterprise
       - name: Test
-        run: cargo test --all-targets
+        run: cargo test --locked --all-targets
       - name: Test (capi)
-        run: cargo test --all-targets --features capi
+        run: cargo test --locked --all-targets --features capi
       - name: Server build + clippy
         run: |
-          cargo clippy --features server --bin picovolt-server -- -D warnings
-          cargo build --features server --bin picovolt-server
+          cargo clippy --locked --features server --bin picovolt-server -- -D warnings
+          cargo build --locked --features server --bin picovolt-server
       - name: Doc tests
-        run: cargo test --doc
+        run: cargo test --locked --doc
       - name: API documentation
         if: runner.os == 'Linux'
         env:
           RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --all-features --no-deps
+        run: cargo doc --locked --all-features --no-deps
 
   fmt:
     name: rustfmt
@@ -98,7 +98,7 @@ jobs:
           go-version: ${{ matrix.go }}
           cache: false
       - name: Build native C ABI
-        run: cargo build --features capi
+        run: cargo build --locked --features capi
       - name: Test and vet the Go binding
         working-directory: bindings/go
         env:
@@ -117,7 +117,6 @@ jobs:
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
           tool: cargo-audit
-      - run: cargo generate-lockfile
       - run: cargo audit
 
   wasm:
@@ -131,16 +130,16 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
-          tool: wasm-pack
+          tool: wasm-pack@0.15.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           package-manager-cache: false
       - name: Build wasm32 with JS bindings
-        run: cargo build --target wasm32-unknown-unknown --features wasm
+        run: cargo build --locked --target wasm32-unknown-unknown --features wasm
       - name: Test prepared statements through the published JS surfaces
         run: |
-          wasm-pack build --target bundler --dev --out-dir pkg -- --features wasm
+          wasm-pack build --target bundler --dev --out-dir pkg -- --locked --features wasm
           cp bindings/js/sqlite.js pkg/sqlite.js
           cp bindings/js/browser.js pkg/browser.js
           cp bindings/js/worker.js pkg/worker.js

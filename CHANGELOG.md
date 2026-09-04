@@ -6,6 +6,8 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-09-04
+
 ### Changed
 
 - Refreshed project, format, security, benchmark, support, enterprise, and
@@ -15,6 +17,9 @@ All notable changes to PicoVolt are documented here. The format is based on
   starter to Vite 8 and refreshed Python packaging metadata and build tools.
 - Updated the direct Rust error dependency and pinned GitHub Actions to current
   immutable revisions backed by the Node 24 action runtime.
+- Committed the root dependency lockfile and pinned the release compiler and
+  WebAssembly packager so native, CLI, and npm artifacts can be rebuilt from the
+  same dependency graph.
 
 ### Fixed
 
@@ -612,7 +617,8 @@ runs both natively and in the browser through WebAssembly.
   test plus a `cargo-fuzz` crate), and `cargo audit` blocks vulnerability
   advisories. Both run in CI; non-blocking audit warnings are reviewed separately.
 
-[Unreleased]: https://github.com/MiniJe/picovolt/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/MiniJe/picovolt/compare/v1.7.1...HEAD
+[1.7.1]: https://github.com/MiniJe/picovolt/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/MiniJe/picovolt/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/MiniJe/picovolt/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/MiniJe/picovolt/compare/v1.4.0...v1.5.0
