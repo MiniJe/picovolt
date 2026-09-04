@@ -6,6 +6,11 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- Extended the bounded Go registry wait after the 1.8.0 proxy cached a missing
+  revision beyond twenty minutes; published versions and tags remain immutable.
+
 ## [1.8.0] - 2026-09-04
 
 ### Added

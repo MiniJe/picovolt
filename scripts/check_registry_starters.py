@@ -550,10 +550,11 @@ print(actual)
         "Go module",
         # proxy.golang.org can negatively cache the first lookup made just
         # before GitHub's new submodule tag has propagated. Its observed cache
-        # lifetime is longer than the default three-minute retry window.
-        attempts=40,
+        # lifetime also exceeded twenty minutes during the 1.8.0 release.
+        # Keep a finite forty-minute budget; never bypass registry verification.
+        attempts=80,
         delay=30,
-        max_elapsed=1200,
+        max_elapsed=2400,
     )
     details = _run(["go", "list", "-m", "-json", GO_MODULE], cwd=starter, env=env, capture=True)
     resolved = json.loads(details.stdout)

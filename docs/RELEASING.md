@@ -50,6 +50,12 @@ registries. The main release workflow waits for that exact tag workflow as well
 as its crates.io/npm gate before it creates the GitHub Release. A failed or
 missing registry therefore cannot leave a nominally complete GitHub Release.
 
+The Go proxy can cache a missing revision even after its tag is visible on
+GitHub. The next-release workflow allows a bounded forty-minute download retry
+window, with fifty minutes for the containing install job and sixty minutes for
+the release's dependent gate. A timeout remains a failure; rerun only failed
+jobs once the proxy has caught up. Never move a published tag to clear a cache.
+
 The smoke runner starts each package manager with an allowlisted environment:
 local registry/proxy settings, language search paths, dynamic-loader overrides,
 and inherited credentials are removed. Ignored build output is also excluded
