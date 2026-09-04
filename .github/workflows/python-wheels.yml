@@ -248,6 +248,7 @@ jobs:
     name: registry starters (PyPI + Go proxy)
     needs: publish-go-module
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -257,6 +258,9 @@ jobs:
         with:
           go-version: "1.27.x"
           cache: false
+      - name: Allow the new tag to reach the public Go proxy
+        shell: bash
+        run: sleep 60
       - name: Copy, install, and run the published starters
         run: >-
           python scripts/check_registry_starters.py run

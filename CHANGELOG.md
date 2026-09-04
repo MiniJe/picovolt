@@ -6,6 +6,11 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- Made the Go registry smoke gate tolerate the public proxy's bounded negative
+  cache after a new submodule tag is created.
+
 ## [1.7.1] - 2026-09-04
 
 ### Changed
