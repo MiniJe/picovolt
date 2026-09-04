@@ -2,6 +2,7 @@
 
 use picovolt::{Database, PvError, QueryResult, Value};
 use serde_json::{Map, Value as JsonValue};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -31,6 +32,7 @@ fn run(args: Vec<String>) -> CliResult<()> {
             Ok(())
         }
         Some("history") if args.len() >= 2 => history_command(&args[1..]),
+        Some("diff") => diff_command(&args[1..]),
         Some("bake") if args.len() == 3 => {
             let mut db = Database::open_dev(&args[1])?;
             db.bake(&args[2])?;
@@ -47,6 +49,163 @@ fn run(args: Vec<String>) -> CliResult<()> {
             Err(format!("unknown or incomplete command `{command}`; run `pv help`").into())
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChangeKind {
+    Removed,
+    Added,
+}
+
+impl ChangeKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Removed => "removed",
+            Self::Added => "added",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RowChange {
+    kind: ChangeKind,
+    row: Vec<Value>,
+}
+
+fn diff_command(args: &[String]) -> CliResult<()> {
+    if args.len() < 2 {
+        return Err(
+            "usage: pv diff <database> <table> --from <tx> --to <tx> [--format csv|jsonl]".into(),
+        );
+    }
+
+    let from = parse_tx_option(args, "--from")?;
+    let to = parse_tx_option(args, "--to")?;
+    let format = option(args, "--format")
+        .unwrap_or("csv")
+        .to_ascii_lowercase();
+    let db = open_database(&args[0])?;
+    let (columns, changes) = snapshot_diff(&db, &args[1], from, to)?;
+
+    let mut out = BufWriter::new(std::io::stdout().lock());
+    match format.as_str() {
+        "csv" => write_diff_csv(&mut out, &columns, &changes)?,
+        "json" | "jsonl" | "ndjson" => write_diff_jsonl(&mut out, &columns, &changes)?,
+        _ => return Err(format!("unsupported diff format `{format}`").into()),
+    }
+    out.flush()?;
+    Ok(())
+}
+
+fn parse_tx_option(args: &[String], name: &str) -> CliResult<u64> {
+    let value = required_option(args, name)?;
+    value.parse().map_err(|_| {
+        format!("`{name}` must be a non-negative transaction id; got `{value}`").into()
+    })
+}
+
+fn snapshot_diff(
+    db: &Database,
+    table: &str,
+    from: u64,
+    to: u64,
+) -> CliResult<(Vec<String>, Vec<RowChange>)> {
+    if from > to {
+        return Err(
+            format!("`--from` transaction {from} is later than `--to` transaction {to}").into(),
+        );
+    }
+    let current = db.current_tx();
+    if to > current {
+        return Err(format!(
+            "`--to` transaction {to} is later than the database's current transaction {current}"
+        )
+        .into());
+    }
+
+    let (from_columns, from_rows) = db.select(table, Some(from))?;
+    let (to_columns, to_rows) = db.select(table, Some(to))?;
+    if from_columns != to_columns {
+        return Err("table schema differs between the requested snapshots".into());
+    }
+
+    let from_counts = row_counts(from_rows);
+    let to_counts = row_counts(to_rows);
+    let mut changes = Vec::new();
+    for (row, from_count) in &from_counts {
+        let removed = from_count.saturating_sub(to_counts.get(row).copied().unwrap_or(0));
+        changes.extend((0..removed).map(|_| RowChange {
+            kind: ChangeKind::Removed,
+            row: row.clone(),
+        }));
+    }
+    for (row, to_count) in &to_counts {
+        let added = to_count.saturating_sub(from_counts.get(row).copied().unwrap_or(0));
+        changes.extend((0..added).map(|_| RowChange {
+            kind: ChangeKind::Added,
+            row: row.clone(),
+        }));
+    }
+
+    Ok((from_columns, changes))
+}
+
+fn row_counts(rows: Vec<Vec<Value>>) -> BTreeMap<Vec<Value>, usize> {
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        *counts.entry(row).or_default() += 1;
+    }
+    counts
+}
+
+fn write_diff_csv(
+    out: &mut impl Write,
+    columns: &[String],
+    changes: &[RowChange],
+) -> CliResult<()> {
+    writeln!(
+        out,
+        "_change,{}",
+        columns
+            .iter()
+            .map(|column| csv_escape(column))
+            .collect::<Vec<_>>()
+            .join(",")
+    )?;
+    for change in changes {
+        writeln!(
+            out,
+            "{},{}",
+            change.kind.as_str(),
+            change
+                .row
+                .iter()
+                .map(value_to_csv)
+                .collect::<Vec<_>>()
+                .join(",")
+        )?;
+    }
+    Ok(())
+}
+
+fn write_diff_jsonl(
+    out: &mut impl Write,
+    columns: &[String],
+    changes: &[RowChange],
+) -> CliResult<()> {
+    for change in changes {
+        let row: Map<String, JsonValue> = columns
+            .iter()
+            .cloned()
+            .zip(change.row.iter().map(value_to_json))
+            .collect();
+        let mut object = Map::new();
+        object.insert("change".into(), JsonValue::from(change.kind.as_str()));
+        object.insert("row".into(), JsonValue::Object(row));
+        serde_json::to_writer(&mut *out, &JsonValue::Object(object))?;
+        writeln!(out)?;
+    }
+    Ok(())
 }
 
 fn history_command(args: &[String]) -> CliResult<()> {
@@ -373,6 +532,7 @@ fn print_help() {
     println!("  pv query <database> <sql>");
     println!("  pv inspect <database>");
     println!("  pv history <database> [--table name] [--limit transactions]");
+    println!("  pv diff <database> <table> --from <tx> --to <tx> [--format csv|jsonl]");
     println!("  pv bake <workspace> <output.pvdb>");
     println!("  pv import <workspace> <input> [--table name] [--format csv|jsonl|sql]");
     println!("  pv export <database> <table> <output> [--format csv|jsonl]");
@@ -422,5 +582,99 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history.last().unwrap().2, 2);
         assert!(history[0].2 <= history[1].2);
+    }
+
+    #[test]
+    fn snapshot_diff_reports_deterministic_row_changes() {
+        let mut db = Database::open_memory();
+        db.query("CREATE TABLE tasks (id PRIMARY KEY, status)")
+            .unwrap();
+        db.query("INSERT INTO tasks VALUES (1, 'open'), (2, 'open')")
+            .unwrap();
+        let from = db.current_tx();
+        db.query("UPDATE tasks SET status = 'done' WHERE id = 1")
+            .unwrap();
+        db.query("DELETE FROM tasks WHERE id = 2").unwrap();
+        db.query("INSERT INTO tasks VALUES (3, 'open')").unwrap();
+        let to = db.current_tx();
+
+        let (columns, changes) = snapshot_diff(&db, "tasks", from, to).unwrap();
+        assert_eq!(columns, ["id", "status"]);
+        assert_eq!(
+            changes,
+            [
+                RowChange {
+                    kind: ChangeKind::Removed,
+                    row: vec![Value::Int(1), Value::Text("open".into())],
+                },
+                RowChange {
+                    kind: ChangeKind::Removed,
+                    row: vec![Value::Int(2), Value::Text("open".into())],
+                },
+                RowChange {
+                    kind: ChangeKind::Added,
+                    row: vec![Value::Int(1), Value::Text("done".into())],
+                },
+                RowChange {
+                    kind: ChangeKind::Added,
+                    row: vec![Value::Int(3), Value::Text("open".into())],
+                },
+            ]
+        );
+
+        let mut csv = Vec::new();
+        write_diff_csv(&mut csv, &columns, &changes).unwrap();
+        assert_eq!(
+            String::from_utf8(csv).unwrap(),
+            "_change,id,status\nremoved,1,open\nremoved,2,open\nadded,1,done\nadded,3,open\n"
+        );
+    }
+
+    #[test]
+    fn snapshot_diff_preserves_duplicate_multiplicity() {
+        let mut db = Database::open_memory();
+        db.query("CREATE TABLE events (kind)").unwrap();
+        db.query("INSERT INTO events VALUES ('same'), ('same')")
+            .unwrap();
+        let from = db.current_tx();
+        db.query("INSERT INTO events VALUES ('same')").unwrap();
+        let to = db.current_tx();
+
+        let (_, changes) = snapshot_diff(&db, "events", from, to).unwrap();
+        assert_eq!(
+            changes,
+            [RowChange {
+                kind: ChangeKind::Added,
+                row: vec![Value::Text("same".into())],
+            }]
+        );
+        assert!(snapshot_diff(&db, "events", to, to).unwrap().1.is_empty());
+    }
+
+    #[test]
+    fn snapshot_diff_validates_transaction_range_and_json_shape() {
+        let mut db = Database::open_memory();
+        db.query("CREATE TABLE events (id, payload)").unwrap();
+        let from = db.current_tx();
+        db.query("INSERT INTO events VALUES (1, 'created')")
+            .unwrap();
+        let to = db.current_tx();
+
+        assert!(snapshot_diff(&db, "events", to, from)
+            .unwrap_err()
+            .to_string()
+            .contains("later than"));
+        assert!(snapshot_diff(&db, "events", from, to + 1)
+            .unwrap_err()
+            .to_string()
+            .contains("current transaction"));
+
+        let (columns, changes) = snapshot_diff(&db, "events", from, to).unwrap();
+        let mut jsonl = Vec::new();
+        write_diff_jsonl(&mut jsonl, &columns, &changes).unwrap();
+        assert_eq!(
+            String::from_utf8(jsonl).unwrap(),
+            "{\"change\":\"added\",\"row\":{\"id\":1,\"payload\":\"created\"}}\n"
+        );
     }
 }

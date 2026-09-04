@@ -112,9 +112,20 @@ cargo run --release --example bench    # evaluation harness across modes and wor
 ```
 
 Install the first-class CLI with `cargo install picovolt`, then use `pv query`,
-`pv inspect`, `pv history`, `pv import`, `pv export`, and `pv bake`. Copyable
-Rust, Python, Go, Node, and browser projects are in [`starters/`](starters/README.md); supported adapters
-are catalogued in [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
+`pv inspect`, `pv history`, `pv diff`, `pv import`, `pv export`, and `pv bake`.
+Compare two MVCC snapshots with:
+
+```sh
+pv diff ./data users --from 42 --to 57
+pv diff ./data users --from 42 --to 57 --format jsonl
+```
+
+CSV is the default and identifies each row with an `_change` column. JSONL uses
+`{"change":"added|removed","row":{...}}`. The diff is deterministic and
+duplicate-aware; an update is represented as a removed row followed by an added
+row. Copyable Rust, Python, Go, Node, and browser projects are in
+[`starters/`](starters/README.md); supported adapters are catalogued in
+[`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
 
 SQL supports the normal PicoVolt CRUD and schema statements plus projection,
 filters, aggregates, grouping, time travel, ordering, and pagination. The

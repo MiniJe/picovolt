@@ -160,8 +160,8 @@ until users explicitly ask for product telemetry.
 
 1. Publish one reproducible 1.7 compatibility report across Rust, browser,
    Node, Python, Go, and C, then recruit applications against the measured gaps.
-2. Add Parquet and direct binary SQLite import, then a row-level `pv diff`
-   command as the first 1.8 data-movement slice.
+2. Complete Parquet and direct binary SQLite import; the row-level `pv diff`
+   command is now the first implemented 1.8 data-movement slice.
 3. Add `EXPLAIN` and expand `pv inspect` with page, index, compression, and
    manifest statistics before attempting optimizer work.
 4. Publish the starters as standalone templates and measure clean installs and

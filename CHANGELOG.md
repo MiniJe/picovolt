@@ -6,6 +6,11 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- Added `pv diff <database> <table> --from <tx> --to <tx>` for deterministic,
+  duplicate-aware row changes between MVCC snapshots, with CSV and JSONL output.
+
 ### Fixed
 
 - Made the Go registry smoke gate tolerate the public proxy's bounded negative

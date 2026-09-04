@@ -80,7 +80,8 @@ engine stored and why a query used a particular path.
 Planned scope:
 
 - Parquet import/export and direct binary SQLite import;
-- `pv diff` for row-level changes between MVCC snapshots;
+- `pv diff` for row-level changes between MVCC snapshots (implemented for the
+  upcoming release with deterministic CSV/JSONL output and multiset semantics);
 - `EXPLAIN` output for scans, indexes, joins, sorting, and limits;
 - manifest, page, index, and compression statistics in `pv inspect`;
 - a documented, resumable pipeline for baking large production images;
