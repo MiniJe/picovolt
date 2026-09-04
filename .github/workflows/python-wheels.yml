@@ -73,8 +73,8 @@ jobs:
             target/aarch64-apple-darwin/release/libpicovolt.dylib \
             target/x86_64-apple-darwin/release/libpicovolt.dylib \
             -output target/release/libpicovolt.dylib
-          lipo -verify_arch arm64 x86_64 target/release/libpicovolt.dylib
-          lipo -info target/release/libpicovolt.dylib
+          lipo target/release/libpicovolt.dylib -verify_arch arm64 x86_64
+          lipo target/release/libpicovolt.dylib -info
 
       - name: Bundle the library into the package
         shell: bash
