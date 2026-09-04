@@ -18,6 +18,13 @@ with patch releases as soon as a security or data-integrity fix is ready.
 Release candidates may be published one week earlier for format or API changes.
 Published `.pvdb` format compatibility is covered by the golden fixture suite.
 
+The 1.8 native binaries include `data-tools` (Parquet, SQLite, and dataset
+signing). Source installs opt in with `cargo install picovolt --features
+data-tools`; npm and Python do not bundle these CLI dependencies. Release
+verification runs `cargo test --locked --all-targets --all-features`, including
+the public-dataset differential gate and corruption/resume/signature checks in
+`tests/data_movement.rs` and `tests/data_inspection.rs`.
+
 ## Registry-only starter gate
 
 Every pull request checks that the Rust, Node, browser, Python, and Go starters

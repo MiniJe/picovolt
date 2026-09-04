@@ -282,7 +282,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --locked --release --features "server capi" \
+          cargo build --locked --release --features "server capi data-tools" \
             --lib --bin pv --bin picovolt-server
           "target/release/pv${{ matrix.ext }}" --help
           mkdir -p dist
@@ -320,7 +320,7 @@ jobs:
 
           # cargo-cyclonedx appends the selected format extension even when the
           # filename is overridden, so omit the trailing `.json` here.
-          cargo cyclonedx --format json --override-filename "picovolt-${{ matrix.label }}.cdx"
+          cargo cyclonedx --all-features --format json --override-filename "picovolt-${{ matrix.label }}.cdx"
           test -f "picovolt-${{ matrix.label }}.cdx.json"
           mv "picovolt-${{ matrix.label }}.cdx.json" dist/
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

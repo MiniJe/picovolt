@@ -83,9 +83,9 @@ pub use crate::core::types::*;
 pub use crate::core::value::{Row, Value};
 #[doc(inline)]
 pub use crate::db::{
-    pv_bake, pv_open_dev, pv_open_prod, Database, Durability, PreparedStatement, QueryLimits,
-    QueryResult, MANIFEST_FILE, TRANSACTION_BACKUP_DIR, TRANSACTION_LOCK_FILE,
-    TRANSACTION_MARKER_FILE,
+    pv_bake, pv_open_dev, pv_open_prod, BufferPoolStats, CasStats, CompressionStats, Database,
+    DatabaseStats, Durability, IndexStats, PreparedStatement, QueryLimits, QueryResult, TableStats,
+    MANIFEST_FILE, TRANSACTION_BACKUP_DIR, TRANSACTION_LOCK_FILE, TRANSACTION_MARKER_FILE,
 };
 #[doc(inline)]
 pub use crate::engine::compliance::{ComplianceMonitor, RuntimeMetrics};

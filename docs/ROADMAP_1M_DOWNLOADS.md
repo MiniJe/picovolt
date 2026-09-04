@@ -73,8 +73,8 @@ first query through every maintained package surface.
 ### P1 — Cut time-to-first-value below five minutes
 
 1. CSV and newline-delimited JSON import/export plus SQLite SQL-dump import are
-   shipped. Parquet and direct binary SQLite movement remain 1.8 work because
-   data movement unlocks real trials faster than more SQL syntax alone.
+   shipped. Version 1.8 adds Parquet and direct binary SQLite movement, with
+   [documented conversions and limits](DATA_TOOLS.md), to support real-data trials.
 2. Five maintained starter projects—browser + Vite, Node, Python, Go, and
    Rust CLI—now run clean first queries against public packages. Dataset-backed
    `BEFORE tx` walkthroughs remain an adoption task.
@@ -160,10 +160,10 @@ until users explicitly ask for product telemetry.
 
 1. Publish one reproducible 1.7 compatibility report across Rust, browser,
    Node, Python, Go, and C, then recruit applications against the measured gaps.
-2. Add Parquet and direct binary SQLite import, then a row-level `pv diff`
-   command as the first 1.8 data-movement slice.
-3. Add `EXPLAIN` and expand `pv inspect` with page, index, compression, and
-   manifest statistics before attempting optimizer work.
+2. Recruit real-data trials for the completed 1.8 Parquet, SQLite, and snapshot
+   diff tools; prioritize missing conversions from concrete datasets.
+3. Use the new `EXPLAIN` and `pv inspect` metrics to establish baseline plans
+   and performance budgets before 1.9 optimizer work.
 4. Publish the starters as standalone templates and measure clean installs and
    completed first queries.
 5. Start the public weekly adoption dashboard and recruit the first three

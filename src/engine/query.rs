@@ -16,6 +16,11 @@ use serde::{Deserialize, Serialize};
 /// A parsed statement.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
+    /// `EXPLAIN SELECT ...`: describe the read plan without executing it.
+    Explain {
+        /// The read statement whose physical path should be described.
+        statement: Box<Statement>,
+    },
     /// `BEGIN [TRANSACTION]`
     Begin,
     /// `COMMIT [TRANSACTION]`
@@ -934,6 +939,21 @@ pub fn parse(sql: &str) -> Result<Statement> {
     let mut cur = Cursor::new(tokenize(sql)?, sql);
     let at = cur.here();
     let stmt = match cur.next()? {
+        Tok::Word(w) if w.eq_ignore_ascii_case("explain") => {
+            let explained_at = cur.here();
+            let explained = match cur.next()? {
+                Tok::Word(w) if w.eq_ignore_ascii_case("select") => parse_select(&mut cur)?,
+                other => {
+                    return Err(cur.err_at(
+                        explained_at,
+                        format!("EXPLAIN requires SELECT, found {other:?}"),
+                    ))
+                }
+            };
+            Statement::Explain {
+                statement: Box::new(explained),
+            }
+        }
         Tok::Word(w) if w.eq_ignore_ascii_case("begin") => {
             consume_optional_transaction(&mut cur);
             Statement::Begin

@@ -1,6 +1,6 @@
 [package]
 name = "picovolt"
-version = "1.7.1"
+version = "1.8.0"
 edition = "2021"
 rust-version = "1.86"
 description = "Embedded SQL database with MVCC history and single-file deployment"
@@ -31,6 +31,8 @@ name = "pv"
 path = "src/bin/pv.rs"
 
 [features]
+# Optional native CLI conversion and signed artifact distribution.
+data-tools = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema", "dep:rusqlite", "dep:ed25519-dalek", "dep:getrandom", "dep:zeroize"]
 # Enable the JavaScript/npm bindings (build for wasm32 with wasm-pack).
 wasm = ["dep:wasm-bindgen", "dep:console_error_panic_hook", "dep:js-sys"]
 # Enable the C ABI for native FFI bindings (Go/cgo, Python/ctypes, C). Build a
@@ -60,6 +62,13 @@ tiny_http = { version = "0.12", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 fs2 = "0.4"
+parquet = { version = "59.3", default-features = false, features = ["arrow", "snap", "zstd", "flate2-zlib-rs"], optional = true }
+arrow-array = { version = "59.3", optional = true }
+arrow-schema = { version = "59.3", optional = true }
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"], optional = true }
+ed25519-dalek = { version = "3", optional = true }
+getrandom = { version = "0.4", optional = true }
+zeroize = { version = "1", optional = true }
 
 [dev-dependencies]
 wat = "1"
