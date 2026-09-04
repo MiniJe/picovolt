@@ -31,10 +31,10 @@ dist/
 # Local Claude Code tooling
 /.claude/
 
-# Secrets that must never be committed (recovery codes, tokens, ...)
-npm_recovery_codes.txt
-*recovery_codes*
+# Local credentials and secret material
+*.credentials
 *.secret
+*.token
 
 # Python binding cache and build artifacts
 __pycache__/
