@@ -51,7 +51,12 @@ jobs:
       - name: Run bounded fuzz shard
         env:
           FUZZ_SECONDS: ${{ inputs.fuzz_seconds || '180' }}
-        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time="$FUZZ_SECONDS" -rss_limit_mb=2048
+        # cargo-fuzz otherwise defaults to musl on Linux, which is incompatible
+        # with the address sanitizer because musl is linked statically.
+        run: >-
+          cargo fuzz run ${{ matrix.target }}
+          --target x86_64-unknown-linux-gnu --
+          -max_total_time="$FUZZ_SECONDS" -rss_limit_mb=2048
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
