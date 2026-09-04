@@ -9,7 +9,7 @@ Enable it with:
 
 ```toml
 [dependencies]
-picovolt = { version = "1.6", features = ["enterprise"] }
+picovolt = { version = "1.7", features = ["enterprise"] }
 ```
 
 ## What 1.6 provides

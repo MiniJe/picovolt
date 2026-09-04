@@ -47,7 +47,7 @@ and builds on its public surface:
 
 ```toml
 [dependencies]
-picovolt = "1.6"
+picovolt = "1.7"
 ```
 
 The types intended for building on are re-exported at the crate root:

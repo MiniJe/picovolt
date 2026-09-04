@@ -6,6 +6,8 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-09-04
+
 ### Added
 
 - Application-compatible table aliases and left-deep N-table equality
@@ -574,7 +576,8 @@ runs both natively and in the browser through WebAssembly.
   test plus a `cargo-fuzz` crate), and `cargo audit` blocks vulnerability
   advisories. Both run in CI; non-blocking audit warnings are reviewed separately.
 
-[Unreleased]: https://github.com/MiniJe/picovolt/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/MiniJe/picovolt/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/MiniJe/picovolt/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/MiniJe/picovolt/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/MiniJe/picovolt/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/MiniJe/picovolt/compare/v1.3.0...v1.4.0

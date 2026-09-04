@@ -100,7 +100,7 @@ fn string_to_c(s: String) -> *mut c_char {
     }
 }
 
-/// The PicoVolt library version, e.g. `"1.6.0"`, as a static NUL-terminated
+/// The PicoVolt library version, e.g. `"1.7.0"`, as a static NUL-terminated
 /// string. Never NULL; do not free.
 #[no_mangle]
 pub extern "C" fn pv_version() -> *const c_char {

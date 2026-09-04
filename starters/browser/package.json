@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": { "dev": "vite --open", "build": "vite build", "preview": "vite preview --open" },
-  "dependencies": { "picovolt": "1.6.0" },
+  "dependencies": { "picovolt": "1.7.0" },
   "devDependencies": { "vite": "^7.3.6", "vite-plugin-wasm": "^3.6.0" }
 }

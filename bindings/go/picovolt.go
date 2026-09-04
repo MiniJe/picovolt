@@ -46,7 +46,7 @@ type Stmt struct {
 // fallible wrappers below pin the goroutine with runtime.LockOSThread for the
 // whole call-plus-read window so both transitions hit the same OS thread.
 
-// Version returns the PicoVolt library version, e.g. "1.6.0".
+// Version returns the PicoVolt library version, e.g. "1.7.0".
 func Version() string {
 	return C.GoString(C.pv_version())
 }

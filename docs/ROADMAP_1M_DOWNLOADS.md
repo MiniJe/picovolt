@@ -62,7 +62,7 @@ These are release blockers, not optional marketing work.
    environments. A workflow that silently skipped a registry must fail visibly.
 5. Publish a support matrix for OS, CPU, runtime, and file-format compatibility.
 
-Current status (2026-09-04): version 1.6.0 is live on crates.io, npm, and PyPI.
+Current status (2026-09-04): version 1.7.0 is the current registry release.
 The trusted-publishing identities are configured, the native SBOM filename issue
 is fixed, and clean-room Cargo, npm, PyPI, and native CLI smoke checks are part of
 the release workflows. The support matrix lives in [`SUPPORT.md`](SUPPORT.md).
@@ -96,14 +96,14 @@ Implement in this order:
 1. Explicit `BEGIN`, `COMMIT`, and `ROLLBACK` across every binding. **Shipped on
    main for 1.6.0.**
 2. N-table equality `INNER JOIN` and `LEFT JOIN`, aliases, self-joins, and joined
-   grouping. **Built on main for 1.7.0; planner/index optimization remains 1.9
+   grouping. **Shipped in 1.7.0; planner/index optimization remains 1.9
    work.**
 3. Primary-key, unique, not-null, default, and check constraints with atomic,
-   actionable failures. **Built through 1.7.0.**
-4. Reusable prepared-statement objects in every maintained binding. **Built on
-   main for 1.7.0.**
+   actionable failures. **Shipped through 1.7.0.**
+4. Reusable prepared-statement objects in every maintained binding. **Shipped
+   in 1.7.0.**
 5. `OFFSET`, searched `CASE`, common scalar functions, named-column inserts, and
-   schema-light type declarations. **Built through 1.7.0.**
+   schema-light type declarations. **Shipped through 1.7.0.**
 
 These features should be driven by failing compatibility tests copied from the
 starter applications. Broad SQL surface area that no onboarding path needs stays
@@ -160,8 +160,8 @@ until users explicitly ask for product telemetry.
 
 ## Immediate next sprint
 
-1. Finish the 1.7 public-registry starter gate and publish one reproducible
-   compatibility report across Rust, browser, Node, Python, Go, and C.
+1. Publish one reproducible 1.7 compatibility report across Rust, browser,
+   Node, Python, Go, and C, then recruit applications against the measured gaps.
 2. Add Parquet and direct binary SQLite import, then a row-level `pv diff`
    command as the first 1.8 data-movement slice.
 3. Add `EXPLAIN` and expand `pv inspect` with page, index, compression, and

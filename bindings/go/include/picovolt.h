@@ -32,7 +32,7 @@ typedef struct PvDb PvDb;
 /* Opaque reusable statement. Allocate with pv_prepare, free with pv_stmt_close. */
 typedef struct PvStmt PvStmt;
 
-/* Library version, e.g. "1.6.0". Static; never NULL; do not free. */
+/* Library version, e.g. "1.7.0". Static; never NULL; do not free. */
 const char *pv_version(void);
 
 /*

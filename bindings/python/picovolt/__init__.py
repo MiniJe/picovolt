@@ -36,7 +36,7 @@ __all__ = [
     "version",
     "__version__",
 ]
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 
 
 class PicoVoltError(RuntimeError):
@@ -125,7 +125,7 @@ _lib.pv_close.argtypes = [c_void_p]
 
 
 def version() -> str:
-    """Return the PicoVolt library version, e.g. ``"1.6.0"``."""
+    """Return the PicoVolt library version, e.g. ``"1.7.0"``."""
     return _lib.pv_version().decode("utf-8")
 
 

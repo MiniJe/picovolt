@@ -9,8 +9,7 @@ model hypothesis lives in [docs/MONETIZATION.md](docs/MONETIZATION.md).
 
 ## Where PicoVolt is now
 
-Version **1.6.0** is published on crates.io, npm, and PyPI; **1.7.0** is being
-built on main. The current engine
+Version **1.7.0** is the current release. The engine
 includes page-backed storage, MVCC time-travel queries, persisted secondary
 indexes, a stable 1.x file format, Rust/JavaScript/Python/Go/C bindings, a CLI,
 an optional bounded HTTP server, and a durable browser path using OPFS and a Web
@@ -27,7 +26,7 @@ PicoVolt is still deliberately narrow:
 
 Those constraints determine the order below.
 
-## 1.6 — Crash-safe transactions (built on main)
+## 1.6 — Crash-safe transactions (shipped)
 
 **Outcome:** an application can group filesystem writes and trust that an
 interrupted commit is either fully visible or not visible at all.
@@ -48,7 +47,7 @@ that bypass destructors after dirty-page sync, plus automatic opening of every
 checked-in historical `.pvdb` image. A longer soak can be run with
 `PICOVOLT_CRASH_CYCLES=1000 cargo test --test crash_recovery -- --nocapture`.
 
-## 1.7 — Application compatibility (built on main)
+## 1.7 — Application compatibility (shipped)
 
 **Outcome:** common small applications can switch their storage adapter without
 rewriting normal query and schema code.
