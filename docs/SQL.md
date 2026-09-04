@@ -19,10 +19,16 @@ used by the Rust, JavaScript, Python, Go, C, CLI, and HTTP surfaces.
   filtering, grouping, time travel, ordering, and pagination
 - `BEGIN`, `COMMIT`, and `ROLLBACK` on stateful database handles
 - `EXPLAIN SELECT ...` returns `step`, `operation`, and `detail` columns without
-  scanning rows; see [Data tools](DATA_TOOLS.md) for interpretation and limits
+  scanning rows. Indexed equality joins are shown as adaptive: execution probes
+  once per distinct left key when the estimate favors it and otherwise builds a
+  right-side map. See [Data tools](DATA_TOOLS.md) for interpretation and limits
 
 Positional `?` parameters work through the parameterized and prepared-statement
 APIs. Parameters represent values, not table or column names.
+
+Identifiers may be bare words or delimited with SQL double quotes, SQLite-style
+backticks, or square brackets. Delimit names that contain punctuation, spaces,
+or SQL keywords; doubled closing delimiters represent a literal delimiter.
 
 ## Schema, defaults, and checks
 
@@ -252,8 +258,8 @@ magnitude in predicates, joins, and numeric aggregates.
   `CASE value WHEN ...` is unsupported.
 - Qualified wildcards such as `u.*`, subqueries, common table expressions,
   `UNION`, window functions, and arithmetic expressions are unsupported.
-- Identifiers are bare words containing letters, numbers, or `_`; quoted
-  identifiers are unsupported.
+- Bare identifiers contain letters, numbers, or `_`. Use `"name"`, `` `name` ``,
+  or `[name]` for punctuation, spaces, or a name that is also a SQL keyword.
 Parser errors identify the line and column and draw a caret under the offending
 token. Missing or ambiguous columns, duplicate table qualifiers, unsupported
 join types, and unsupported scalar functions produce explicit errors. Unsupported

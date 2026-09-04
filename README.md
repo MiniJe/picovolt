@@ -22,8 +22,9 @@ Virtualization Layer Engine (VLE) that shifts between two on-disk shapes:
 - **Production mode:** a single contiguous, memory-mappable `.pvdb` file produced
   by `pv_bake()`.
 
-New records use a slotted row layout for O(1) appends. Idle pages can be
-transposed into a packed columnar layout for compression and cache efficiency.
+New records use a slotted row layout for O(1) appends. Applications can run
+bounded maintenance steps that transpose immutable non-tail pages into an
+MVCC-preserving columnar layout with packed decimal encoding.
 
 ## Status
 
@@ -54,6 +55,7 @@ warning-free Clippy builds on Linux and Windows. Shipped changes are tracked in
 | [`engine/compliance.rs`](src/engine/compliance.rs) | optional, app-driven usage-policy hook (not a license requirement) |
 | [`enterprise.rs`](src/enterprise.rs) | optional, host-owned audit events and honest capability discovery for fleet integrations |
 | [`db.rs`](src/db.rs) | the `Database` surface that ties it together |
+| [`upgrade.rs`](src/upgrade.rs) | out-of-place format migration with backup and deep verification |
 | [`ffi.rs`](src/ffi.rs) | C ABI (the `capi` feature): a panic-safe, C-callable surface wrapping the engine for Go, Python, and C bindings |
 
 ### Engineering notes
@@ -69,13 +71,14 @@ warning-free Clippy builds on Linux and Windows. Shipped changes are tracked in
   differential test checks `pv-wasm` against `wasmi` to keep it honest. Floats,
   tables, globals, imports, SIMD, and `br_table` are out of scope for `pv-wasm`
   and are rejected rather than mis-run.
-- **Page-backed engine.** Tables are append-only chains of row pages, each header
-  linking to the next. Inserts append to a tail page and write only that page
-  plus an O(tables) manifest, so autocommit is O(1) per insert rather than a
-  whole-table rewrite. Reads stream through a bounded buffer pool
-  ([`storage/cache.rs`](src/storage/cache.rs)), so datasets need not fit in RAM,
-  and opt-in ordered indexes ([`storage/index.rs`](src/storage/index.rs)) turn
-  `WHERE col = value` into a point lookup and range comparisons such as
+- **Page-backed engine.** Tables are append-only chains of hot row pages and
+  optional packed cold pages, each header linking to the next. Inserts append to
+  a row tail and write only that page plus an O(tables) manifest, so autocommit
+  is O(1) per insert rather than a whole-table rewrite. Reads stream through a
+  bounded buffer pool ([`storage/cache.rs`](src/storage/cache.rs)), so datasets
+  need not fit in RAM, and opt-in ordered indexes
+  ([`storage/index.rs`](src/storage/index.rs)) turn `WHERE col = value` into a
+  point lookup and range comparisons such as
   `WHERE col > v` into an ordered scan rather than a full scan.
 - **Selectable durability.** `Database::set_durability(Durability::Sync)` makes
   each flush `fsync` the data and commit the manifest atomically (write to a temp
@@ -112,7 +115,8 @@ cargo run --release --example bench    # evaluation harness across modes and wor
 ```
 
 Install the full CLI with `cargo install picovolt --features data-tools`, then use `pv query`,
-`pv inspect`, `pv history`, `pv diff`, `pv import`, `pv export`, and `pv bake`.
+`pv inspect`, `pv history`, `pv diff`, `pv migrate`, `pv compact`, `pv import`,
+`pv export`, and `pv bake`.
 Parquet/SQLite conversion, query explanations, inspection, resumable baking,
 and dataset signing are documented in [Data tools](docs/DATA_TOOLS.md).
 
@@ -152,10 +156,36 @@ around 33k rows/s, linear), larger-than-RAM reads through a bounded buffer pool 
 667-page dataset serves from a 16-page pool), ordered secondary indexes (point
 lookups roughly 6,100 times faster than a scan, plus range predicates), MVCC
 time-travel, opt-in crash-safe durability (`Durability::Sync`), and a fast
-compile-and-publish path (CAS dedup, columnar compression, memory-mappable
-single-file artifacts). Current limits include full-workspace transaction
-backups rather than an incremental WAL, left-deep equality joins rather than a
-general SQL planner, and no concurrent writers.
+compile-and-publish path (CAS dedup, cooperative columnar compression,
+memory-mappable single-file artifacts). Current limits include full-workspace
+transaction backups rather than an incremental WAL, adaptive index access within
+a left-deep equality-join plan rather than a general SQL planner, and no
+concurrent writers.
+
+## Maintenance and migration
+
+Cold-page maintenance is explicit in 1.x so the host retains ownership of
+scheduling and threads:
+
+```sh
+pv compact ./data.pv --max-pages 64
+pv inspect ./data.pv --json
+```
+
+`Database::compact_step(max_pages)` preserves record addresses, indexes, and
+complete MVCC history; it never compacts the mutable tail and leaves a page in
+row form when transposition would not save space. Each pass uses the
+crash-recoverable workspace transaction protocol, so allow temporary disk space
+for one complete rollback image. Baked-image migration is
+out-of-place and deeply verified before publication:
+
+```sh
+pv migrate old.pvdb new.pvdb --dry-run
+pv migrate old.pvdb new.pvdb --backup old.exact-backup.pvdb
+```
+
+The source is never modified and existing destinations are never overwritten.
+See [Migration and compaction](docs/MIGRATION.md).
 
 ## Install and distribution
 

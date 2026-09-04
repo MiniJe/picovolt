@@ -1,4 +1,4 @@
-# Public data used by the 1.8 release gate
+# Release-gate datasets and golden images
 
 `iris.data` is the unmodified 150-row Iris dataset distributed by the
 [UCI Machine Learning Repository](https://archive.ics.uci.edu/dataset/53/iris).
@@ -15,3 +15,11 @@ results against SQLite, exports/imports Parquet, and bakes/reopens the result.
 It repeats the original rows 20 times solely to exercise multiple Parquet row
 groups and a database larger than the two-page buffer pool. The fixture itself
 is unchanged, including the historical values documented by UCI.
+
+The `golden_v*.pvdb` files are generated compatibility fixtures, not downloaded
+datasets. Each freezes an on-disk format generation so current readers and the
+1.9 migration tool can verify every retained transaction snapshot. In
+particular, `golden_v1_9_0.pvdb` is a format-v5 image containing packed decimal
+cold pages, MVCC history, and a persisted index. Regenerate goldens only with
+`cargo run --example make_golden`; tests require older fixtures to remain
+byte-for-byte unchanged.

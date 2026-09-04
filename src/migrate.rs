@@ -4,9 +4,9 @@
 //! PicoVolt's SQL is a subset, so the importer rewrites what it can and skips
 //! the rest rather than aborting: `CREATE TABLE` is reduced to column names
 //! (types and constraints are dropped, since PicoVolt tables are untyped),
-//! double-quoted identifiers are unquoted, and statement kinds the engine does
-//! not support (PRAGMA, transactions, triggers, views, indexes, ALTER, ATTACH)
-//! are skipped with a reason. Each statement that does run is reported, and a
+//! quoted identifiers are preserved, and statement kinds the engine does not
+//! support (PRAGMA, transactions, triggers, views, indexes, ALTER, ATTACH) are
+//! skipped with a reason. Each statement that does run is reported, and a
 //! statement that errors is collected rather than stopping the import.
 
 use crate::Database;
@@ -28,8 +28,7 @@ impl Database {
     pub fn import_sql(&mut self, dump: &str) -> ImportReport {
         let mut report = ImportReport::default();
         for raw in split_statements(dump) {
-            let stmt = unquote_double_quotes(&raw);
-            let stmt = stmt.trim();
+            let stmt = raw.trim();
             if stmt.is_empty() || stmt.starts_with("--") {
                 continue;
             }
@@ -101,8 +100,8 @@ fn rewrite_statement(stmt: &str) -> Rewrite {
 /// `CREATE TABLE [IF NOT EXISTS] name (col TYPE constraints, ..., table-constraint)`
 /// becomes `CREATE TABLE name (col, ...)`.
 fn rewrite_create_table(stmt: &str) -> Option<String> {
-    let open = stmt.find('(')?;
-    let name = stmt[..open].split_whitespace().last()?;
+    let open = first_unquoted_paren(stmt)?;
+    let name = create_table_name(&stmt[..open])?;
     let close = matching_paren(stmt, open)?;
     let body = &stmt[open + 1..close];
     let cols = column_names(body);
@@ -116,95 +115,146 @@ fn column_names(body: &str) -> Vec<String> {
     let mut cols = Vec::new();
     for item in split_top_level_commas(body) {
         let item = item.trim();
-        let upper = item.to_ascii_uppercase();
-        if upper.starts_with("PRIMARY KEY")
-            || upper.starts_with("FOREIGN KEY")
-            || upper.starts_with("UNIQUE")
-            || upper.starts_with("CHECK")
-            || upper.starts_with("CONSTRAINT")
-            || upper.starts_with("KEY ")
-        {
-            continue; // a table-level constraint, not a column definition
-        }
-        if let Some(name) = first_identifier(item) {
+        if let Some((name, quoted, _)) = first_identifier(item) {
+            let keyword = name.to_ascii_uppercase();
+            if !quoted
+                && matches!(
+                    keyword.as_str(),
+                    "PRIMARY" | "FOREIGN" | "UNIQUE" | "CHECK" | "CONSTRAINT" | "KEY"
+                )
+            {
+                continue; // a table-level constraint, not a column definition
+            }
             cols.push(name);
         }
     }
     cols
 }
 
-fn first_identifier(s: &str) -> Option<String> {
-    let id: String = s
-        .chars()
-        .take_while(|c| c.is_alphanumeric() || *c == '_')
-        .collect();
-    if id.is_empty() {
+/// Return the first identifier as SQL source, whether it was delimited, and the
+/// byte offset immediately after it. Keeping the delimiters means a quoted
+/// keyword remains an identifier when the rewritten statement is parsed.
+fn first_identifier(s: &str) -> Option<(String, bool, usize)> {
+    let trimmed = s.trim_start();
+    let leading = s.len() - trimmed.len();
+    let mut chars = trimmed.char_indices().peekable();
+    let (_, first) = chars.next()?;
+    if let Some(closing) = quote_closing(first) {
+        let mut has_content = false;
+        while let Some((index, ch)) = chars.next() {
+            if ch == closing {
+                if chars.peek().is_some_and(|(_, next)| *next == closing) {
+                    chars.next();
+                    has_content = true;
+                    continue;
+                }
+                if !has_content {
+                    return None;
+                }
+                let end = index + ch.len_utf8();
+                return Some((trimmed[..end].to_owned(), true, leading + end));
+            }
+            has_content = true;
+        }
         None
     } else {
-        Some(id)
+        if !(first.is_alphabetic() || first == '_') {
+            return None;
+        }
+        let end = trimmed
+            .char_indices()
+            .take_while(|(_, ch)| ch.is_alphanumeric() || *ch == '_')
+            .map(|(index, ch)| index + ch.len_utf8())
+            .last()?;
+        Some((trimmed[..end].to_owned(), false, leading + end))
     }
 }
 
-/// Replace `"identifier"` (and ``identifier``/`[identifier]`) outside string
-/// literals with the bare identifier, since PicoVolt uses unquoted names.
-fn unquote_double_quotes(sql: &str) -> String {
-    let mut out = String::with_capacity(sql.len());
-    let mut chars = sql.chars().peekable();
-    let mut in_str = false;
-    while let Some(c) = chars.next() {
-        if in_str {
-            out.push(c);
-            if c == '\'' {
-                if chars.peek() == Some(&'\'') {
-                    out.push('\'');
+fn create_table_name(head: &str) -> Option<String> {
+    let mut rest = strip_keyword(head, "CREATE")?;
+    rest = strip_keyword(rest, "TABLE")?;
+    if starts_keyword(rest, "IF") {
+        rest = strip_keyword(rest, "IF")?;
+        rest = strip_keyword(rest, "NOT")?;
+        rest = strip_keyword(rest, "EXISTS")?;
+    }
+    let (name, _, consumed) = first_identifier(rest)?;
+    if !rest[consumed..].trim().is_empty() {
+        return None;
+    }
+    Some(name)
+}
+
+fn starts_keyword(input: &str, keyword: &str) -> bool {
+    strip_keyword(input, keyword).is_some()
+}
+
+fn strip_keyword<'a>(input: &'a str, keyword: &str) -> Option<&'a str> {
+    let trimmed = input.trim_start();
+    let prefix = trimmed.get(..keyword.len())?;
+    if !prefix.eq_ignore_ascii_case(keyword) {
+        return None;
+    }
+    let rest = &trimmed[keyword.len()..];
+    if rest
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+    {
+        return None;
+    }
+    Some(rest)
+}
+
+fn quote_closing(opening: char) -> Option<char> {
+    match opening {
+        '\'' => Some('\''),
+        '"' => Some('"'),
+        '`' => Some('`'),
+        '[' => Some(']'),
+        _ => None,
+    }
+}
+
+fn first_unquoted_paren(sql: &str) -> Option<usize> {
+    let mut quoted = None;
+    let mut chars = sql.char_indices().peekable();
+    while let Some((index, ch)) = chars.next() {
+        if let Some(closing) = quoted {
+            if ch == closing {
+                if chars.peek().is_some_and(|(_, next)| *next == closing) {
                     chars.next();
                 } else {
-                    in_str = false;
+                    quoted = None;
                 }
             }
-        } else if c == '\'' {
-            in_str = true;
-            out.push(c);
-        } else if c == '"' || c == '`' || c == '[' {
-            let close = if c == '[' { ']' } else { c };
-            while let Some(n) = chars.next() {
-                if n == close {
-                    // "" escapes a quote inside a quoted identifier.
-                    if close != ']' && chars.peek() == Some(&close) {
-                        out.push(close);
-                        chars.next();
-                    } else {
-                        break;
-                    }
-                } else {
-                    out.push(n);
-                }
-            }
-        } else {
-            out.push(c);
+        } else if let Some(closing) = quote_closing(ch) {
+            quoted = Some(closing);
+        } else if ch == '(' {
+            return Some(index);
         }
     }
-    out
+    None
 }
 
 fn split_statements(sql: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
-    let mut in_str = false;
+    let mut quoted = None;
     let mut chars = sql.chars().peekable();
     while let Some(c) = chars.next() {
-        if in_str {
+        if let Some(closing) = quoted {
             cur.push(c);
-            if c == '\'' {
-                if chars.peek() == Some(&'\'') {
-                    cur.push('\'');
+            if c == closing {
+                if chars.peek() == Some(&closing) {
+                    cur.push(closing);
                     chars.next();
                 } else {
-                    in_str = false;
+                    quoted = None;
                 }
             }
-        } else if c == '\'' {
-            in_str = true;
+        } else if let Some(closing) = quote_closing(c) {
+            quoted = Some(closing);
             cur.push(c);
         } else if c == ';' {
             out.push(std::mem::take(&mut cur));
@@ -222,23 +272,23 @@ fn split_top_level_commas(body: &str) -> Vec<String> {
     let mut items = Vec::new();
     let mut cur = String::new();
     let mut depth = 0i32;
-    let mut in_str = false;
+    let mut quoted = None;
     let mut chars = body.chars().peekable();
     while let Some(c) = chars.next() {
-        if in_str {
+        if let Some(closing) = quoted {
             cur.push(c);
-            if c == '\'' {
-                if chars.peek() == Some(&'\'') {
-                    cur.push('\'');
+            if c == closing {
+                if chars.peek() == Some(&closing) {
+                    cur.push(closing);
                     chars.next();
                 } else {
-                    in_str = false;
+                    quoted = None;
                 }
             }
         } else {
             match c {
-                '\'' => {
-                    in_str = true;
+                ch if quote_closing(ch).is_some() => {
+                    quoted = quote_closing(ch);
                     cur.push(c);
                 }
                 '(' => {
@@ -262,14 +312,22 @@ fn split_top_level_commas(body: &str) -> Vec<String> {
 
 fn matching_paren(s: &str, open: usize) -> Option<usize> {
     let mut depth = 0i32;
-    let mut in_str = false;
-    for (i, c) in s.char_indices().skip(open) {
-        if in_str {
-            if c == '\'' {
-                in_str = false;
+    let mut quoted = None;
+    let mut chars = s
+        .char_indices()
+        .skip_while(|(index, _)| *index < open)
+        .peekable();
+    while let Some((i, c)) = chars.next() {
+        if let Some(closing) = quoted {
+            if c == closing {
+                if chars.peek().is_some_and(|(_, next)| *next == closing) {
+                    chars.next();
+                } else {
+                    quoted = None;
+                }
             }
-        } else if c == '\'' {
-            in_str = true;
+        } else if let Some(closing) = quote_closing(c) {
+            quoted = Some(closing);
         } else if c == '(' {
             depth += 1;
         } else if c == ')' {

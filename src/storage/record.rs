@@ -18,6 +18,55 @@ const TAG_CAS_TEXT: u8 = 0x04;
 const TAG_CAS_BLOB: u8 = 0x05;
 const TAG_DECIMAL: u8 = 0x06;
 
+/// Encode a signed 128-bit integer as zig-zag LEB128. Small fixed-point
+/// decimal mantissas normally need one to four bytes instead of sixteen.
+pub(crate) fn encode_packed_i128(out: &mut Vec<u8>, value: i128) {
+    let mut encoded = ((value as u128) << 1) ^ ((value >> 127) as u128);
+    loop {
+        let mut byte = (encoded & 0x7f) as u8;
+        encoded >>= 7;
+        if encoded != 0 {
+            byte |= 0x80;
+        }
+        out.push(byte);
+        if encoded == 0 {
+            break;
+        }
+    }
+}
+
+/// Decode the bounded zig-zag LEB128 representation written by
+/// [`encode_packed_i128`]. The 19-byte cap and final-byte check prevent shifts
+/// past 128 bits on hostile input.
+pub(crate) fn decode_packed_i128(bytes: &[u8], pos: &mut usize) -> Result<i128> {
+    let start = *pos;
+    let mut encoded = 0u128;
+    for index in 0..19usize {
+        let byte = *bytes
+            .get(*pos)
+            .ok_or_else(|| PvError::Corruption("packed decimal: truncated varint".into()))?;
+        *pos += 1;
+        let payload = (byte & 0x7f) as u128;
+        if index == 18 && payload > 0x03 {
+            return Err(PvError::Corruption(
+                "packed decimal: varint exceeds 128 bits".into(),
+            ));
+        }
+        encoded |= payload << (index * 7);
+        if byte & 0x80 == 0 {
+            if *pos - start > 1 && payload == 0 {
+                return Err(PvError::Corruption(
+                    "packed decimal: non-canonical varint".into(),
+                ));
+            }
+            return Ok(((encoded >> 1) as i128) ^ -((encoded & 1) as i128));
+        }
+    }
+    Err(PvError::Corruption(
+        "packed decimal: unterminated varint".into(),
+    ))
+}
+
 /// Encode a row body (no envelope), interning oversized payloads into `cas`.
 pub fn encode_row(values: &[Value], cas: &mut CasStore) -> Result<Vec<u8>> {
     let mut out = Vec::new();
@@ -197,5 +246,31 @@ mod tests {
         let (got_env, got_row) = decode_record(&bytes, &cas).unwrap();
         assert_eq!(got_env, env);
         assert_eq!(got_row, row);
+    }
+
+    #[test]
+    fn packed_i128_round_trips_boundaries_canonically() {
+        for value in [
+            i128::MIN,
+            i64::MIN as i128,
+            -1_500_000,
+            -1,
+            0,
+            1,
+            1_500_000,
+            i64::MAX as i128,
+            i128::MAX,
+        ] {
+            let mut bytes = Vec::new();
+            encode_packed_i128(&mut bytes, value);
+            let mut pos = 0;
+            assert_eq!(decode_packed_i128(&bytes, &mut pos).unwrap(), value);
+            assert_eq!(pos, bytes.len());
+            assert!(bytes.len() <= 19);
+        }
+        let mut pos = 0;
+        assert!(decode_packed_i128(&[0x80, 0], &mut pos).is_err());
+        let mut pos = 0;
+        assert!(decode_packed_i128(&[0xff; 19], &mut pos).is_err());
     }
 }

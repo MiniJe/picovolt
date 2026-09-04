@@ -7,6 +7,8 @@ with patch releases as soon as a security or data-integrity fix is ready.
 
 1. Triage open regressions and update `CHANGELOG.md`.
 2. Run the complete Rust, WASM, Go, Python, npm, CLI, and benchmark smoke matrix.
+   For format releases, run the golden migration corpus and the scheduled
+   fuzz/model/recovery soak workflow as well.
 3. Confirm the committed root `Cargo.lock` is current and the package version is
    identical in Cargo, Python, npm, the Go module
    tag, and native version output.
@@ -18,12 +20,28 @@ with patch releases as soon as a security or data-integrity fix is ready.
 Release candidates may be published one week earlier for format or API changes.
 Published `.pvdb` format compatibility is covered by the golden fixture suite.
 
-The 1.8 native binaries include `data-tools` (Parquet, SQLite, and dataset
+The 1.9 stabilization gate additionally requires:
+
+- migration of every checked-in 1.x golden image with matching full-history
+  verification hashes and transaction-by-transaction results;
+- a clean scheduled fuzz shard for every parser/decoder target and a clean model
+  plus abrupt-process recovery shard;
+- all seven machine-readable performance budgets (open, scan, point lookup,
+  top-N, join, bake, and recovery open) below their shared-runner ceilings;
+- no unresolved critical or high-severity security finding.
+
+For 1.9, record release-candidate runs across the 30-day soak specified in the
+roadmap. GitHub-hosted jobs
+are bounded shards, not a claim of uninterrupted multi-day execution; longer
+runs require a dedicated runner and should retain their logs and fuzz artifacts.
+
+Native release binaries include `data-tools` (Parquet, SQLite, and dataset
 signing). Source installs opt in with `cargo install picovolt --features
 data-tools`; npm and Python do not bundle these CLI dependencies. Release
 verification runs `cargo test --locked --all-targets --all-features`, including
 the public-dataset differential gate and corruption/resume/signature checks in
-`tests/data_movement.rs` and `tests/data_inspection.rs`.
+`tests/data_movement.rs`, `tests/data_inspection.rs`, `tests/migration.rs`, and
+`tests/stabilization.rs`.
 
 ## Registry-only starter gate
 

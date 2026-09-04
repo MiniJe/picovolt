@@ -4,6 +4,7 @@ Produced by [`examples/bench.rs`](examples/bench.rs). Reproduce with:
 
 ```sh
 cargo run --release --example bench
+cargo run --release --example stabilization_bench -- --check
 ```
 
 > Caveats: these are wall-clock numbers from a single Windows host on 2026-09-04
@@ -48,6 +49,27 @@ by `WHERE col = value` and range predicates such as `col > v`.
 | Bake (compile a 20k-row monolith) | about 12 ms |
 | Open production file (mmap and decode) | about 4 ms |
 
+## 1.9 regression budgets
+
+[`examples/stabilization_bench.rs`](examples/stabilization_bench.rs) emits JSON
+for seven named workloads: open, scan, point lookup, top-N, adaptive indexed
+join, bake, and recovery open. Shared-runner absolute ceilings live in
+[`benchmarks/stabilization-budgets.json`](benchmarks/stabilization-budgets.json)
+and intentionally catch algorithmic failures rather than small machine noise.
+The recovery workload leaves a synced transaction unfinished in a child process
+and times restoration on the next open; it is not a normal-reopen proxy. The
+scheduled workflow retains each result as an artifact.
+
+On a pinned runner, compare medians to the accepted baseline instead: fail open,
+scan, point, top-N, join, or bake above +15%, and recovery above +25%; investigate
+p95 movement above +25% and +40% respectively. Refresh a baseline only with a
+documented workload or hardware change, never simply because a gate failed.
+
+Correctness tests enforce the less noisy algorithmic properties: a bounded
+three-table join must finish without scanning either large indexed right input,
+cold-page conversion must retain stable addresses and MVCC history, and every
+golden migration must match its full-history verification hash.
+
 ## Trade-offs and limits
 
 Becoming a real storage engine cost some peak in-memory speed, which is a fair
@@ -71,7 +93,9 @@ trade:
 - **`SELECT *` still materializes the full result set,** by definition. The
   larger-than-RAM benefit is that the engine stays bounded; filtered or indexed
   queries return small results without holding the dataset resident.
-- **Single-threaded,** and not `wasm32` or `no_std` (it uses `std::fs` and mmap).
+- **Single-owner.** Native filesystem and mmap modes are not `wasm32` or
+  `no_std`. Cooperative `compact_step` work can be scheduled by the host, but
+  PicoVolt 1.x does not start a concurrent maintenance thread.
 
 ## Summary
 

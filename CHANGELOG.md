@@ -6,8 +6,49 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- Added adaptive indexed execution for left-deep N-table equality joins, with
+  deterministic MVCC-aware probes and bounded-work regression coverage.
+- Added format-v5 cold pages with packed decimal columns and cooperative
+  `Database::compact_step` / `pv compact` maintenance that preserves record
+  addresses, indexes, tombstones, and historical snapshots.
+- Added `pv migrate` with a validating dry run, no-clobber output, optional
+  byte-for-byte backup, deep post-write verification, and documented rollback.
+- Added parser, row-record, index, monolith, columnar, and WASM fuzz targets; a
+  scheduled bounded fuzz workflow; deterministic model stress; and expanded
+  crash/recovery stress.
+- Added machine-readable release budgets for open, scan, point lookup, top-N,
+  join, bake, and recovery workloads, plus a format-v5 golden fixture.
+
+### Changed
+
+- `EXPLAIN` now identifies adaptive indexed join plans, while `pv inspect`
+  reports real row/cold page counts and compression savings.
+- Baked-image migration and maintenance documentation now defines compatibility,
+  verification, disk-space, failure, and rollback behavior explicitly.
+
 ### Fixed
 
+- Preserved delimited SQL-dump identifiers instead of unquoting them into
+  executable syntax; statement splitting now respects identifier delimiters,
+  including embedded apostrophes, semicolons, and quoted keywords.
+- Made parameter binding accept the full `i128` decimal range and ignore `?`
+  characters inside every supported quoted-identifier form.
+- Made cold-page conversion crash-atomic and persisted its resume cursor so a
+  bounded maintenance job cannot retry one incompressible leading page forever;
+  already-packed pages count toward the physical work slice, and impossible
+  compressed row shapes are rejected before allocation.
+- Validated page-chain ownership before indexed mutations patch record addresses,
+  and made scans reject unreachable tails and mismatched record-version counts.
+- Made `pv migrate` and `pv compact` reject unknown, duplicate, and incomplete
+  options before opening or writing database paths.
+- Tightened binary decoders to reject overflowing or non-canonical varints,
+  nonzero bit-pack padding, duplicate index-key blocks, and trailing payload
+  bytes instead of accepting ambiguous encodings.
+- Checked-converted persisted offsets before using them as platform-sized slice
+  indices, required every decoded column to match its declared row count, and
+  charged owned adaptive-join probe keys to bounded-query memory limits.
 - Extended the bounded Go registry wait after the 1.8.0 proxy cached a missing
   revision beyond twenty minutes; published versions and tags remain immutable.
 

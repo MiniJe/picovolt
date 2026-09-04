@@ -21,9 +21,10 @@ browsers isolate local-file origins; run `npm ci && npm run dev` in
 
 - PicoVolt 1.x readers continue to read older 1.x database images unless a
   release note explicitly documents an exceptional migration.
-- Images with literal defaults or `CHECK` constraints use format version 4;
-  images with only `PRIMARY KEY`/`UNIQUE`/`NOT NULL` remain version 3. Every
-  earlier format remains covered by checked-in golden fixtures.
+- Images containing packed cold pages, a compaction cursor, or an explicit 1.9
+  migration use format version 5. Literal defaults or `CHECK` constraints use
+  version 4; images with only `PRIMARY KEY`/`UNIQUE`/`NOT NULL` remain version
+  3. Every earlier format remains covered by checked-in golden fixtures.
 - Newer-format images fail with a clear unsupported-version error in older
   readers; they are never silently interpreted as an older layout.
 

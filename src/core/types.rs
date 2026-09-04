@@ -48,7 +48,13 @@ pub const MAGIC_BYTES: [u8; 4] = [0x50, 0x56, 0x44, 0x42];
 ///   monolith stays version 1 and remains readable by version-1 builds.
 /// - Version 3: persists `PRIMARY KEY`, `UNIQUE`, and `NOT NULL` constraints.
 /// - Version 4: persists literal defaults and `CHECK` constraints.
-pub const FORMAT_VERSION: u16 = 4;
+/// - Version 5: permits MVCC-preserving cold columnar pages with packed decimal
+///   mantissas and stable page-chain links.
+pub const FORMAT_VERSION: u16 = 5;
+
+/// The version required when any table page uses the integrated cold columnar
+/// layout.
+pub const FORMAT_VERSION_COLUMNAR: u16 = 5;
 
 /// The version required by persisted literal defaults or `CHECK` constraints.
 pub const FORMAT_VERSION_SCHEMA: u16 = 4;
@@ -81,8 +87,9 @@ pub const CAS_POINTER_SIZE: usize = 8;
 /// Length of a BLAKE3 digest, in bytes.
 pub const BLAKE3_HASH_LEN: usize = 32;
 
-/// Idle interval (seconds) after which a hot row page becomes eligible for
-/// background transposition into the cold columnar layout.
+/// Recommended host maintenance interval for calling `Database::compact_step`.
+/// PicoVolt 1.x remains single-owner and never starts an implicit background
+/// thread; applications may use a worker or timer they control.
 pub const COLD_CONVERSION_SECS: u64 = 300;
 
 // ---------------------------------------------------------------------------
@@ -331,12 +338,12 @@ impl RowPageHeader {
 /// | 0      | 8    | `page_id` (u64)             |
 /// | 8      | 1    | page type discriminant `0x02` |
 /// | 9      | 2    | `row_count` (u16)           |
-/// | 11     | 13   | reserved (zeroed)           |
+/// | 11     | 13   | standalone: zero; integrated v5: chain/size/layout metadata |
 ///
-/// Note: the specification labels the reserved tail `u48` (6 bytes); a 6-byte
-/// reserve would leave the header at 17 bytes, not the fixed 24. To honour the
-/// 24-byte header invariant we reserve the full remaining 13 bytes. (`u48` is
-/// also not a native Rust integer type.)
+/// The base header codec leaves bytes 11..24 zero for standalone columnar
+/// buffers. Version-5 table pages overlay that area with `next_page` (8 bytes),
+/// `original_used_bytes` (4 bytes), and a one-byte layout marker; the integrated
+/// codec in `storage::page` owns and validates that extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ColumnarPageHeader {
     /// Identifier of this page.

@@ -32,23 +32,26 @@ pub fn write_uvarint(out: &mut Vec<u8>, mut value: u64) {
 
 /// Read an unsigned LEB128 varint from `buf` starting at `*pos`, advancing `*pos`.
 pub fn read_uvarint(buf: &[u8], pos: &mut usize) -> Result<u64> {
+    let start = *pos;
     let mut result: u64 = 0;
-    let mut shift = 0u32;
-    loop {
+    for index in 0..10usize {
         let byte = *buf
             .get(*pos)
             .ok_or_else(|| PvError::Corruption("truncated varint".into()))?;
         *pos += 1;
-        if shift >= 64 {
+        let payload = u64::from(byte & 0x7f);
+        if index == 9 && payload > 1 {
             return Err(PvError::Corruption("varint overflow".into()));
         }
-        result |= u64::from(byte & 0x7F) << shift;
+        result |= payload << (index * 7);
         if byte & 0x80 == 0 {
-            break;
+            if *pos - start > 1 && payload == 0 {
+                return Err(PvError::Corruption("non-canonical varint".into()));
+            }
+            return Ok(result);
         }
-        shift += 7;
     }
-    Ok(result)
+    Err(PvError::Corruption("unterminated varint".into()))
 }
 
 // ---------------------------------------------------------------------------
@@ -94,11 +97,15 @@ pub fn delta_z_encode(values: &[i64]) -> Vec<u8> {
 /// Inverse of [`delta_z_encode`].
 pub fn delta_z_decode(buf: &[u8]) -> Result<Vec<i64>> {
     let mut pos = 0usize;
-    let count = read_uvarint(buf, &mut pos)? as usize;
+    let count = usize::try_from(read_uvarint(buf, &mut pos)?)
+        .map_err(|_| PvError::Corruption("delta-z: row count exceeds this platform".into()))?;
     // Each value past the base is at least a 1-byte varint, so cap the
     // pre-allocation by the input length to avoid OOM from a crafted count.
     let mut out = Vec::with_capacity(count.min(buf.len()));
     if count == 0 {
+        if pos != buf.len() {
+            return Err(PvError::Corruption("delta-z: trailing bytes".into()));
+        }
         return Ok(out);
     }
     let base_bytes = buf
@@ -111,6 +118,9 @@ pub fn delta_z_decode(buf: &[u8]) -> Result<Vec<i64>> {
         let delta = zigzag_decode(read_uvarint(buf, &mut pos)?);
         prev = prev.wrapping_add(delta);
         out.push(prev);
+    }
+    if pos != buf.len() {
+        return Err(PvError::Corruption("delta-z: trailing bytes".into()));
     }
     Ok(out)
 }
@@ -160,8 +170,23 @@ pub fn unpack_codes(packed: &[u8], bits: u8, count: usize) -> Result<Vec<u8>> {
             "bit-pack: invalid bit width {bits} (must be 1..=8)"
         )));
     }
-    // Each code consumes at least one bit, so the input bounds the code count.
-    let mut out = Vec::with_capacity(count.min(packed.len().saturating_mul(8)));
+    let total_bits = count
+        .checked_mul(bits as usize)
+        .ok_or_else(|| PvError::Corruption("bit-pack: encoded size overflow".into()))?;
+    let expected_bytes = total_bits.div_ceil(8);
+    if packed.len() != expected_bytes {
+        return Err(PvError::Corruption(format!(
+            "bit-pack: expected {expected_bytes} byte(s), found {}",
+            packed.len()
+        )));
+    }
+    if let (Some(last), used @ 1..=7) = (packed.last(), total_bits % 8) {
+        let unused_mask = !((1u8 << used) - 1);
+        if last & unused_mask != 0 {
+            return Err(PvError::Corruption("bit-pack: nonzero padding bits".into()));
+        }
+    }
+    let mut out = Vec::with_capacity(count);
     let mask = ((1u16 << bits) - 1) as u8;
     let mut acc: u16 = 0;
     let mut filled: u8 = 0;
@@ -265,6 +290,14 @@ mod tests {
             },
             1
         );
+        let mut pos = 0;
+        assert!(read_uvarint(&[0x80, 0], &mut pos).is_err());
+        let mut pos = 0;
+        assert!(read_uvarint(&[0xff; 10], &mut pos).is_err());
+        let mut overflow = [0xff; 10];
+        overflow[9] = 2;
+        let mut pos = 0;
+        assert!(read_uvarint(&overflow, &mut pos).is_err());
     }
 
     #[test]
@@ -292,6 +325,9 @@ mod tests {
             Vec::<i64>::new()
         );
         assert_eq!(delta_z_decode(&delta_z_encode(&[42])).unwrap(), vec![42]);
+        let mut trailing = delta_z_encode(&[42]);
+        trailing.push(0);
+        assert!(delta_z_decode(&trailing).is_err());
     }
 
     #[test]
@@ -312,6 +348,12 @@ mod tests {
         // 9 two-bit codes -> ceil(18/8) = 3 bytes.
         assert_eq!(packed.len(), 3);
         assert_eq!(unpack_codes(&packed, 2, codes.len()).unwrap(), codes);
+        let mut trailing = packed.clone();
+        trailing.push(0);
+        assert!(unpack_codes(&trailing, 2, codes.len()).is_err());
+        let mut nonzero_padding = packed;
+        *nonzero_padding.last_mut().unwrap() |= 0b1100_0000;
+        assert!(unpack_codes(&nonzero_padding, 2, codes.len()).is_err());
     }
 
     #[test]

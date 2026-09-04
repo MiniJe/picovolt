@@ -7,8 +7,9 @@
 //! …) into a keyed lookup / ordered scan plus a handful of page reads, instead of
 //! a full table scan.
 //!
-//! The index is in-memory, rebuilt by a streaming scan when a table is opened; it
-//! is not yet persisted as an on-disk B-tree.
+//! The mutable index is an in-memory B-tree. Baked format-v2+ images persist its
+//! compact binary representation and load it without rescanning table pages;
+//! development workspaces rebuild it from their page chains when opened.
 
 use std::collections::BTreeMap;
 use std::ops::RangeBounds;
@@ -144,13 +145,23 @@ impl SecondaryIndex {
         let mut entries = 0usize;
         for _ in 0..key_count {
             let key = decode_index_value(bytes, &mut pos)?;
+            if map.contains_key(&key) {
+                return Err(PvError::Corruption(
+                    "index: duplicate key entry in binary encoding".into(),
+                ));
+            }
             let addr_count = rd_u32(bytes, &mut pos)? as usize;
             let mut addrs = Vec::with_capacity(addr_count.min(1024));
             for _ in 0..addr_count {
                 addrs.push(rd_u64(bytes, &mut pos)?);
             }
             entries += addrs.len();
-            map.entry(key).or_default().extend(addrs);
+            map.insert(key, addrs);
+        }
+        if pos != bytes.len() {
+            return Err(PvError::Corruption(
+                "index: trailing bytes after declared keys".into(),
+            ));
         }
         Ok(Self { map, entries })
     }
@@ -352,5 +363,19 @@ mod tests {
         }
         // The full blob still decodes.
         assert!(SecondaryIndex::decode_binary(&blob).is_ok());
+        let mut trailing = blob;
+        trailing.push(0);
+        assert!(SecondaryIndex::decode_binary(&trailing).is_err());
+    }
+
+    #[test]
+    fn binary_decode_rejects_duplicate_key_blocks() {
+        let mut idx = SecondaryIndex::new();
+        idx.insert(&Value::Int(7), 100);
+        let mut blob = idx.encode_binary();
+        let duplicate = blob[4..].to_vec();
+        blob[..4].copy_from_slice(&2u32.to_le_bytes());
+        blob.extend_from_slice(&duplicate);
+        assert!(SecondaryIndex::decode_binary(&blob).is_err());
     }
 }

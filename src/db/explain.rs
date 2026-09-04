@@ -140,27 +140,48 @@ impl Database {
                             .into_iter()
                             .map(|c| format!("{}.{c}", join.table.qualifier()))
                             .collect::<Vec<_>>();
-                        resolve_join_keys(
+                        let (_, right_key) = resolve_join_keys(
                             &columns,
                             &right,
                             &join.first_column,
                             &join.second_column,
                         )?;
-                        steps.push((
-                            "table scan",
-                            format!("{} AS {}", join.table.name, join.table.qualifier()),
-                        ));
-                        steps.push((
-                            if join.left_join {
-                                "left equality join"
-                            } else {
-                                "inner equality join"
-                            },
-                            format!(
-                                "{} = {}; build ordered map of right input",
-                                join.first_column, join.second_column
-                            ),
-                        ));
+                        let right_column = right[right_key]
+                            .rsplit_once('.')
+                            .map(|(_, column)| column)
+                            .unwrap_or(&right[right_key]);
+                        if self.has_index(&join.table.name, right_column) {
+                            steps.push((
+                                if join.left_join {
+                                    "adaptive indexed left join"
+                                } else {
+                                    "adaptive indexed inner join"
+                                },
+                                format!(
+                                    "{} = {}; probe {}.{} once per distinct left key when cheaper, otherwise build the right input",
+                                    join.first_column,
+                                    join.second_column,
+                                    join.table.qualifier(),
+                                    right_column
+                                ),
+                            ));
+                        } else {
+                            steps.push((
+                                "table scan",
+                                format!("{} AS {}", join.table.name, join.table.qualifier()),
+                            ));
+                            steps.push((
+                                if join.left_join {
+                                    "left equality join"
+                                } else {
+                                    "inner equality join"
+                                },
+                                format!(
+                                    "{} = {}; build ordered map of right input",
+                                    join.first_column, join.second_column
+                                ),
+                            ));
+                        }
                         columns.extend(right);
                     }
                     if let Some(filter) = filter {

@@ -1,9 +1,10 @@
-# Data tools in 1.8
+# Data tools
 
 Install the full native CLI with `cargo install picovolt --features data-tools`,
 or use a release binary. Parquet, SQLite, and signing are optional native CLI
-dependencies. `EXPLAIN`, inspection, diff, and baking also work in the default
-build. The 1.x file format is unchanged.
+dependencies. `EXPLAIN`, inspection, diff, migration, compaction, and baking also
+work in the default build. Version 5 is introduced by 1.9 cold pages; see
+[Migration and compaction](MIGRATION.md).
 
 ## Import and export
 
@@ -51,19 +52,19 @@ pv diff ./workspace customers --from 42 --to 57 --format jsonl
 ```
 
 `EXPLAIN` describes the physical path without reading rows. It reports snapshots,
-scans, index lookups/ranges, ordered scans, equality joins, filtering, aggregates,
-sorting, projection, DISTINCT, OFFSET, and LIMIT. It provides no timing or cost
-estimate. Numeric ranges currently scan to preserve mixed numeric semantics.
-Bounded query execution also falls back to scans for ranges;
+scans, index lookups/ranges, ordered scans, adaptive indexed equality joins,
+filtering, aggregates, sorting, projection, DISTINCT, OFFSET, and LIMIT. It
+provides no timing estimate. Numeric ranges currently scan to preserve mixed
+numeric semantics. Bounded query execution also falls back to scans for ranges;
 `query_with_limits("EXPLAIN ...", ...)` reflects that path. Row-dependent
 expression errors may still occur during execution. Rust exposes
 `Database::explain` and `Database::inspect_stats`.
 
 Inspection reports format requirements, storage mode, page allocation/orphans,
 live rows/versions, free/used bytes, CAS size, index entries/keys/encoded bytes,
-and cache counters. It scans headers and envelopes. Table pages currently use
-`row-slotted-uncompressed`, so compressed-page and saved-byte counts are zero.
-The standalone columnar codec is not an automatic table compactor.
+and cache counters. It scans headers and envelopes. Compression reports
+`row-slotted`, `columnar-packed`, or a mixed layout, plus actual cold-page and
+encoded-byte savings. Compaction is explicit and cooperative in 1.x.
 
 Diff compares complete rows with duplicate multiplicity. Updates appear as
 removals and additions, with all removals first. It is a net snapshot comparison,
@@ -79,7 +80,8 @@ pv bake ./workspace dataset.pvdb --resume
 ```
 
 Keep the source quiescent until baking finishes. Pages stream sequentially with
-MVCC versions and indexes preserved. The physical row-page encoding is retained.
+MVCC versions and indexes preserved. Existing row and packed cold-page encodings
+are retained.
 Normal baking writes a temporary file, syncs it, then replaces the destination.
 Rust's `bake_to_writer` lets applications manage their own output publication.
 
