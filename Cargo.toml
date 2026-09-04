@@ -41,7 +41,7 @@ enterprise = []
 server = ["dep:tiny_http"]
 
 [dependencies]
-thiserror = "1.0"
+thiserror = "2.0"
 blake3 = "1"
 memmap2 = "0.9.11"
 serde = { version = "1", features = ["derive"] }
