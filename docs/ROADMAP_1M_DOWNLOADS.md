@@ -62,7 +62,7 @@ These are release blockers, not optional marketing work.
    environments. A workflow that silently skipped a registry must fail visibly.
 5. Publish a support matrix for OS, CPU, runtime, and file-format compatibility.
 
-Current status (2026-09-03): version 1.5.0 is live on crates.io, npm, and PyPI.
+Current status (2026-09-04): version 1.6.0 is live on crates.io, npm, and PyPI.
 The trusted-publishing identities are configured, the native SBOM filename issue
 is fixed, and clean-room Cargo, npm, PyPI, and native CLI smoke checks are part of
 the release workflows. The support matrix lives in [`SUPPORT.md`](SUPPORT.md).
@@ -95,12 +95,15 @@ Implement in this order:
 
 1. Explicit `BEGIN`, `COMMIT`, and `ROLLBACK` across every binding. **Shipped on
    main for 1.6.0.**
-2. `INNER JOIN` and `LEFT JOIN`, first with index-assisted nested loops and then a
-   hash join where measurement justifies it.
-3. Primary-key and unique constraints with clear conflict errors.
-4. A prepared-statement object rather than only placeholder substitution.
-5. `OFFSET` (shipped on main), `CASE`, common scalar functions, and richer schema
-   declarations.
+2. N-table equality `INNER JOIN` and `LEFT JOIN`, aliases, self-joins, and joined
+   grouping. **Built on main for 1.7.0; planner/index optimization remains 1.9
+   work.**
+3. Primary-key, unique, not-null, default, and check constraints with atomic,
+   actionable failures. **Built through 1.7.0.**
+4. Reusable prepared-statement objects in every maintained binding. **Built on
+   main for 1.7.0.**
+5. `OFFSET`, searched `CASE`, common scalar functions, named-column inserts, and
+   schema-light type declarations. **Built through 1.7.0.**
 
 These features should be driven by failing compatibility tests copied from the
 starter applications. Broad SQL surface area that no onboarding path needs stays
@@ -157,15 +160,16 @@ until users explicitly ask for product telemetry.
 
 ## Immediate next sprint
 
-1. Run extended power-loss and process-kill campaigns against the shipped
-   crash-recovery protocol and publish the methodology.
-2. Extend the shipped joined-row filtering/ordering to N-table plans, and add
-   `CASE` plus common scalar functions from real starter-app compatibility tests.
-3. Add Parquet and direct binary SQLite import, then a row-level `pv diff` command.
+1. Finish the 1.7 public-registry starter gate and publish one reproducible
+   compatibility report across Rust, browser, Node, Python, Go, and C.
+2. Add Parquet and direct binary SQLite import, then a row-level `pv diff`
+   command as the first 1.8 data-movement slice.
+3. Add `EXPLAIN` and expand `pv inspect` with page, index, compression, and
+   manifest statistics before attempting optimizer work.
 4. Publish the starters as standalone templates and measure clean installs and
    completed first queries.
 5. Start the public weekly adoption dashboard and recruit the first three
-   applications for the 1.6 release-candidate trial.
+   applications for a 1.7 compatibility trial.
 6. Validate the commercial-support and PicoVolt Hub hypotheses described in
    [MONETIZATION.md](MONETIZATION.md) using the host-owned integration seams in
    [ENTERPRISE.md](ENTERPRISE.md), without gating the open-source engine.

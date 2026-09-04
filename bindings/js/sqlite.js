@@ -30,13 +30,19 @@ function normalizeParams(args) {
 
 class Statement {
   constructor(db, sql) {
+    db._assertOpen();
     this._db = db;
     this.source = sql;
+    this._prepared = db._db.prepare(sql);
+    this.parameterCount = this._prepared.parameterCount;
+    db._statements.add(this);
   }
 
   _exec(args) {
+    if (!this._prepared) throw new Error("PicoVolt prepared statement is closed");
+    this._db._assertOpen();
     const params = normalizeParams(args);
-    const json = params.length ? this._db._db.query(this.source, params) : this._db._db.query(this.source);
+    const json = this._prepared.execute(this._db._db, params);
     return JSON.parse(json);
   }
 
@@ -60,12 +66,27 @@ class Statement {
   *iterate(...args) {
     yield* this.all(...args);
   }
+
+  close() {
+    if (!this._prepared) return false;
+    const prepared = this._prepared;
+    this._prepared = undefined;
+    this._db._statements.delete(this);
+    prepared.free();
+    return true;
+  }
+
+  finalize() {
+    return this.close();
+  }
 }
 
 class Database {
   constructor() {
     this._db = new Db();
     this._inTransaction = false;
+    this._closed = false;
+    this._statements = new Set();
   }
 
   prepare(sql) {
@@ -74,6 +95,7 @@ class Database {
 
   // Run one or more `;`-separated statements with no bound parameters.
   exec(sql) {
+    this._assertOpen();
     for (const stmt of sql.split(";").map((s) => s.trim()).filter(Boolean)) {
       this._db.query(stmt);
     }
@@ -82,11 +104,13 @@ class Database {
 
   // The most recent committed transaction id (upper bound for `... BEFORE tx`).
   get currentTx() {
+    this._assertOpen();
     return this._db.currentTx();
   }
 
   // Export the database as a `.pvdb` byte image (Uint8Array).
   serialize() {
+    this._assertOpen();
     return this._db.export();
   }
 
@@ -98,8 +122,10 @@ class Database {
   // better-sqlite3's common pattern.
   transaction(fn) {
     if (typeof fn !== "function") throw new TypeError("transaction expects a function");
+    this._assertOpen();
     const db = this;
     function wrapped(...args) {
+      db._assertOpen();
       if (db._inTransaction) return fn(...args);
       db._db.beginTransaction();
       db._inTransaction = true;
@@ -121,7 +147,14 @@ class Database {
   }
 
   close() {
-    /* the WebAssembly instance is reclaimed by the GC */
+    if (this._closed) return;
+    for (const statement of [...this._statements]) statement.close();
+    this._db.free();
+    this._closed = true;
+  }
+
+  _assertOpen() {
+    if (this._closed) throw new Error("PicoVolt database is closed");
   }
 }
 

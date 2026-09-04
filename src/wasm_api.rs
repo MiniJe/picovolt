@@ -10,12 +10,38 @@
 use wasm_bindgen::prelude::*;
 
 use crate::json::result_to_json;
-use crate::Database;
+use crate::{Database, PreparedStatement as EnginePreparedStatement};
 
 /// An in-memory PicoVolt database usable from JavaScript.
 #[wasm_bindgen]
 pub struct Db {
     inner: Database,
+}
+
+/// A validated, reusable SQL template for the raw WebAssembly API.
+#[wasm_bindgen]
+pub struct PreparedStatement {
+    inner: EnginePreparedStatement,
+}
+
+#[wasm_bindgen]
+impl PreparedStatement {
+    /// Number of positional `?` values required by this statement.
+    #[wasm_bindgen(getter, js_name = parameterCount)]
+    pub fn parameter_count(&self) -> u32 {
+        self.inner.parameter_count() as u32
+    }
+
+    /// Execute this statement against `db`, returning the same JSON string as
+    /// [`Db::query`]. The statement can be reused with different parameters.
+    pub fn execute(&self, db: &mut Db, params: JsValue) -> Result<String, JsValue> {
+        let values = js_params_to_values(params)?;
+        let result = self
+            .inner
+            .execute(&mut db.inner, &values)
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        result_to_string(&result)
+    }
 }
 
 #[wasm_bindgen]
@@ -39,16 +65,21 @@ impl Db {
         let result = if params.is_undefined() || params.is_null() {
             self.inner.query(sql)
         } else {
-            let arr = js_sys::Array::from(&params);
-            let mut values = Vec::with_capacity(arr.length() as usize);
-            for item in arr.iter() {
-                values.push(js_to_value(&item)?);
-            }
+            let values = js_params_to_values(params)?;
             self.inner.query_with(sql, &values)
         }
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        serde_json::to_string(&result_to_json(&result))
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        result_to_string(&result)
+    }
+
+    /// Validate and retain a reusable SQL template. Preparation verifies the
+    /// syntax and records the exact positional-parameter count without running
+    /// the statement.
+    pub fn prepare(&self, sql: &str) -> Result<PreparedStatement, JsValue> {
+        self.inner
+            .prepare(sql)
+            .map(|inner| PreparedStatement { inner })
+            .map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
     /// Export the whole database as a `.pvdb` byte image (a `Uint8Array` in JS).
@@ -135,6 +166,26 @@ impl Db {
             .map(|inner| Db { inner })
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
+}
+
+fn result_to_string(result: &crate::QueryResult) -> Result<String, JsValue> {
+    serde_json::to_string(&result_to_json(result))
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+fn js_params_to_values(params: JsValue) -> Result<Vec<crate::Value>, JsValue> {
+    if params.is_undefined() || params.is_null() {
+        return Ok(Vec::new());
+    }
+    if !js_sys::Array::is_array(&params) {
+        return Err(JsValue::from_str(
+            "prepared statement parameters must be an array",
+        ));
+    }
+    js_sys::Array::from(&params)
+        .iter()
+        .map(|item| js_to_value(&item))
+        .collect()
 }
 
 /// Bridges the engine's [`RangeReader`](crate::storage::vle::RangeReader) to a

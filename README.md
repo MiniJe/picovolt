@@ -122,20 +122,18 @@ Install the first-class CLI with `cargo install picovolt`, then use `pv query`,
 Rust, Python, Go, Node, and browser projects are in [`starters/`](starters/README.md); supported adapters
 are catalogued in [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
 
-SQL supported: `CREATE TABLE [IF NOT EXISTS]` with `PRIMARY KEY`, `UNIQUE`, and `NOT NULL`,
-`CREATE [UNIQUE] INDEX ON t (col)`, single- and multi-row `INSERT`,
-`UPDATE ... SET ... WHERE`, `DELETE ... WHERE`, `DROP TABLE [IF EXISTS]`, and
-`SELECT [DISTINCT] {* | col [AS alias], ... | COUNT/SUM/MIN/MAX/AVG(...) [AS alias]}
-FROM t [WHERE <pred>] [GROUP BY cols] [HAVING <pred>] [BEFORE tx]
-[ORDER BY col [ASC|DESC], ...] [LIMIT n] [OFFSET n]`, where `<pred>` combines
-`col <op> value` (`=`, `!=`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`),
-`col [NOT] IN (...)`, `col [NOT] BETWEEN a AND b`, and `col IS [NOT] NULL` with
-`AND`, `OR`, and parentheses. Integer and decimal values compare by magnitude.
-Two-table equality `INNER`/`LEFT JOIN` queries support qualified references,
-projection, aliases, `DISTINCT`, filters, ordering, and pagination. Rust callers
-can cache `Database::prepare(...)` templates and use explicit transaction
-lifecycle methods or atomic `Database::transaction(...)` closures with both
-filesystem and in-memory databases.
+SQL supports the normal PicoVolt CRUD and schema statements plus projection,
+filters, aggregates, grouping, time travel, ordering, and pagination. The 1.7
+query surface adds `AS`/bare table aliases, N-table equality `INNER`/`LEFT`
+joins, searched `CASE WHEN`, and the focused `LOWER`, `UPPER`, `TRIM`, `LENGTH`,
+`ABS`, `COALESCE`, and `NULLIF` scalar functions. Schema-light types, literal
+defaults, named inserts, and persisted `CHECK` constraints cover common adapter
+DDL. See the precise syntax, examples, type behavior, and deliberate limits in
+[`docs/SQL.md`](docs/SQL.md). Rust callers can cache `Database::prepare(...)`
+templates; C, WebAssembly, JavaScript, Python, and Go expose the same reusable
+prepared-statement lifecycle. Callers can use explicit transactions or atomic
+`Database::transaction(...)` closures with both filesystem and in-memory
+databases.
 Durability is selectable via `Database::set_durability` (`Fast` OS-cache default,
 or crash-safe `Sync` with fsync and an atomic manifest).
 
@@ -147,8 +145,8 @@ lookups roughly 11,000 times faster than a scan, plus range predicates), MVCC
 time-travel, opt-in crash-safe durability (`Durability::Sync`), and a fast
 compile-and-publish path (CAS dedup, columnar compression, memory-mappable
 single-file artifacts). Current limits include full-workspace transaction
-backups rather than an incremental WAL, only basic two-table equality joins,
-and no concurrent writers.
+backups rather than an incremental WAL, left-deep equality joins rather than a
+general SQL planner, and no concurrent writers.
 
 ## Install and distribution
 

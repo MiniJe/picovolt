@@ -158,6 +158,29 @@ fn is_null_and_is_not_null() {
     );
 }
 
+#[test]
+fn ordinary_comparisons_and_case_use_sql_null_semantics() {
+    let mut db = fixture();
+    assert!(rows(&mut db, "SELECT id FROM t WHERE age = NULL").is_empty());
+    assert!(rows(&mut db, "SELECT id FROM t WHERE age != NULL").is_empty());
+    assert_eq!(ids(&mut db, "SELECT id FROM t WHERE age != 25"), vec![1, 3]);
+    assert_eq!(
+        rows(
+            &mut db,
+            "SELECT CASE WHEN age != 1 THEN 'known' ELSE 'unknown' END FROM t WHERE id = 4"
+        ),
+        vec![vec![Value::Text("unknown".into())]]
+    );
+
+    // An empty aggregate is NULL, so its HAVING comparison is UNKNOWN rather
+    // than true merely because NULL is structurally different from an integer.
+    assert!(rows(
+        &mut db,
+        "SELECT SUM(age) FROM t WHERE id = 999 HAVING SUM(age) != 1"
+    )
+    .is_empty());
+}
+
 // --- NOT LIKE -----------------------------------------------------------------
 
 #[test]
@@ -612,6 +635,146 @@ fn offset_multi_insert_and_join_projection_compose() {
 }
 
 #[test]
+fn table_aliases_make_self_joins_safe_and_accept_either_operand_order() {
+    let mut db = Database::open_memory();
+    db.query("CREATE TABLE employees (id PRIMARY KEY, manager_id, name)")
+        .unwrap();
+    db.query(
+        "INSERT INTO employees VALUES \
+         (1, NULL, 'Ada'), (2, 1, 'Lin'), (3, 1, 'Grace')",
+    )
+    .unwrap();
+
+    assert_eq!(
+        rows(&mut db, "SELECT e.name FROM employees AS e WHERE e.id = 2",),
+        vec![vec![Value::Text("Lin".into())]]
+    );
+
+    // The new relation may appear first in ON (`manager.id = employee.manager_id`).
+    let result = db
+        .query(
+            "SELECT e.name AS employee, m.name AS manager \
+             FROM employees e LEFT JOIN employees AS m ON m.id = e.manager_id \
+             ORDER BY e.id",
+        )
+        .unwrap();
+    assert_eq!(result.columns().unwrap(), ["employee", "manager"]);
+    assert_eq!(
+        result.rows().unwrap(),
+        &[
+            vec![Value::Text("Ada".into()), Value::Null],
+            vec![Value::Text("Lin".into()), Value::Text("Ada".into())],
+            vec![Value::Text("Grace".into()), Value::Text("Ada".into())],
+        ]
+    );
+
+    let duplicate = db
+        .query("SELECT * FROM employees e JOIN employees e ON e.id = e.manager_id")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        duplicate.contains("duplicate table qualifier `e`"),
+        "{duplicate}"
+    );
+
+    let ambiguous = db
+        .query("SELECT id FROM employees e JOIN employees m ON e.manager_id = m.id")
+        .unwrap_err()
+        .to_string();
+    assert!(ambiguous.contains("ambiguous column `id`"), "{ambiguous}");
+}
+
+#[test]
+fn n_table_inner_left_and_grouped_joins_compose() {
+    let mut db = Database::open_memory();
+    db.query("CREATE TABLE users (id PRIMARY KEY, name)")
+        .unwrap();
+    db.query("CREATE TABLE orders (id PRIMARY KEY, user_id)")
+        .unwrap();
+    db.query("CREATE TABLE items (order_id, label)").unwrap();
+    db.query("INSERT INTO users VALUES (1, 'Ada'), (2, 'Lin'), (3, 'Moe')")
+        .unwrap();
+    db.query("INSERT INTO orders VALUES (10, 1), (20, 2)")
+        .unwrap();
+    db.query("INSERT INTO items VALUES (10, 'book'), (10, 'pen')")
+        .unwrap();
+
+    assert_eq!(
+        rows(
+            &mut db,
+            "SELECT u.name, o.id, i.label FROM users u \
+             JOIN orders o ON u.id = o.user_id \
+             JOIN items i ON i.order_id = o.id ORDER BY i.label",
+        ),
+        vec![
+            vec![
+                Value::Text("Ada".into()),
+                Value::Int(10),
+                Value::Text("book".into()),
+            ],
+            vec![
+                Value::Text("Ada".into()),
+                Value::Int(10),
+                Value::Text("pen".into()),
+            ],
+        ]
+    );
+
+    assert_eq!(
+        rows(
+            &mut db,
+            "SELECT u.name, o.id, i.label FROM users u \
+             LEFT JOIN orders o ON u.id = o.user_id \
+             LEFT JOIN items i ON o.id = i.order_id ORDER BY u.id, i.label",
+        ),
+        vec![
+            vec![
+                Value::Text("Ada".into()),
+                Value::Int(10),
+                Value::Text("book".into()),
+            ],
+            vec![
+                Value::Text("Ada".into()),
+                Value::Int(10),
+                Value::Text("pen".into()),
+            ],
+            vec![Value::Text("Lin".into()), Value::Int(20), Value::Null],
+            vec![Value::Text("Moe".into()), Value::Null, Value::Null],
+        ]
+    );
+
+    assert_eq!(
+        rows(
+            &mut db,
+            "SELECT COUNT(*) AS n FROM users u JOIN orders o ON u.id = o.user_id",
+        ),
+        vec![vec![Value::Int(2)]]
+    );
+    assert_eq!(
+        rows(
+            &mut db,
+            "SELECT u.name, COUNT(i.label) AS item_count FROM users u \
+             LEFT JOIN orders o ON u.id = o.user_id \
+             LEFT JOIN items i ON o.id = i.order_id \
+             GROUP BY u.name HAVING COUNT(i.label) > 0 ORDER BY u.name",
+        ),
+        vec![vec![Value::Text("Ada".into()), Value::Int(2)]]
+    );
+
+    let ambiguous_on = db
+        .query(
+            "SELECT * FROM users u JOIN orders o ON u.id = o.user_id \
+             JOIN items i ON id = i.order_id",
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        ambiguous_on.contains("ambiguous join column `id`"),
+        "{ambiguous_on}"
+    );
+}
+
+#[test]
 fn conditional_table_ddl_is_idempotent() {
     let mut db = Database::open_memory();
     db.query("CREATE TABLE IF NOT EXISTS cache (id PRIMARY KEY)")
@@ -637,6 +800,65 @@ fn reusable_prepared_statement_validates_arity() {
 }
 
 #[test]
+fn case_and_scalar_functions_compose_in_projection() {
+    let mut db = fixture();
+    let result = db
+        .query(
+            "SELECT id, UPPER(TRIM(name)) AS display_name, LENGTH(name) AS chars, \
+             ABS(age) AS magnitude, COALESCE(NULLIF(city, 'paris'), 'home') AS region, \
+             CASE WHEN score >= 20 THEN 'high' WHEN score >= 10 THEN LOWER(city) \
+                  ELSE 'low' END AS band \
+             FROM t ORDER BY id",
+        )
+        .unwrap();
+    let rows = result.rows().unwrap();
+    assert_eq!(rows.len(), 5);
+    assert_eq!(rows[0][1], Value::Text("ALICE".into()));
+    assert_eq!(rows[0][2], Value::Int(5));
+    assert_eq!(rows[0][3], Value::Int(30));
+    assert_eq!(rows[0][4], Value::Text("home".into()));
+    assert_eq!(rows[0][5], Value::Text("paris".into()));
+    assert_eq!(rows[1][5], Value::Text("high".into()));
+    assert_eq!(
+        cols(&mut db, "SELECT LOWER(name), 7, NULL FROM t LIMIT 1"),
+        vec!["lower(name)", "7", "NULL"]
+    );
+}
+
+#[test]
+fn scalar_functions_are_null_propagating_and_type_checked() {
+    let mut db = fixture();
+    assert_eq!(
+        rows(
+            &mut db,
+            "SELECT CASE WHEN age > 100 THEN 'old' END, ABS(age) FROM t WHERE id = 4",
+        ),
+        vec![vec![Value::Null, Value::Null]]
+    );
+    assert_eq!(
+        rows(
+            &mut db,
+            "SELECT COALESCE('safe', ABS('not numeric')) FROM t LIMIT 1",
+        ),
+        vec![vec![Value::Text("safe".into())]]
+    );
+    let error = db
+        .query("SELECT LOWER(age) FROM t")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("expects text"), "{error}");
+    let error = db
+        .query("SELECT MYSTERY(name) FROM t")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("unsupported scalar function `MYSTERY`"),
+        "{error}"
+    );
+    assert!(error.contains("line 1, column 8"), "{error}");
+}
+
+#[test]
 fn primary_key_and_unique_constraints_are_enforced() {
     let mut db = Database::open_memory();
     db.query("CREATE TABLE users (id PRIMARY KEY, email UNIQUE, name NOT NULL)")
@@ -656,6 +878,132 @@ fn primary_key_and_unique_constraints_are_enforced() {
     assert!(db
         .query("INSERT INTO users VALUES (1.0, 'c@example.com', 'Cat')")
         .is_err());
+}
+
+#[test]
+fn schema_defaults_checks_and_named_inserts_compose() {
+    let mut db = Database::open_memory();
+    db.query(
+        "CREATE TABLE jobs (\
+            id INTEGER PRIMARY KEY, \
+            state TEXT NOT NULL DEFAULT 'queued', \
+            attempts INTEGER DEFAULT 0 CHECK (attempts >= 0), \
+            note VARCHAR(40), \
+            CHECK (state IN ('queued', 'running', 'done'))\
+        )",
+    )
+    .unwrap();
+
+    db.query("INSERT INTO jobs (id, note) VALUES (1, 'first')")
+        .unwrap();
+    db.query("INSERT INTO jobs VALUES (2, DEFAULT, DEFAULT, NULL)")
+        .unwrap();
+    assert_eq!(
+        rows(
+            &mut db,
+            "SELECT id, state, attempts, note FROM jobs ORDER BY id"
+        ),
+        vec![
+            vec![
+                Value::Int(1),
+                Value::Text("queued".into()),
+                Value::Int(0),
+                Value::Text("first".into()),
+            ],
+            vec![
+                Value::Int(2),
+                Value::Text("queued".into()),
+                Value::Int(0),
+                Value::Null,
+            ],
+        ]
+    );
+
+    db.query("UPDATE jobs SET state = 'running' WHERE id = 1")
+        .unwrap();
+    db.query("UPDATE jobs SET state = DEFAULT WHERE id = 1")
+        .unwrap();
+    assert_eq!(
+        rows(&mut db, "SELECT state FROM jobs WHERE id = 1"),
+        vec![vec![Value::Text("queued".into())]]
+    );
+
+    // A NULL comparison is UNKNOWN and therefore satisfies a SQL CHECK.
+    db.query("INSERT INTO jobs (id, attempts) VALUES (3, NULL)")
+        .unwrap();
+    assert!(db
+        .query("INSERT INTO jobs (id, attempts) VALUES (4, -1)")
+        .unwrap_err()
+        .to_string()
+        .contains("CHECK constraint"));
+}
+
+#[test]
+fn default_values_and_constraint_failures_are_atomic() {
+    let mut db = Database::open_memory();
+    db.query(
+        "CREATE TABLE settings (enabled INTEGER DEFAULT 1, mode TEXT DEFAULT 'safe', \
+         CHECK (enabled IN (0, 1)), CHECK (mode != 'broken'))",
+    )
+    .unwrap();
+    db.query("INSERT INTO settings DEFAULT VALUES").unwrap();
+    assert_eq!(
+        rows(&mut db, "SELECT * FROM settings"),
+        vec![vec![Value::Int(1), Value::Text("safe".into())]]
+    );
+
+    let error = db
+        .query("INSERT INTO settings (enabled, mode) VALUES (0, 'ok'), (2, 'bad')")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("CHECK constraint"), "{error}");
+    assert_eq!(rows(&mut db, "SELECT * FROM settings").len(), 1);
+
+    let error = db
+        .query("UPDATE settings SET mode = 'broken' WHERE enabled = 1")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("CHECK constraint"), "{error}");
+    assert_eq!(
+        rows(&mut db, "SELECT mode FROM settings"),
+        vec![vec![Value::Text("safe".into())]]
+    );
+}
+
+#[test]
+fn schema_metadata_survives_workspace_and_baked_round_trips() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("schema.pv");
+    {
+        let mut db = Database::open_dev(&workspace).unwrap();
+        db.query(
+            "CREATE TABLE counters (id INTEGER PRIMARY KEY, value INTEGER DEFAULT 1 \
+             CHECK (value BETWEEN 0 AND 10))",
+        )
+        .unwrap();
+        db.query("INSERT INTO counters (id) VALUES (1)").unwrap();
+    }
+    let mut reopened = Database::open_dev(&workspace).unwrap();
+    reopened
+        .query("INSERT INTO counters (id) VALUES (2)")
+        .unwrap();
+    assert!(reopened
+        .query("INSERT INTO counters (id, value) VALUES (3, 11)")
+        .is_err());
+
+    let image = reopened.bake_to_bytes().unwrap();
+    assert_eq!(u16::from_le_bytes([image[4], image[5]]), 4);
+    let mut imported = Database::import_bytes(&image).unwrap();
+    imported
+        .query("INSERT INTO counters (id) VALUES (3)")
+        .unwrap();
+    assert!(imported
+        .query("UPDATE counters SET value = 12 WHERE id = 3")
+        .is_err());
+    assert_eq!(
+        rows(&mut imported, "SELECT value FROM counters WHERE id = 3"),
+        vec![vec![Value::Int(1)]]
+    );
 }
 
 #[test]

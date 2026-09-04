@@ -9,8 +9,8 @@ model hypothesis lives in [docs/MONETIZATION.md](docs/MONETIZATION.md).
 
 ## Where PicoVolt is now
 
-Version **1.5.0** is published on crates.io, npm, and PyPI; **1.6.0** is the next
-release built on main. The current engine
+Version **1.6.0** is published on crates.io, npm, and PyPI; **1.7.0** is being
+built on main. The current engine
 includes page-backed storage, MVCC time-travel queries, persisted secondary
 indexes, a stable 1.x file format, Rust/JavaScript/Python/Go/C bindings, a CLI,
 an optional bounded HTTP server, and a durable browser path using OPFS and a Web
@@ -48,22 +48,29 @@ that bypass destructors after dirty-page sync, plus automatic opening of every
 checked-in historical `.pvdb` image. A longer soak can be run with
 `PICOVOLT_CRASH_CYCLES=1000 cargo test --test crash_recovery -- --nocapture`.
 
-## 1.7 — Application compatibility
+## 1.7 — Application compatibility (built on main)
 
 **Outcome:** common small applications can switch their storage adapter without
 rewriting normal query and schema code.
 
-Planned scope:
+Delivered scope:
 
-- table aliases and N-table equality joins;
-- `CASE WHEN` and a focused set of string, numeric, and null-handling functions;
-- richer schema declarations, including defaults and check constraints;
-- reusable prepared-statement parity in every maintained binding;
-- compatibility suites derived from the browser, Node, Python, and Go starters;
-- actionable errors that name the unsupported construct and its source position.
+- `AS` and bare table aliases plus left-deep, N-table equality `INNER` and
+  `LEFT` joins, including self-joins, joined grouping, and time travel;
+- searched `CASE WHEN` plus `LOWER`, `UPPER`, `TRIM`, `LENGTH`, `ABS`,
+  `COALESCE`, and `NULLIF` scalar functions;
+- schema-light type declarations, literal defaults, named-column/default
+  inserts, and SQL three-valued `CHECK` constraints with atomic validation;
+- reusable prepared statements in Rust, C, WebAssembly, JavaScript, Python,
+  Go, Python DB-API, and Go `database/sql`;
+- compatibility and adversarial suites derived from the browser, Node, Python,
+  and Go starters, plus frozen format-v4 coverage;
+- actionable parse errors that identify unsupported constructs and their source
+  position.
 
 Release gate: every maintained starter runs only against packages installed from
-the public registries, with no source-tree fallback.
+the public registries, with no source-tree fallback. The release workflows now
+enforce this as a post-publish gate rather than accepting a syntactic pin alone.
 
 ## 1.8 — Data movement and inspection
 

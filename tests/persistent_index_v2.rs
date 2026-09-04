@@ -2,7 +2,7 @@
 //! region. Covers version stamping, in-memory and production round-trips through
 //! the region, and back-compat for index-less files.
 
-use picovolt::{Database, FORMAT_VERSION_INDEX};
+use picovolt::{Database, FORMAT_VERSION_CONSTRAINTS, FORMAT_VERSION_INDEX, FORMAT_VERSION_SCHEMA};
 
 fn format_version(image: &[u8]) -> u16 {
     u16::from_le_bytes([image[4], image[5]])
@@ -114,5 +114,33 @@ fn binary_index_region_overhead_is_compact_and_bounded() {
     assert!(
         (12.0..40.0).contains(&per_key),
         "index region overhead {per_key:.1} bytes/key is outside the expected band"
+    );
+}
+
+#[test]
+fn schema_features_use_the_minimum_compatible_format_version() {
+    let mut typed = Database::open_memory();
+    typed
+        .query("CREATE TABLE typed (id INTEGER, name TEXT)")
+        .unwrap();
+    assert_eq!(format_version(&typed.bake_to_bytes().unwrap()), 1);
+
+    let mut legacy_constraints = Database::open_memory();
+    legacy_constraints
+        .query("CREATE TABLE constrained (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+        .unwrap();
+    assert_eq!(
+        format_version(&legacy_constraints.bake_to_bytes().unwrap()),
+        FORMAT_VERSION_CONSTRAINTS,
+        "1.4-era uniqueness/nullability metadata must remain version 3"
+    );
+
+    let mut rich_schema = Database::open_memory();
+    rich_schema
+        .query("CREATE TABLE rich (id INTEGER DEFAULT 1 CHECK (id > 0))")
+        .unwrap();
+    assert_eq!(
+        format_version(&rich_schema.bake_to_bytes().unwrap()),
+        FORMAT_VERSION_SCHEMA
     );
 }

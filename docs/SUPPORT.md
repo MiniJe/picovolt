@@ -21,8 +21,9 @@ browsers isolate local-file origins; run `npm install && npm run dev` in
 
 - PicoVolt 1.x readers continue to read older 1.x database images unless a
   release note explicitly documents an exceptional migration.
-- Current constrained images use format version 3. Older format versions remain
-  covered by checked-in golden fixtures.
+- Images with literal defaults or `CHECK` constraints use format version 4;
+  images with only `PRIMARY KEY`/`UNIQUE`/`NOT NULL` remain version 3. Every
+  earlier format remains covered by checked-in golden fixtures.
 - Newer-format images fail with a clear unsupported-version error in older
   readers; they are never silently interpreted as an older layout.
 
@@ -33,7 +34,11 @@ browsers isolate local-file origins; run `npm install && npm run dev` in
 - Explicit `BEGIN`/`COMMIT`/`ROLLBACK` works for in-memory and filesystem
   databases across the maintained bindings. Filesystem transactions currently
   create a complete rollback image, so their start cost scales with workspace
-  size; an incremental commit log remains a 2.0 design goal.
+  size. Compound autocommit statements use that same safety boundary after
+  validation. An incremental commit log and savepoints remain 2.0 design goals.
+- A mutation-phase I/O failure aborts an explicit transaction so a partially
+  applied statement cannot later be committed. Validation and resource-limit
+  failures happen before mutation and leave the transaction open.
 - A live filesystem transaction holds an OS-level transaction lock. Another
   opener fails instead of treating the live marker as crash residue.
 - SQL intentionally covers a practical embedded subset, not full SQL-92.

@@ -30,14 +30,16 @@ use serde::{Deserialize, Serialize};
 use crate::core::errors::{PvError, Result};
 use crate::core::types::{
     pack_addr, unpack_addr, FileHeader, PageId, RecordAddr, RecordEnvelope, TxId, FILE_HEADER_SIZE,
-    FORMAT_VERSION, FORMAT_VERSION_BASE, FORMAT_VERSION_INDEX, PAGE_HEADER_SIZE, PAGE_SIZE,
+    FORMAT_VERSION, FORMAT_VERSION_BASE, FORMAT_VERSION_CONSTRAINTS, FORMAT_VERSION_INDEX,
+    FORMAT_VERSION_SCHEMA, PAGE_HEADER_SIZE, PAGE_SIZE,
 };
 use crate::core::value::{Row, Value, DECIMAL_DEN};
 use crate::engine::compliance::{ComplianceMonitor, RuntimeMetrics};
 use crate::engine::mvcc::{Snapshot, TxManager};
 use crate::engine::query::{
-    agg_label, parse, AggFunc, Aggregate, CompareOp, HavingPred, HavingTerm, OrderBy, Predicate,
-    Projection, SelectExpr, SelectItem, Statement,
+    agg_label, parse, AggFunc, Aggregate, ColumnDefinition, CompareOp, HavingPred, HavingTerm,
+    InsertValue, JoinClause, OrderBy, Predicate, Projection, ScalarExpr, ScalarFunc, SelectExpr,
+    SelectItem, Statement, TableRef,
 };
 use crate::engine::wasm::WasmRuntime;
 use crate::storage::cache::{PageCache, DEFAULT_CACHE_PAGES};
@@ -71,6 +73,8 @@ struct Table {
     columns: Vec<String>,
     unique_columns: BTreeSet<String>,
     not_null_columns: BTreeSet<String>,
+    defaults: BTreeMap<String, Value>,
+    checks: Vec<Predicate>,
     first_page: Option<PageId>,
     tail_id: Option<PageId>,
     /// Resident write buffer (the current tail page); `None` in read-only mode.
@@ -97,7 +101,7 @@ struct Manifest {
     #[serde(default)]
     cas_dir: Vec<(u64, u64)>,
     /// `(absolute offset, length)` of the binary secondary-index region within the
-    /// monolith, present only in version-2 files that carry one. Absent for
+    /// monolith, present only in version-2+ files that carry one. Absent for
     /// version-1 files and development workspaces (which persist indexes as JSON
     /// `pairs` instead).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -114,7 +118,51 @@ fn check_manifest_version(m: &Manifest) -> Result<()> {
             m.format_version
         )));
     }
+    let required = required_manifest_version(m);
+    if m.format_version < required {
+        return Err(PvError::Corruption(format!(
+            "workspace format version {} understates schema/index features that require version {required}",
+            m.format_version
+        )));
+    }
     Ok(())
+}
+
+fn check_header_manifest_version(header_version: u16, manifest: &Manifest) -> Result<()> {
+    if header_version != manifest.format_version {
+        return Err(PvError::Corruption(format!(
+            "file header format version {header_version} does not match manifest version {}",
+            manifest.format_version
+        )));
+    }
+    Ok(())
+}
+
+fn required_manifest_version(manifest: &Manifest) -> u16 {
+    let mut required = FORMAT_VERSION_BASE;
+    if manifest.index_region.is_some()
+        || manifest
+            .tables
+            .iter()
+            .any(|table| !table.binary_indexes.is_empty())
+    {
+        required = required.max(FORMAT_VERSION_INDEX);
+    }
+    if manifest
+        .tables
+        .iter()
+        .any(|table| !table.unique_columns.is_empty() || !table.not_null_columns.is_empty())
+    {
+        required = required.max(FORMAT_VERSION_CONSTRAINTS);
+    }
+    if manifest
+        .tables
+        .iter()
+        .any(|table| !table.defaults.is_empty() || !table.checks.is_empty())
+    {
+        required = required.max(FORMAT_VERSION_SCHEMA);
+    }
+    required
 }
 
 #[derive(Serialize, Deserialize)]
@@ -125,6 +173,10 @@ struct TableMeta {
     unique_columns: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     not_null_columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    defaults: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    checks: Vec<Predicate>,
     first_page: Option<u64>,
     tail_id: Option<u64>,
     row_versions: u64,
@@ -297,6 +349,31 @@ impl QueryBudget {
         Ok(())
     }
 
+    /// Reject an index candidate set before allocating it when reading every
+    /// candidate would already exceed the caller's scan allowance. The rows
+    /// are still charged individually by the caller as they are decoded.
+    fn reserve_index_candidates(&mut self, count: usize) -> Result<()> {
+        self.checkpoint()?;
+        let remaining = self
+            .limits
+            .max_rows_scanned
+            .saturating_sub(self.rows_scanned);
+        if count > remaining {
+            return Err(PvError::ResourceLimit(format!(
+                "index produced more than {remaining} remaining row candidates"
+            )));
+        }
+        let bytes = count.saturating_mul(std::mem::size_of::<RecordAddr>());
+        self.materialized_bytes = self.materialized_bytes.saturating_add(bytes);
+        if self.materialized_bytes > self.limits.max_materialized_bytes {
+            return Err(PvError::ResourceLimit(format!(
+                "index candidates materialized more than {} bytes",
+                self.limits.max_materialized_bytes
+            )));
+        }
+        Ok(())
+    }
+
     fn materialize(&mut self, row: &Row) -> Result<()> {
         let bytes = row.iter().fold(std::mem::size_of::<Row>(), |total, value| {
             total.saturating_add(match value {
@@ -436,6 +513,7 @@ impl Database {
         let mono = Monolith::open(path)?;
         let manifest: Manifest = serde_json::from_slice(mono.manifest_bytes())?;
         check_manifest_version(&manifest)?;
+        check_header_manifest_version(mono.format_version(), &manifest)?;
         let cas = CasStore::from_mapped(
             mono.mmap(),
             mono.cas_offset(),
@@ -523,6 +601,7 @@ impl Database {
         }
         let manifest: Manifest = serde_json::from_slice(&tail[split..])?;
         check_manifest_version(&manifest)?;
+        check_header_manifest_version(header.format_version, &manifest)?;
         let pool_end = cas_pool_end(&manifest, cas_offset, manifest_offset)? - cas_offset;
         let pool = &tail[..pool_end];
 
@@ -627,6 +706,7 @@ impl Database {
         }
         let manifest: Manifest = serde_json::from_slice(&bytes[manifest_offset..])?;
         check_manifest_version(&manifest)?;
+        check_header_manifest_version(header.format_version, &manifest)?;
 
         // Copy the page-data block into an in-memory store.
         let mem = MemStore::new();
@@ -692,18 +772,6 @@ impl Database {
         // the page block and CAS pool are sized.
         let (region, descs) = self.build_index_region();
         let region_offset = (FILE_HEADER_SIZE + pages.len() * PAGE_SIZE + cas_pool.len()) as u64;
-        let has_constraints = self
-            .tables
-            .values()
-            .any(|table| !table.unique_columns.is_empty() || !table.not_null_columns.is_empty());
-        let format_version = if has_constraints {
-            FORMAT_VERSION
-        } else if region.is_empty() {
-            FORMAT_VERSION_BASE
-        } else {
-            FORMAT_VERSION_INDEX
-        };
-
         let manifest = self.build_manifest(
             true,
             &IndexPlan::Binary {
@@ -712,6 +780,7 @@ impl Database {
                 len: region.len() as u64,
             },
         )?;
+        let format_version = manifest.format_version;
         let json = serde_json::to_vec(&manifest)?;
         bake_monolith_bytes_with_index(&pages, &cas_pool, &region, &json, format_version)
     }
@@ -800,11 +869,16 @@ impl Database {
                 }
             }
             Err(error) => {
-                self.rollback_transaction().map_err(|rollback_error| {
-                    PvError::Transaction(format!(
-                        "operation failed ({error}); rollback also failed ({rollback_error})"
-                    ))
-                })?;
+                // A statement-level mutation failure inside this callback may
+                // already have aborted and restored the transaction. Otherwise
+                // this outer boundary owns the rollback.
+                if self.in_transaction() {
+                    self.rollback_transaction().map_err(|rollback_error| {
+                        PvError::Transaction(format!(
+                            "operation failed ({error}); rollback also failed ({rollback_error})"
+                        ))
+                    })?;
+                }
                 Err(error)
             }
         }
@@ -958,6 +1032,35 @@ impl Database {
         self.active_transaction.is_some()
     }
 
+    /// Run the mutation phase of a statement atomically. Deterministic
+    /// validation and row collection happen before callers enter this helper,
+    /// avoiding an O(database-size) backup for statements that never mutate.
+    ///
+    /// A statement outside an explicit transaction gets an implicit whole-state
+    /// transaction. If a mutation fails inside an explicit transaction, roll
+    /// that transaction back immediately: without savepoints, this is the only
+    /// safe way to ensure a partially-applied statement cannot later be committed.
+    fn atomic_mutation<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Database) -> Result<T>,
+    ) -> Result<T> {
+        if !self.in_transaction() {
+            return self.transaction(operation);
+        }
+
+        match operation(self) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                self.rollback_transaction().map_err(|rollback_error| {
+                    PvError::Transaction(format!(
+                        "statement failed ({error}); transaction rollback also failed ({rollback_error})"
+                    ))
+                })?;
+                Err(error)
+            }
+        }
+    }
+
     /// Execute a parameterized statement with explicit resource limits. This is
     /// intended for servers and other trust boundaries; embedded callers can use
     /// [`query_with`](Database::query_with) without imposed limits.
@@ -1028,13 +1131,24 @@ impl Database {
                 }
                 Ok(QueryResult::Done)
             }
+            Statement::CreateTableSchema {
+                name,
+                columns,
+                checks,
+                if_not_exists,
+            } => {
+                if !if_not_exists || !self.tables.contains_key(&name) {
+                    self.create_table_schema(&name, columns, checks)?;
+                }
+                Ok(QueryResult::Done)
+            }
             Statement::CreateIndex {
                 table,
                 column,
                 unique,
             } => {
                 if unique {
-                    self.validate_unique(&table, &column)?;
+                    self.validate_unique(&table, &column, budget.as_deref_mut())?;
                 }
                 self.create_index_bounded(&table, &column, budget.as_deref_mut())?;
                 if unique {
@@ -1048,18 +1162,80 @@ impl Database {
                 Ok(QueryResult::Done)
             }
             Statement::Insert { table, values } => {
-                self.insert(&table, values)?;
+                if let Some(budget) = budget.as_deref_mut() {
+                    budget.materialize(&values)?;
+                    budget.checkpoint()?;
+                }
+                self.ensure_writable()?;
+                self.validate_insert_values(&table, &values, &[], budget.as_deref_mut())?;
+                self.insert_validated(&table, values)?;
                 Ok(QueryResult::Mutated(1))
             }
             Statement::InsertMany { table, rows } => {
+                self.ensure_writable()?;
                 let count = rows.len();
                 let mut pending = Vec::with_capacity(count);
                 for values in &rows {
-                    self.validate_insert_values(&table, values, &pending)?;
+                    if let Some(budget) = budget.as_deref_mut() {
+                        budget.materialize(values)?;
+                    }
+                    self.validate_insert_values(&table, values, &pending, budget.as_deref_mut())?;
                     pending.push(values.clone());
                 }
-                for values in rows {
-                    self.insert(&table, values)?;
+                if let Some(budget) = budget.as_deref_mut() {
+                    budget.checkpoint()?;
+                }
+                if count > 1 {
+                    self.atomic_mutation(move |database| {
+                        for values in rows {
+                            database.insert_validated(&table, values)?;
+                        }
+                        Ok(())
+                    })?;
+                } else {
+                    for values in rows {
+                        self.insert_validated(&table, values)?;
+                    }
+                }
+                Ok(QueryResult::Mutated(count))
+            }
+            Statement::InsertSchema {
+                table,
+                target_columns,
+                rows,
+            } => {
+                self.ensure_writable()?;
+                let count = rows.len();
+                let mut normalized = Vec::with_capacity(count);
+                for row in rows {
+                    let values =
+                        self.normalize_insert_values(&table, target_columns.as_deref(), row)?;
+                    if let Some(budget) = budget.as_deref_mut() {
+                        budget.materialize(&values)?;
+                    }
+                    self.validate_insert_values(
+                        &table,
+                        &values,
+                        &normalized,
+                        budget.as_deref_mut(),
+                    )?;
+                    normalized.push(values);
+                }
+                if let Some(budget) = budget.as_deref_mut() {
+                    budget.checkpoint()?;
+                }
+                if count > 1 {
+                    self.atomic_mutation(move |database| {
+                        for values in normalized {
+                            database.insert_validated(&table, values)?;
+                        }
+                        Ok(())
+                    })?;
+                } else {
+                    for values in normalized {
+                        self.insert_validated(&table, values)?;
+                    }
+                    self.maybe_flush()?;
                 }
                 Ok(QueryResult::Mutated(count))
             }
@@ -1140,24 +1316,24 @@ impl Database {
             Statement::SelectJoin {
                 projection,
                 distinct,
-                left_table,
-                right_table,
-                left_column,
-                right_column,
-                left_join,
+                source,
+                joins,
+                before,
                 filter,
+                group_by,
+                having,
                 order,
                 limit,
                 offset,
             } => self.select_join(
-                &left_table,
-                &right_table,
-                &left_column,
-                &right_column,
-                left_join,
+                &source,
+                &joins,
+                before,
                 projection,
                 distinct,
                 filter.as_ref(),
+                group_by,
+                having,
                 &order,
                 limit,
                 offset,
@@ -1168,6 +1344,28 @@ impl Database {
                     &table,
                     &set.0,
                     &set.1,
+                    &filter,
+                    budget.as_deref_mut(),
+                )?;
+                Ok(QueryResult::Mutated(n))
+            }
+            Statement::UpdateDefault {
+                table,
+                column,
+                filter,
+            } => {
+                let value = self
+                    .tables
+                    .get(&table)
+                    .ok_or_else(|| PvError::TableNotFound(table.clone()))?
+                    .defaults
+                    .get(&column)
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let n = self.update_where_bounded(
+                    &table,
+                    &column,
+                    &value,
                     &filter,
                     budget.as_deref_mut(),
                 )?;
@@ -1204,16 +1402,80 @@ impl Database {
         unique_columns: Vec<String>,
         not_null_columns: Vec<String>,
     ) -> Result<()> {
+        self.create_table_internal(
+            name,
+            columns,
+            unique_columns,
+            not_null_columns,
+            BTreeMap::new(),
+            Vec::new(),
+        )
+    }
+
+    fn create_table_schema(
+        &mut self,
+        name: &str,
+        definitions: Vec<ColumnDefinition>,
+        checks: Vec<Predicate>,
+    ) -> Result<()> {
+        let columns = definitions
+            .iter()
+            .map(|definition| definition.name.clone())
+            .collect();
+        let unique_columns = definitions
+            .iter()
+            .filter(|definition| definition.unique)
+            .map(|definition| definition.name.clone())
+            .collect();
+        let not_null_columns = definitions
+            .iter()
+            .filter(|definition| definition.not_null)
+            .map(|definition| definition.name.clone())
+            .collect::<Vec<_>>();
+        let defaults = definitions
+            .into_iter()
+            .filter_map(|definition| definition.default.map(|value| (definition.name, value)))
+            .collect();
+        self.create_table_internal(
+            name,
+            columns,
+            unique_columns,
+            not_null_columns,
+            defaults,
+            checks,
+        )
+    }
+
+    fn create_table_internal(
+        &mut self,
+        name: &str,
+        columns: Vec<String>,
+        unique_columns: Vec<String>,
+        not_null_columns: Vec<String>,
+        defaults: BTreeMap<String, Value>,
+        checks: Vec<Predicate>,
+    ) -> Result<()> {
         self.ensure_writable()?;
         if self.tables.contains_key(name) {
             return Err(PvError::Schema(format!("table `{name}` already exists")));
         }
+        validate_schema_metadata(
+            name,
+            &columns,
+            &unique_columns,
+            &not_null_columns,
+            &defaults,
+            &checks,
+            false,
+        )?;
         self.tables.insert(
             name.to_string(),
             Table {
                 columns,
                 unique_columns: unique_columns.into_iter().collect(),
                 not_null_columns: not_null_columns.into_iter().collect(),
+                defaults,
+                checks,
                 first_page: None,
                 tail_id: None,
                 tail: None,
@@ -1224,8 +1486,13 @@ impl Database {
         self.maybe_flush()
     }
 
-    fn validate_unique(&self, table_name: &str, column: &str) -> Result<()> {
-        let (_, rows) = self.select(table_name, None)?;
+    fn validate_unique(
+        &self,
+        table_name: &str,
+        column: &str,
+        budget: Option<&mut QueryBudget>,
+    ) -> Result<()> {
+        let (_, rows) = self.select_filtered_bounded(table_name, None, None, budget)?;
         let table = self
             .tables
             .get(table_name)
@@ -1287,8 +1554,67 @@ impl Database {
     /// Insert one row (a new MVCC version under a fresh transaction id).
     pub fn insert(&mut self, table_name: &str, values: Vec<Value>) -> Result<()> {
         self.ensure_writable()?;
-        self.validate_insert_values(table_name, &values, &[])?;
+        self.validate_insert_values(table_name, &values, &[], None)?;
         self.insert_validated(table_name, values)
+    }
+
+    fn normalize_insert_values(
+        &self,
+        table_name: &str,
+        target_columns: Option<&[String]>,
+        row: Vec<InsertValue>,
+    ) -> Result<Vec<Value>> {
+        let table = self
+            .tables
+            .get(table_name)
+            .ok_or_else(|| PvError::TableNotFound(table_name.into()))?;
+        let value_for = |column: &str, value: InsertValue| match value {
+            InsertValue::Literal(value) => value,
+            InsertValue::Default => table.defaults.get(column).cloned().unwrap_or(Value::Null),
+        };
+
+        match target_columns {
+            None => {
+                if row.len() != table.columns.len() {
+                    return Err(PvError::Schema(format!(
+                        "table `{table_name}` expects {} columns, got {}",
+                        table.columns.len(),
+                        row.len()
+                    )));
+                }
+                Ok(table
+                    .columns
+                    .iter()
+                    .zip(row)
+                    .map(|(column, value)| value_for(column, value))
+                    .collect())
+            }
+            Some(targets) => {
+                if row.len() != targets.len() {
+                    return Err(PvError::Schema(format!(
+                        "INSERT target list has {} columns but row has {} values",
+                        targets.len(),
+                        row.len()
+                    )));
+                }
+                let mut values = table
+                    .columns
+                    .iter()
+                    .map(|column| table.defaults.get(column).cloned().unwrap_or(Value::Null))
+                    .collect::<Vec<_>>();
+                let mut seen = BTreeSet::new();
+                for (target, value) in targets.iter().zip(row) {
+                    if !seen.insert(target) {
+                        return Err(PvError::Schema(format!(
+                            "duplicate INSERT target column `{target}`"
+                        )));
+                    }
+                    let index = column_index(table, target)?;
+                    values[index] = value_for(target, value);
+                }
+                Ok(values)
+            }
+        }
     }
 
     fn validate_insert_values(
@@ -1296,45 +1622,43 @@ impl Database {
         table_name: &str,
         values: &[Value],
         pending: &[Vec<Value>],
+        mut budget: Option<&mut QueryBudget>,
     ) -> Result<()> {
-        let arity = self
-            .tables
-            .get(table_name)
-            .ok_or_else(|| PvError::TableNotFound(table_name.into()))?
-            .columns
-            .len();
-        if values.len() != arity {
-            return Err(PvError::Schema(format!(
-                "table `{table_name}` expects {arity} columns, got {}",
-                values.len()
-            )));
-        }
+        self.validate_row_constraints(table_name, values)?;
 
-        let (columns, unique_columns, not_null_columns) = {
+        let (columns, unique_columns) = {
             let table = self.tables.get(table_name).expect("existence checked");
-            (
-                table.columns.clone(),
-                table.unique_columns.clone(),
-                table.not_null_columns.clone(),
-            )
+            (table.columns.clone(), table.unique_columns.clone())
         };
-        for column in &not_null_columns {
-            let ix = col_pos(&columns, column)?;
-            if values[ix] == Value::Null {
-                return Err(PvError::Schema(format!(
-                    "column `{column}` may not be NULL"
-                )));
-            }
-        }
         for column in &unique_columns {
             let ix = col_pos(&columns, column)?;
             if values[ix] != Value::Null {
-                let (_, existing) = self.select(table_name, None)?;
-                if existing
-                    .iter()
-                    .chain(pending.iter())
-                    .any(|row| values_equal(&row[ix], &values[ix]))
-                {
+                let mut duplicate_pending = false;
+                for row in pending {
+                    if let Some(budget) = budget.as_deref_mut() {
+                        budget.scan_row()?;
+                    }
+                    if values_equal(&row[ix], &values[ix]) {
+                        duplicate_pending = true;
+                        break;
+                    }
+                }
+                if duplicate_pending {
+                    return Err(PvError::Schema(format!(
+                        "duplicate value for unique column `{column}`"
+                    )));
+                }
+                let predicate = Predicate::eq(column, values[ix].clone());
+                let duplicate_existing = !self
+                    .select_filtered_bounded(
+                        table_name,
+                        Some(&predicate),
+                        None,
+                        budget.as_deref_mut(),
+                    )?
+                    .1
+                    .is_empty();
+                if duplicate_existing {
                     return Err(PvError::Schema(format!(
                         "duplicate value for unique column `{column}`"
                     )));
@@ -1345,7 +1669,44 @@ impl Database {
         Ok(())
     }
 
+    fn validate_row_constraints(&self, table_name: &str, values: &[Value]) -> Result<()> {
+        let table = self
+            .tables
+            .get(table_name)
+            .ok_or_else(|| PvError::TableNotFound(table_name.into()))?;
+        if values.len() != table.columns.len() {
+            return Err(PvError::Schema(format!(
+                "table `{table_name}` expects {} columns, got {}",
+                table.columns.len(),
+                values.len()
+            )));
+        }
+        validate_record_shape(values)?;
+        for column in &table.not_null_columns {
+            let index = col_pos(&table.columns, column)?;
+            if values[index] == Value::Null {
+                return Err(PvError::Schema(format!(
+                    "column `{column}` may not be NULL"
+                )));
+            }
+        }
+        for (index, check) in table.checks.iter().enumerate() {
+            if check_result(check, &table.columns, values)? == Some(false) {
+                return Err(PvError::Schema(format!(
+                    "CHECK constraint {} failed on table `{table_name}`",
+                    index + 1
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn insert_validated(&mut self, table_name: &str, values: Vec<Value>) -> Result<()> {
+        // Keep this internal boundary defensive: rich INSERT statements call it
+        // directly after batch validation, and production handles must never get
+        // as far as allocating a transaction or touching the CAS.
+        self.ensure_writable()?;
+        validate_record_shape(&values)?;
         let tx = self.txm.begin_write();
         let envelope = RecordEnvelope::new(tx, 0);
         let record = encode_record(&envelope, &values, &mut self.cas)?;
@@ -1403,12 +1764,21 @@ impl Database {
         if let Some(budget) = budget {
             budget.checkpoint()?;
         }
+        if matches.len() > 1 {
+            let table_name = table_name.to_string();
+            return self
+                .atomic_mutation(move |database| database.apply_deletes(&table_name, &matches));
+        }
+        self.apply_deletes(table_name, &matches)
+    }
+
+    fn apply_deletes(&mut self, table_name: &str, matches: &[(RecordAddr, Row)]) -> Result<usize> {
         let tx = self.txm.begin_write();
 
         let table = self.tables.get_mut(table_name).expect("existence checked");
         {
             let mut cache = self.cache.borrow_mut();
-            for (addr, _) in &matches {
+            for (addr, _) in matches {
                 patch_delete_at(&mut cache, table, *addr, tx)?;
             }
         }
@@ -1434,7 +1804,7 @@ impl Database {
         check_predicate_columns(&columns, pred)?;
         let mut hits: Vec<(RecordAddr, Row)> = Vec::new();
         let mut cache = self.cache.borrow_mut();
-        if let Some(addrs) = index_candidates(table, pred) {
+        if let Some(addrs) = index_candidates(table, pred, budget.as_deref_mut())? {
             for addr in addrs {
                 if let Some(budget) = budget.as_deref_mut() {
                     budget.scan_row()?;
@@ -1483,76 +1853,88 @@ impl Database {
         Ok((columns, rows))
     }
 
-    /// Execute a basic equality join. The right side is hashed once, giving
-    /// linear expected execution rather than a nested-loop scan.
-    #[allow(clippy::too_many_arguments)] // each argument is a parsed JOIN clause
+    /// Execute an aliased source and its equality joins from left to right. Each
+    /// newly introduced relation is keyed once, avoiding a nested-loop scan.
+    #[allow(clippy::too_many_arguments)] // each argument is a parsed SELECT clause
     fn select_join(
         &self,
-        left_table: &str,
-        right_table: &str,
-        left_column: &str,
-        right_column: &str,
-        left_join: bool,
+        source: &TableRef,
+        joins: &[JoinClause],
+        before: Option<u64>,
         projection: Projection,
         distinct: bool,
         filter: Option<&Predicate>,
+        group_by: Vec<String>,
+        having: Option<HavingPred>,
         order: &[OrderBy],
         limit: Option<usize>,
         offset: usize,
         mut budget: Option<&mut QueryBudget>,
     ) -> Result<QueryResult> {
-        let (left_columns, left_rows) =
-            self.select_filtered_bounded(left_table, None, None, budget.as_deref_mut())?;
-        let (right_columns, right_rows) =
-            self.select_filtered_bounded(right_table, None, None, budget.as_deref_mut())?;
-        let left_key = join_side_col_pos(&left_columns, left_table, left_column)?;
-        let right_key = join_side_col_pos(&right_columns, right_table, right_column)?;
+        let (source_columns, mut rows) =
+            self.select_filtered_bounded(&source.name, None, before, budget.as_deref_mut())?;
+        let mut columns: Vec<String> = source_columns
+            .into_iter()
+            .map(|column| format!("{}.{}", source.qualifier(), column))
+            .collect();
 
-        let mut right_by_key: BTreeMap<Value, Vec<&Row>> = BTreeMap::new();
-        for row in &right_rows {
-            if row[right_key] != Value::Null {
-                right_by_key
-                    .entry(join_key(&row[right_key]))
-                    .or_default()
-                    .push(row);
+        for join in joins {
+            let (right_columns, right_rows) = self.select_filtered_bounded(
+                &join.table.name,
+                None,
+                before,
+                budget.as_deref_mut(),
+            )?;
+            let qualified_right: Vec<String> = right_columns
+                .iter()
+                .map(|column| format!("{}.{}", join.table.qualifier(), column))
+                .collect();
+            let (left_key, right_key) = resolve_join_keys(
+                &columns,
+                &qualified_right,
+                &join.first_column,
+                &join.second_column,
+            )?;
+
+            let mut right_by_key: BTreeMap<Value, Vec<&Row>> = BTreeMap::new();
+            for row in &right_rows {
+                if row[right_key] != Value::Null {
+                    right_by_key
+                        .entry(join_key(&row[right_key]))
+                        .or_default()
+                        .push(row);
+                }
             }
-        }
 
-        let mut rows = Vec::new();
-        for left in &left_rows {
-            let matches = if left[left_key] == Value::Null {
-                None
-            } else {
-                right_by_key.get(&join_key(&left[left_key]))
-            };
-            if let Some(matches) = matches {
-                for right in matches {
+            let mut joined_rows = Vec::new();
+            for left in &rows {
+                let matches = if left[left_key] == Value::Null {
+                    None
+                } else {
+                    right_by_key.get(&join_key(&left[left_key]))
+                };
+                if let Some(matches) = matches {
+                    for right in matches {
+                        let mut row = left.clone();
+                        row.extend_from_slice(right);
+                        if let Some(budget) = budget.as_deref_mut() {
+                            budget.materialize(&row)?;
+                        }
+                        joined_rows.push(row);
+                    }
+                } else if join.left_join {
                     let mut row = left.clone();
-                    row.extend_from_slice(right);
+                    row.resize(row.len() + right_columns.len(), Value::Null);
                     if let Some(budget) = budget.as_deref_mut() {
                         budget.materialize(&row)?;
                     }
-                    rows.push(row);
+                    joined_rows.push(row);
                 }
-            } else if left_join {
-                let mut row = left.clone();
-                row.resize(row.len() + right_columns.len(), Value::Null);
-                if let Some(budget) = budget.as_deref_mut() {
-                    budget.materialize(&row)?;
-                }
-                rows.push(row);
             }
+            columns.extend(qualified_right);
+            rows = joined_rows;
         }
 
-        let columns: Vec<String> = left_columns
-            .iter()
-            .map(|column| format!("{left_table}.{column}"))
-            .chain(
-                right_columns
-                    .iter()
-                    .map(|column| format!("{right_table}.{column}")),
-            )
-            .collect();
         if let Some(filter) = filter {
             check_predicate_columns(&columns, filter)?;
             rows = rows
@@ -1564,7 +1946,24 @@ impl Database {
                 })
                 .collect::<Result<Vec<_>>>()?;
         }
-        project_select(columns, rows, projection, order, distinct, limit, offset)
+        let grouped =
+            !group_by.is_empty() || projection_has_aggregate(&projection) || having.is_some();
+        if grouped {
+            let items = projection_to_items(projection)?;
+            project_grouped(
+                columns,
+                rows,
+                items,
+                group_by,
+                having,
+                order.to_vec(),
+                distinct,
+                limit,
+                offset,
+            )
+        } else {
+            project_select(columns, rows, projection, order, distinct, limit, offset)
+        }
     }
 
     /// The column names of `table`, in order.
@@ -1666,7 +2065,7 @@ impl Database {
             }
             Some(pred) => {
                 check_predicate_columns(&columns, pred)?;
-                if let Some(addrs) = index_candidates(table, pred) {
+                if let Some(addrs) = index_candidates(table, pred, budget.as_deref_mut())? {
                     for addr in addrs {
                         if let Some(budget) = budget.as_deref_mut() {
                             budget.scan_row()?;
@@ -1843,39 +2242,61 @@ impl Database {
         if is_unique && *set_value != Value::Null {
             let already_matching = matches
                 .iter()
-                .filter(|(_, row)| row[set_ix] == *set_value)
+                .filter(|(_, row)| values_equal(&row[set_ix], set_value))
                 .count();
+            let unique_predicate = Predicate::eq(set_column, set_value.clone());
             let existing = self
-                .select(table_name, None)?
+                .select_filtered_bounded(
+                    table_name,
+                    Some(&unique_predicate),
+                    None,
+                    budget.as_deref_mut(),
+                )?
                 .1
-                .iter()
-                .filter(|row| values_equal(&row[set_ix], set_value))
-                .count();
+                .len();
             if count > 1 || existing > already_matching {
                 return Err(PvError::Schema(format!(
                     "duplicate value for unique column `{set_column}`"
                 )));
             }
         }
+        // Validate every replacement before tombstoning any visible row. A
+        // failed CHECK/NOT NULL constraint must leave the table unchanged.
+        for (_, row) in &matches {
+            let mut replacement = row.clone();
+            replacement[set_ix] = set_value.clone();
+            if let Some(budget) = budget.as_deref_mut() {
+                budget.materialize(&replacement)?;
+            }
+            self.validate_row_constraints(table_name, &replacement)?;
+        }
         if let Some(budget) = budget {
             budget.checkpoint()?;
         }
 
-        // Tombstone the old versions, then insert updated copies.
-        let del_tx = self.txm.begin_write();
-        {
-            let table = self.tables.get_mut(table_name).expect("existence checked");
-            let mut cache = self.cache.borrow_mut();
-            for (addr, _) in &matches {
-                patch_delete_at(&mut cache, table, *addr, del_tx)?;
+        // Updating even one row is a compound mutation (tombstone + append), so
+        // enter the rollback boundary only after all validation has succeeded.
+        let table_name = table_name.to_string();
+        let set_value = set_value.clone();
+        self.atomic_mutation(move |database| {
+            let del_tx = database.txm.begin_write();
+            {
+                let table = database
+                    .tables
+                    .get_mut(&table_name)
+                    .expect("existence checked");
+                let mut cache = database.cache.borrow_mut();
+                for (addr, _) in &matches {
+                    patch_delete_at(&mut cache, table, *addr, del_tx)?;
+                }
             }
-        }
-        for (_, mut row) in matches {
-            row[set_ix] = set_value.clone();
-            self.insert(table_name, row)?;
-        }
-        self.maybe_flush()?;
-        Ok(count)
+            for (_, mut row) in matches {
+                row[set_ix] = set_value.clone();
+                database.insert_validated(&table_name, row)?;
+            }
+            database.maybe_flush()?;
+            Ok(count)
+        })
     }
 
     /// Drop a table from the catalog. (Its pages are orphaned until a future
@@ -2150,6 +2571,8 @@ impl Database {
                     columns: t.columns.clone(),
                     unique_columns: t.unique_columns.iter().cloned().collect(),
                     not_null_columns: t.not_null_columns.iter().cloned().collect(),
+                    defaults: t.defaults.clone(),
+                    checks: t.checks.clone(),
                     first_page: t.first_page,
                     tail_id: t.tail_id,
                     row_versions: t.row_versions,
@@ -2160,25 +2583,30 @@ impl Database {
             })
             .collect();
         let page_count = self.cache.borrow().backend().page_count();
-        let has_constraints = self
+        let has_legacy_constraints = self
             .tables
             .values()
             .any(|table| !table.unique_columns.is_empty() || !table.not_null_columns.is_empty());
+        let has_schema_constraints = self
+            .tables
+            .values()
+            .any(|table| !table.defaults.is_empty() || !table.checks.is_empty());
+        let schema_version = if has_schema_constraints {
+            FORMAT_VERSION_SCHEMA
+        } else if has_legacy_constraints {
+            FORMAT_VERSION_CONSTRAINTS
+        } else {
+            FORMAT_VERSION_BASE
+        };
         let (format_version, index_region) = match plan {
-            // Dev workspaces and region-less files stay at the base version so an
-            // older build can still read them.
-            IndexPlan::Json if has_constraints => (FORMAT_VERSION, None),
-            IndexPlan::Json => (FORMAT_VERSION_BASE, None),
-            IndexPlan::Binary { offset, len, .. } if *len > 0 => {
-                let version = if has_constraints {
-                    FORMAT_VERSION
-                } else {
-                    FORMAT_VERSION_INDEX
-                };
-                (version, Some((*offset, *len)))
-            }
-            IndexPlan::Binary { .. } if has_constraints => (FORMAT_VERSION, None),
-            IndexPlan::Binary { .. } => (FORMAT_VERSION_BASE, None),
+            // JSON indexes predate the binary index region and do not by
+            // themselves advance the format version.
+            IndexPlan::Json => (schema_version, None),
+            IndexPlan::Binary { offset, len, .. } if *len > 0 => (
+                schema_version.max(FORMAT_VERSION_INDEX),
+                Some((*offset, *len)),
+            ),
+            IndexPlan::Binary { .. } => (schema_version, None),
         };
         Ok(Manifest {
             format_version,
@@ -2482,27 +2910,41 @@ fn project_select(
             (cols, projected)
         }
         Projection::Items(items) => {
-            // Only non-aggregate items reach this path (aggregates and grouping go
-            // through `project_grouped`). Each item projects its source column and is
-            // named by its alias when present.
-            let mut idxs = Vec::with_capacity(items.len());
-            let mut names = Vec::with_capacity(items.len());
-            for it in &items {
-                match &it.expr {
-                    SelectExpr::Column(c) => {
-                        let ix = projection_col_pos(&columns, c)?;
-                        idxs.push(ix);
-                        names.push(it.alias.clone().unwrap_or_else(|| c.clone()));
-                    }
-                    SelectExpr::Aggregate(_) => {
-                        unreachable!("aggregates go through project_grouped")
-                    }
-                }
+            // Aggregates go through `project_grouped`; this path evaluates columns
+            // and scalar expressions once per row.
+            if items
+                .iter()
+                .any(|item| matches!(item.expr, SelectExpr::Aggregate(_)))
+            {
+                return Err(PvError::Query(
+                    "aggregate projection requires the grouped execution path".into(),
+                ));
             }
+            let names = items
+                .iter()
+                .map(|item| {
+                    item.alias.clone().unwrap_or_else(|| match &item.expr {
+                        SelectExpr::Column(column) => column.clone(),
+                        SelectExpr::Scalar(expr) => scalar_label(expr),
+                        SelectExpr::Aggregate(_) => unreachable!("rejected above"),
+                    })
+                })
+                .collect();
             let projected = rows
                 .into_iter()
-                .map(|r| idxs.iter().map(|&i| r[i].clone()).collect())
-                .collect();
+                .map(|row| {
+                    items
+                        .iter()
+                        .map(|item| match &item.expr {
+                            SelectExpr::Column(column) => {
+                                Ok(row[projection_col_pos(&columns, column)?].clone())
+                            }
+                            SelectExpr::Scalar(expr) => eval_scalar(expr, &columns, &row),
+                            SelectExpr::Aggregate(_) => unreachable!("rejected above"),
+                        })
+                        .collect::<Result<Row>>()
+                })
+                .collect::<Result<Vec<_>>>()?;
             (names, projected)
         }
     };
@@ -2525,31 +2967,68 @@ fn project_select(
 /// Resolve an output column, accepting a unique unqualified suffix for joined
 /// rows (for example `name` for `users.name`). Ambiguous names stay errors.
 fn projection_col_pos(columns: &[String], name: &str) -> Result<usize> {
-    if let Some(ix) = columns.iter().position(|column| column == name) {
-        return Ok(ix);
+    match column_matches(columns, name).as_slice() {
+        [] => Err(PvError::Schema(format!("no column `{name}`"))),
+        [ix] => Ok(*ix),
+        _ => Err(PvError::Schema(format!("ambiguous column `{name}`"))),
     }
-    let suffix = format!(".{name}");
-    let mut matches = columns
-        .iter()
-        .enumerate()
-        .filter(|(_, column)| column.ends_with(&suffix));
-    let Some((ix, _)) = matches.next() else {
-        return Err(PvError::Schema(format!("no column `{name}`")));
-    };
-    if matches.next().is_some() {
-        return Err(PvError::Schema(format!("ambiguous column `{name}`")));
-    }
-    Ok(ix)
 }
 
-fn join_side_col_pos(columns: &[String], table: &str, reference: &str) -> Result<usize> {
-    match reference.split_once('.') {
-        Some((qualifier, column)) if qualifier == table => col_pos(columns, column),
-        Some((qualifier, _)) => Err(PvError::Schema(format!(
-            "join column `{reference}` belongs to `{qualifier}`, expected `{table}`"
-        ))),
-        None => col_pos(columns, reference),
+/// Candidate positions for a column reference. Qualified references require an
+/// exact match; unqualified references may match one qualified suffix.
+fn column_matches(columns: &[String], name: &str) -> Vec<usize> {
+    let exact: Vec<usize> = columns
+        .iter()
+        .enumerate()
+        .filter_map(|(index, column)| (column == name).then_some(index))
+        .collect();
+    if !exact.is_empty() || name.contains('.') {
+        return exact;
     }
+    let suffix = format!(".{name}");
+    columns
+        .iter()
+        .enumerate()
+        .filter_map(|(index, column)| column.ends_with(&suffix).then_some(index))
+        .collect()
+}
+
+/// Resolve an equality join regardless of which side the SQL author put first.
+/// One operand must resolve against the accumulated relation and the other
+/// against the relation introduced by the current JOIN.
+fn resolve_join_keys(
+    left_columns: &[String],
+    right_columns: &[String],
+    first: &str,
+    second: &str,
+) -> Result<(usize, usize)> {
+    let first_left = column_matches(left_columns, first);
+    let first_right = column_matches(right_columns, first);
+    let second_left = column_matches(left_columns, second);
+    let second_right = column_matches(right_columns, second);
+
+    if first_left.len() == 1 && second_right.len() == 1 {
+        return Ok((first_left[0], second_right[0]));
+    }
+    if second_left.len() == 1 && first_right.len() == 1 {
+        return Ok((second_left[0], first_right[0]));
+    }
+
+    for (reference, matches) in [
+        (first, &first_left),
+        (first, &first_right),
+        (second, &second_left),
+        (second, &second_right),
+    ] {
+        if matches.len() > 1 {
+            return Err(PvError::Schema(format!(
+                "ambiguous join column `{reference}`"
+            )));
+        }
+    }
+    Err(PvError::Schema(format!(
+        "JOIN ON must compare one column from the joined relation with one earlier column; could not resolve `{first} = {second}`"
+    )))
 }
 
 /// Resolve `order` into `(column index, descending)` keys against `columns`.
@@ -2651,30 +3130,108 @@ fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
 /// (ordered scan), directly or as an `AND` conjunct, never under `OR`. Returns
 /// `None` to fall back to a full scan. Candidates are re-checked against the full
 /// predicate by the caller, so an over-broad set is still correct.
-fn index_candidates(table: &Table, pred: &Predicate) -> Option<Vec<RecordAddr>> {
+fn index_candidates(
+    table: &Table,
+    pred: &Predicate,
+    mut budget: Option<&mut QueryBudget>,
+) -> Result<Option<Vec<RecordAddr>>> {
     use std::ops::Bound::{Excluded, Included, Unbounded};
     match pred {
         Predicate::Compare { column, op, value } => {
-            let idx = table.indexes.get(column)?;
+            let Some(idx) = table.indexes.get(column) else {
+                return Ok(None);
+            };
             let v = || value.clone();
-            match op {
-                CompareOp::Eq => Some(idx.lookup(value).to_vec()),
-                CompareOp::Lt => Some(idx.range((Unbounded, Excluded(v())))),
-                CompareOp::Le => Some(idx.range((Unbounded, Included(v())))),
-                CompareOp::Gt => Some(idx.range((Excluded(v()), Unbounded))),
-                CompareOp::Ge => Some(idx.range((Included(v()), Unbounded))),
+            let candidates = match op {
+                CompareOp::Eq => Some(index_equality_candidates(
+                    idx,
+                    value,
+                    budget.as_deref_mut(),
+                )?),
+                // Value's persisted total order is type-strict, while SQL range
+                // comparisons promote Int/Decimal pairs by magnitude. A raw
+                // BTree range would therefore miss valid mixed-numeric rows.
+                // Bounded callers deliberately fall back to the streaming scan:
+                // SecondaryIndex::range materializes its full result before we
+                // can inspect its length, bypassing the allocation budget.
+                CompareOp::Lt
+                    if budget.is_none() && !matches!(value, Value::Int(_) | Value::Decimal(_)) =>
+                {
+                    Some(idx.range((Unbounded, Excluded(v()))))
+                }
+                CompareOp::Le
+                    if budget.is_none() && !matches!(value, Value::Int(_) | Value::Decimal(_)) =>
+                {
+                    Some(idx.range((Unbounded, Included(v()))))
+                }
+                CompareOp::Gt
+                    if budget.is_none() && !matches!(value, Value::Int(_) | Value::Decimal(_)) =>
+                {
+                    Some(idx.range((Excluded(v()), Unbounded)))
+                }
+                CompareOp::Ge
+                    if budget.is_none() && !matches!(value, Value::Int(_) | Value::Decimal(_)) =>
+                {
+                    Some(idx.range((Included(v()), Unbounded)))
+                }
                 // `!=` and `LIKE`/`NOT LIKE` aren't range-shaped, a scan is no worse.
-                CompareOp::Ne | CompareOp::Like | CompareOp::NotLike => None,
+                CompareOp::Ne
+                | CompareOp::Lt
+                | CompareOp::Le
+                | CompareOp::Gt
+                | CompareOp::Ge
+                | CompareOp::Like
+                | CompareOp::NotLike => None,
+            };
+            Ok(candidates)
+        }
+        Predicate::And(a, b) => {
+            if let Some(candidates) = index_candidates(table, a, budget.as_deref_mut())? {
+                Ok(Some(candidates))
+            } else {
+                index_candidates(table, b, budget)
             }
         }
-        Predicate::And(a, b) => index_candidates(table, a).or_else(|| index_candidates(table, b)),
         // IN / BETWEEN / IS NULL aren't lowered to the index yet: a full scan is
         // correct (the caller re-checks the full predicate), just not optimized.
         Predicate::In { .. }
         | Predicate::Between { .. }
         | Predicate::IsNull { .. }
-        | Predicate::Or(_, _) => None,
+        | Predicate::Or(_, _) => Ok(None),
     }
+}
+
+/// Fetch every type representation equal under SQL numeric promotion. The
+/// underlying BTree is deliberately type-strict, so an exact lookup alone would
+/// miss `Int(1)` when the predicate contains decimal `1.0` (and vice versa).
+fn index_equality_candidates(
+    index: &SecondaryIndex,
+    value: &Value,
+    budget: Option<&mut QueryBudget>,
+) -> Result<Vec<RecordAddr>> {
+    let exact = index.lookup(value);
+    let equivalent = match value {
+        Value::Int(value) => index.lookup(&Value::Decimal(promote_int(*value))),
+        Value::Decimal(value) if value % DECIMAL_DEN == 0 => {
+            if let Ok(integer) = i64::try_from(value / DECIMAL_DEN) {
+                index.lookup(&Value::Int(integer))
+            } else {
+                &[]
+            }
+        }
+        _ => &[],
+    };
+    let count = exact
+        .len()
+        .checked_add(equivalent.len())
+        .ok_or_else(|| PvError::ResourceLimit("index candidate count overflowed".into()))?;
+    if let Some(budget) = budget {
+        budget.reserve_index_candidates(count)?;
+    }
+    let mut candidates = Vec::with_capacity(count);
+    candidates.extend_from_slice(exact);
+    candidates.extend_from_slice(equivalent);
+    Ok(candidates)
 }
 
 /// Error if the predicate references a column the table doesn't have.
@@ -2691,44 +3248,190 @@ fn check_predicate_columns(columns: &[String], pred: &Predicate) -> Result<()> {
     }
 }
 
+/// Validate the deterministic, on-page shape of a row without interning any CAS
+/// payloads or advancing the transaction clock. Batch INSERT and UPDATE use this
+/// before their first mutation so a later oversized row cannot leave a partial
+/// write or tombstone the original version.
+fn validate_record_shape(values: &[Value]) -> Result<()> {
+    let _: u16 = values
+        .len()
+        .try_into()
+        .map_err(|_| PvError::Schema("too many columns (max 65535)".into()))?;
+    let mut len = RecordEnvelope::ENCODED_LEN + std::mem::size_of::<u16>();
+    for value in values {
+        let field_len = match value {
+            Value::Null => 1,
+            Value::Int(_) => 1 + std::mem::size_of::<i64>(),
+            Value::Decimal(_) => 1 + std::mem::size_of::<i128>(),
+            Value::Text(value) => encoded_bytes_field_len(value.len()),
+            Value::Blob(value) => encoded_bytes_field_len(value.len()),
+        };
+        len = len.saturating_add(field_len);
+    }
+    if len > MAX_RECORD {
+        return Err(PvError::Schema(format!(
+            "record of {len} bytes exceeds page capacity ({MAX_RECORD})"
+        )));
+    }
+    Ok(())
+}
+
+fn encoded_bytes_field_len(len: usize) -> usize {
+    if CasStore::should_intern(len) {
+        1 + std::mem::size_of::<u64>()
+    } else {
+        1 + std::mem::size_of::<u16>() + len
+    }
+}
+
+fn validate_schema_metadata(
+    table: &str,
+    columns: &[String],
+    unique_columns: &[String],
+    not_null_columns: &[String],
+    defaults: &BTreeMap<String, Value>,
+    checks: &[Predicate],
+    persisted: bool,
+) -> Result<()> {
+    let invalid = |message: String| {
+        if persisted {
+            PvError::Corruption(format!("invalid schema for table `{table}`: {message}"))
+        } else {
+            PvError::Schema(format!("invalid schema for table `{table}`: {message}"))
+        }
+    };
+    if columns.is_empty() {
+        return Err(invalid("at least one column is required".into()));
+    }
+    if columns.len() > u16::MAX as usize {
+        return Err(invalid("too many columns (max 65535)".into()));
+    }
+    let mut seen = BTreeSet::new();
+    for column in columns {
+        if !seen.insert(column) {
+            return Err(invalid(format!("duplicate column `{column}`")));
+        }
+    }
+    for (kind, constrained) in [
+        ("UNIQUE/PRIMARY KEY", unique_columns),
+        ("NOT NULL/PRIMARY KEY", not_null_columns),
+    ] {
+        for column in constrained {
+            if !seen.contains(column) {
+                return Err(invalid(format!(
+                    "{kind} references unknown column `{column}`"
+                )));
+            }
+        }
+    }
+    for column in defaults.keys() {
+        if !seen.contains(column) {
+            return Err(invalid(format!(
+                "DEFAULT references unknown column `{column}`"
+            )));
+        }
+    }
+    let mut nodes = 0usize;
+    for check in checks {
+        validate_check_shape(check, columns, 1, &mut nodes).map_err(&invalid)?;
+    }
+    Ok(())
+}
+
+const MAX_CHECK_DEPTH: usize = 32;
+const MAX_CHECK_NODES: usize = 256;
+
+fn validate_check_shape(
+    predicate: &Predicate,
+    columns: &[String],
+    depth: usize,
+    nodes: &mut usize,
+) -> std::result::Result<(), String> {
+    *nodes = nodes.saturating_add(1);
+    if let Predicate::In { values, .. } = predicate {
+        // Candidate literals are part of the expression's runtime cost even
+        // though serde represents the whole IN predicate as one AST node.
+        *nodes = nodes.saturating_add(values.len());
+    }
+    if depth > MAX_CHECK_DEPTH || *nodes > MAX_CHECK_NODES {
+        return Err(format!(
+            "CHECK expression exceeds the {MAX_CHECK_DEPTH}-level/{MAX_CHECK_NODES}-node limit"
+        ));
+    }
+    match predicate {
+        Predicate::And(left, right) | Predicate::Or(left, right) => {
+            validate_check_shape(left, columns, depth + 1, nodes)?;
+            validate_check_shape(right, columns, depth + 1, nodes)
+        }
+        Predicate::Compare { column, .. }
+        | Predicate::In { column, .. }
+        | Predicate::Between { column, .. }
+        | Predicate::IsNull { column, .. } => {
+            if columns.iter().any(|known| known == column) {
+                Ok(())
+            } else {
+                Err(format!("CHECK references unknown column `{column}`"))
+            }
+        }
+    }
+}
+
 /// Evaluate a predicate against one row.
 fn row_matches(pred: &Predicate, columns: &[String], row: &[Value]) -> Result<bool> {
+    // WHERE and CASE WHEN discard UNKNOWN. Reuse the CHECK evaluator so every
+    // predicate form follows one implementation of SQL three-valued logic.
+    Ok(check_result(pred, columns, row)?.unwrap_or(false))
+}
+
+/// Evaluate a schema CHECK with SQL three-valued logic. `None` is UNKNOWN and,
+/// like TRUE, satisfies a CHECK constraint; only `Some(false)` is a violation.
+fn check_result(pred: &Predicate, columns: &[String], row: &[Value]) -> Result<Option<bool>> {
     match pred {
-        Predicate::And(a, b) => Ok(row_matches(a, columns, row)? && row_matches(b, columns, row)?),
-        Predicate::Or(a, b) => Ok(row_matches(a, columns, row)? || row_matches(b, columns, row)?),
-        Predicate::Compare { column, op, value } => Ok(eval_compare(
-            &row[projection_col_pos(columns, column)?],
-            *op,
-            value,
-        )),
+        Predicate::And(left, right) => {
+            let left = check_result(left, columns, row)?;
+            let right = check_result(right, columns, row)?;
+            Ok(match (left, right) {
+                (Some(false), _) | (_, Some(false)) => Some(false),
+                (Some(true), Some(true)) => Some(true),
+                _ => None,
+            })
+        }
+        Predicate::Or(left, right) => {
+            let left = check_result(left, columns, row)?;
+            let right = check_result(right, columns, row)?;
+            Ok(match (left, right) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            })
+        }
+        Predicate::Compare { column, op, value } => {
+            let cell = &row[projection_col_pos(columns, column)?];
+            if matches!(cell, Value::Null) || matches!(value, Value::Null) {
+                Ok(None)
+            } else {
+                Ok(Some(eval_compare(cell, *op, value)))
+            }
+        }
         Predicate::In {
             column,
             values,
             negated,
         } => {
-            let x = &row[projection_col_pos(columns, column)?];
-            // A null column value matches neither IN nor NOT IN.
-            if matches!(x, Value::Null) {
-                return Ok(false);
+            let cell = &row[projection_col_pos(columns, column)?];
+            if matches!(cell, Value::Null) {
+                return Ok(None);
             }
-            // SQL three-valued logic for a NULL inside the list: if nothing matches
-            // but the list contains a NULL, the result is UNKNOWN — neither IN nor
-            // NOT IN holds.
-            let mut matched = false;
-            let mut saw_null = false;
-            for v in values {
-                if matches!(v, Value::Null) {
-                    saw_null = true;
-                } else if values_equal(x, v) {
-                    matched = true;
-                }
-            }
+            let matched = values
+                .iter()
+                .filter(|value| !matches!(value, Value::Null))
+                .any(|value| values_equal(cell, value));
             if matched {
-                Ok(!negated)
-            } else if saw_null {
-                Ok(false)
+                Ok(Some(!negated))
+            } else if values.iter().any(|value| matches!(value, Value::Null)) {
+                Ok(None)
             } else {
-                Ok(*negated)
+                Ok(Some(*negated))
             }
         }
         Predicate::Between {
@@ -2737,18 +3440,20 @@ fn row_matches(pred: &Predicate, columns: &[String], row: &[Value]) -> Result<bo
             high,
             negated,
         } => {
-            let x = &row[projection_col_pos(columns, column)?];
-            // A null column value matches neither BETWEEN nor NOT BETWEEN.
-            if matches!(x, Value::Null) {
-                return Ok(false);
+            let cell = &row[projection_col_pos(columns, column)?];
+            if matches!(cell, Value::Null)
+                || matches!(low, Value::Null)
+                || matches!(high, Value::Null)
+            {
+                return Ok(None);
             }
-            let in_range = numeric_cmp(x, low) != std::cmp::Ordering::Less
-                && numeric_cmp(x, high) != std::cmp::Ordering::Greater;
-            Ok(in_range != *negated)
+            let in_range = numeric_cmp(cell, low) != std::cmp::Ordering::Less
+                && numeric_cmp(cell, high) != std::cmp::Ordering::Greater;
+            Ok(Some(in_range != *negated))
         }
         Predicate::IsNull { column, negated } => {
             let is_null = matches!(row[projection_col_pos(columns, column)?], Value::Null);
-            Ok(is_null != *negated)
+            Ok(Some(is_null != *negated))
         }
     }
 }
@@ -2805,6 +3510,11 @@ fn join_key(value: &Value) -> Value {
 /// across `Int`/`Decimal`; `LIKE`/`NOT LIKE` need two texts.
 fn eval_compare(lhs: &Value, op: CompareOp, rhs: &Value) -> bool {
     use std::cmp::Ordering;
+    // SQL comparisons with NULL are UNKNOWN. Callers that need to preserve the
+    // third state use `check_result`; boolean consumers (WHERE/HAVING) discard it.
+    if matches!(lhs, Value::Null) || matches!(rhs, Value::Null) {
+        return false;
+    }
     match op {
         CompareOp::Eq => values_equal(lhs, rhs),
         CompareOp::Ne => !values_equal(lhs, rhs),
@@ -2818,9 +3528,6 @@ fn eval_compare(lhs: &Value, op: CompareOp, rhs: &Value) -> bool {
             _ => false,
         },
         CompareOp::Lt | CompareOp::Le | CompareOp::Gt | CompareOp::Ge => {
-            if matches!(lhs, Value::Null) || matches!(rhs, Value::Null) {
-                return false;
-            }
             let ord = numeric_cmp(lhs, rhs);
             match op {
                 CompareOp::Lt => ord == Ordering::Less,
@@ -2880,6 +3587,121 @@ fn projection_to_items(projection: Projection) -> Result<Vec<SelectItem>> {
     }
 }
 
+fn scalar_label(expr: &ScalarExpr) -> String {
+    match expr {
+        ScalarExpr::Column(column) => column.clone(),
+        ScalarExpr::Literal(value) => value.to_string(),
+        ScalarExpr::Function {
+            function,
+            arguments,
+        } => {
+            let name = match function {
+                ScalarFunc::Lower => "lower",
+                ScalarFunc::Upper => "upper",
+                ScalarFunc::Trim => "trim",
+                ScalarFunc::Length => "length",
+                ScalarFunc::Abs => "abs",
+                ScalarFunc::Coalesce => "coalesce",
+                ScalarFunc::NullIf => "nullif",
+            };
+            let arguments = arguments
+                .iter()
+                .map(scalar_label)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{name}({arguments})")
+        }
+        ScalarExpr::Case { .. } => "case".into(),
+    }
+}
+
+fn eval_scalar(expr: &ScalarExpr, columns: &[String], row: &[Value]) -> Result<Value> {
+    match expr {
+        ScalarExpr::Column(column) => Ok(row[projection_col_pos(columns, column)?].clone()),
+        ScalarExpr::Literal(value) => Ok(value.clone()),
+        ScalarExpr::Case {
+            branches,
+            else_expr,
+        } => {
+            for (predicate, value) in branches {
+                if row_matches(predicate, columns, row)? {
+                    return eval_scalar(value, columns, row);
+                }
+            }
+            match else_expr {
+                Some(value) => eval_scalar(value, columns, row),
+                None => Ok(Value::Null),
+            }
+        }
+        ScalarExpr::Function {
+            function,
+            arguments,
+        } => {
+            if *function == ScalarFunc::Coalesce {
+                for argument in arguments {
+                    let value = eval_scalar(argument, columns, row)?;
+                    if !matches!(value, Value::Null) {
+                        return Ok(value);
+                    }
+                }
+                return Ok(Value::Null);
+            }
+            let values = arguments
+                .iter()
+                .map(|argument| eval_scalar(argument, columns, row))
+                .collect::<Result<Vec<_>>>()?;
+            eval_scalar_function(*function, &values)
+        }
+    }
+}
+
+fn eval_scalar_function(function: ScalarFunc, values: &[Value]) -> Result<Value> {
+    let type_error = |name: &str, expected: &str, value: &Value| {
+        PvError::Schema(format!(
+            "{name} expects {expected}, found {}",
+            value.type_name()
+        ))
+    };
+    match function {
+        ScalarFunc::Lower | ScalarFunc::Upper | ScalarFunc::Trim => match &values[0] {
+            Value::Null => Ok(Value::Null),
+            Value::Text(value) => Ok(Value::Text(match function {
+                ScalarFunc::Lower => value.to_lowercase(),
+                ScalarFunc::Upper => value.to_uppercase(),
+                ScalarFunc::Trim => value.trim().to_owned(),
+                _ => unreachable!(),
+            })),
+            value => Err(type_error("text function", "text", value)),
+        },
+        ScalarFunc::Length => match &values[0] {
+            Value::Null => Ok(Value::Null),
+            Value::Text(value) => Ok(Value::Int(value.chars().count() as i64)),
+            Value::Blob(value) => Ok(Value::Int(value.len() as i64)),
+            value => Err(type_error("LENGTH", "text or blob", value)),
+        },
+        ScalarFunc::Abs => match &values[0] {
+            Value::Null => Ok(Value::Null),
+            Value::Int(value) => value
+                .checked_abs()
+                .map(Value::Int)
+                .ok_or_else(|| PvError::Schema("ABS overflowed i64".into())),
+            Value::Decimal(value) => value
+                .checked_abs()
+                .map(Value::Decimal)
+                .ok_or_else(|| PvError::Schema("ABS overflowed decimal".into())),
+            value => Err(type_error("ABS", "a numeric value", value)),
+        },
+        ScalarFunc::Coalesce => unreachable!("COALESCE is evaluated lazily"),
+        ScalarFunc::NullIf => {
+            if values_equal(&values[0], &values[1]) {
+                Ok(Value::Null)
+            } else {
+                Ok(values[0].clone())
+            }
+        }
+    }
+}
+
 /// Evaluate a grouped or whole-table aggregate query: partition `rows` by the
 /// `group_by` columns (a single group when `group_by` is empty), evaluate each
 /// select item per group, then apply `ORDER BY` and `LIMIT` to the result.
@@ -2895,26 +3717,32 @@ fn project_grouped(
     limit: Option<usize>,
     offset: usize,
 ) -> Result<QueryResult> {
-    // A bare column in the select list must be a grouping column.
-    for item in &items {
-        if let SelectExpr::Column(c) = &item.expr {
-            if !group_by.iter().any(|g| g == c) {
-                return Err(PvError::Schema(format!(
-                    "column `{c}` must appear in GROUP BY or inside an aggregate"
-                )));
-            }
-        }
-    }
-    // Group-by column indices (also validates the columns exist).
+    // Resolve grouping keys first so qualified and uniquely unqualified joined
+    // columns follow the same ambiguity rules as projection and filtering.
     let gb_idx: Vec<usize> = group_by
         .iter()
-        .map(|c| {
-            columns
-                .iter()
-                .position(|x| x == c)
-                .ok_or_else(|| PvError::Schema(format!("no column `{c}`")))
-        })
+        .map(|column| projection_col_pos(&columns, column))
         .collect::<Result<_>>()?;
+
+    // A bare column in the select list must be a grouping column.
+    for item in &items {
+        match &item.expr {
+            SelectExpr::Column(c) => {
+                let column_index = projection_col_pos(&columns, c)?;
+                if !gb_idx.contains(&column_index) {
+                    return Err(PvError::Schema(format!(
+                        "column `{c}` must appear in GROUP BY or inside an aggregate"
+                    )));
+                }
+            }
+            SelectExpr::Scalar(_) => {
+                return Err(PvError::Query(
+                    "scalar expressions cannot yet be mixed with GROUP BY or aggregates".into(),
+                ))
+            }
+            SelectExpr::Aggregate(_) => {}
+        }
+    }
 
     // Partition into groups, ordered by group key.
     let mut groups: BTreeMap<Vec<Value>, Vec<Row>> = BTreeMap::new();
@@ -2935,6 +3763,7 @@ fn project_grouped(
             (Some(a), _) => a.clone(),
             (None, SelectExpr::Column(c)) => c.clone(),
             (None, SelectExpr::Aggregate(a)) => agg_label(a),
+            (None, SelectExpr::Scalar(expr)) => scalar_label(expr),
         })
         .collect();
 
@@ -2944,15 +3773,17 @@ fn project_grouped(
         for item in &items {
             match &item.expr {
                 SelectExpr::Column(c) => {
-                    let gi = group_by
+                    let source_index = projection_col_pos(&columns, c)?;
+                    let gi = gb_idx
                         .iter()
-                        .position(|g| g == c)
+                        .position(|&group_index| group_index == source_index)
                         .expect("validated above");
                     out.push(key[gi].clone());
                 }
                 SelectExpr::Aggregate(a) => {
                     out.push(compute_one_aggregate(a, &columns, group_rows)?)
                 }
+                SelectExpr::Scalar(_) => unreachable!("scalar expressions rejected above"),
             }
         }
         // HAVING filters groups: a column term resolves against this group's output
@@ -3000,7 +3831,7 @@ fn eval_having(
             || eval_having(b, out_columns, out_row, columns, group_rows)?),
         HavingPred::Compare { term, op, value } => {
             let lhs = match term {
-                HavingTerm::Column(name) => out_row[col_pos(out_columns, name)?].clone(),
+                HavingTerm::Column(name) => out_row[projection_col_pos(out_columns, name)?].clone(),
                 HavingTerm::Aggregate(agg) => compute_one_aggregate(agg, columns, group_rows)?,
             };
             Ok(eval_compare(&lhs, *op, value))
@@ -3011,12 +3842,7 @@ fn eval_having(
 fn compute_one_aggregate(agg: &Aggregate, columns: &[String], rows: &[Row]) -> Result<Value> {
     let col_ix = match &agg.column {
         None => None,
-        Some(c) => Some(
-            columns
-                .iter()
-                .position(|x| x == c)
-                .ok_or_else(|| PvError::Schema(format!("no column `{c}`")))?,
-        ),
+        Some(c) => Some(projection_col_pos(columns, c)?),
     };
     let value = match agg.func {
         AggFunc::Count => {
@@ -3103,11 +3929,17 @@ fn round_div_half_away(num: i128, den: i128) -> i128 {
     let q = n / d;
     let r = n % d;
     let q = if r * 2 >= d { q + 1 } else { q };
-    let q = q as i128;
     if negative {
-        -q
+        // `i128::MIN.unsigned_abs()` is exactly 2^127, which cannot first be
+        // cast to a positive i128 and negated without overflowing in debug
+        // builds. Handle that one representable negative magnitude directly.
+        if q == 1u128 << 127 {
+            i128::MIN
+        } else {
+            -(q as i128)
+        }
     } else {
-        q
+        q as i128
     }
 }
 
@@ -3209,15 +4041,27 @@ fn read_record_at(
     addr: RecordAddr,
 ) -> Result<(RecordEnvelope, Row)> {
     let (pid, slot) = unpack_addr(addr);
-    if Some(pid) == table.tail_id {
+    let decoded = if Some(pid) == table.tail_id {
         if let Some(tail) = &table.tail {
-            return decode_record(tail.record(slot)?, cas);
+            decode_record(tail.record(slot)?, cas)?
+        } else {
+            cache.with_page(pid, |buf| {
+                let page = RowPageRef::new(buf)?;
+                decode_record(page.record(slot)?, cas)
+            })?
         }
+    } else {
+        cache.with_page(pid, |buf| {
+            let page = RowPageRef::new(buf)?;
+            decode_record(page.record(slot)?, cas)
+        })?
+    };
+    if decoded.1.len() != table.columns.len() {
+        return Err(PvError::Corruption(
+            "record field count does not match table columns".into(),
+        ));
     }
-    cache.with_page(pid, |buf| {
-        let page = RowPageRef::new(buf)?;
-        decode_record(page.record(slot)?, cas)
-    })
+    Ok(decoded)
 }
 
 /// Visit every record version in a table, following the page chain through the
@@ -3384,25 +4228,87 @@ fn build_tables(
     index_region: &[u8],
 ) -> Result<BTreeMap<String, Table>> {
     let mut tables = BTreeMap::new();
+    let page_count = cache.backend().page_count();
     for meta in &manifest.tables {
-        let mut table = Table {
+        if meta.name.is_empty() {
+            return Err(PvError::Corruption(
+                "manifest contains a table with an empty name".into(),
+            ));
+        }
+        if tables.contains_key(&meta.name) {
+            return Err(PvError::Corruption(format!(
+                "manifest contains duplicate table `{}`",
+                meta.name
+            )));
+        }
+        validate_schema_metadata(
+            &meta.name,
+            &meta.columns,
+            &meta.unique_columns,
+            &meta.not_null_columns,
+            &meta.defaults,
+            &meta.checks,
+            true,
+        )?;
+        let loaded_tail = match (meta.first_page, meta.tail_id) {
+            (None, None) if meta.row_versions == 0 => None,
+            (None, None) => {
+                return Err(PvError::Corruption(format!(
+                    "table `{}` has row versions but no page chain",
+                    meta.name
+                )));
+            }
+            (Some(_), Some(_)) if meta.row_versions == 0 => {
+                return Err(PvError::Corruption(format!(
+                    "table `{}` has a page chain but no row versions",
+                    meta.name
+                )));
+            }
+            (Some(first), Some(tail)) => {
+                if first >= page_count || tail >= page_count || first > tail {
+                    return Err(PvError::Corruption(format!(
+                        "table `{}` has invalid head/tail page ids ({first}, {tail}) for {page_count} pages",
+                        meta.name
+                    )));
+                }
+                if writable {
+                    let buf = cache.backend().read_page(tail)?;
+                    verify_page_checksum(tail, &buf)?;
+                    let tail_page = RowPage::from_bytes(buf)?;
+                    if tail_page.next_page().is_some() {
+                        return Err(PvError::Corruption(format!(
+                            "table `{}` tail page {tail} links to another page",
+                            meta.name
+                        )));
+                    }
+                    Some(tail_page)
+                } else {
+                    // Keep production and range-backed opens lazy. The normal
+                    // scan path validates page checksums and links on first use;
+                    // only writable workspaces must load and verify the tail now
+                    // because a subsequent append relies on it being terminal.
+                    None
+                }
+            }
+            _ => {
+                return Err(PvError::Corruption(format!(
+                    "table `{}` must define both first_page and tail_id, or neither",
+                    meta.name
+                )));
+            }
+        };
+        let table = Table {
             columns: meta.columns.clone(),
             unique_columns: meta.unique_columns.iter().cloned().collect(),
             not_null_columns: meta.not_null_columns.iter().cloned().collect(),
+            defaults: meta.defaults.clone(),
+            checks: meta.checks.clone(),
             first_page: meta.first_page,
             tail_id: meta.tail_id,
-            tail: None,
+            tail: loaded_tail,
             row_versions: meta.row_versions,
             indexes: BTreeMap::new(),
         };
-        // In development mode, load the tail page resident so appends continue.
-        if writable {
-            if let Some(id) = meta.tail_id {
-                let buf = cache.backend().read_page(id)?;
-                verify_page_checksum(id, &buf)?;
-                table.tail = Some(RowPage::from_bytes(buf)?);
-            }
-        }
         tables.insert(meta.name.clone(), table);
     }
 
@@ -3913,6 +4819,22 @@ mod tests {
         let r = neg.query("SELECT AVG(v) FROM n").unwrap();
         assert_eq!(r.rows().unwrap(), &[vec![Value::Decimal(-1_500_000)]]);
         assert_eq!(r.rows().unwrap()[0][0].to_string(), "-1.500000");
+
+        // The most-negative decimal has unsigned magnitude 2^127. Casting that
+        // magnitude to i128 and then negating used to panic in debug builds.
+        let mut minimum = Database::open_memory();
+        minimum.query("CREATE TABLE minimum (v)").unwrap();
+        minimum
+            .insert("minimum", vec![Value::Decimal(i128::MIN)])
+            .unwrap();
+        assert_eq!(
+            minimum
+                .query("SELECT AVG(v) FROM minimum")
+                .unwrap()
+                .rows()
+                .unwrap(),
+            &[vec![Value::Decimal(i128::MIN)]]
+        );
     }
 
     #[test]
@@ -4347,6 +5269,8 @@ mod tests {
             columns: vec!["x".into()],
             unique_columns: BTreeSet::new(),
             not_null_columns: BTreeSet::new(),
+            defaults: BTreeMap::new(),
+            checks: Vec::new(),
             first_page: Some(pid),
             tail_id: None,
             tail: None,
@@ -4459,6 +5383,91 @@ mod tests {
                 .unwrap(),
             &[vec![Value::Int(1), Value::Int(100)]]
         );
+    }
+
+    #[test]
+    fn statement_mutation_failure_rolls_back_implicit_and_explicit_transactions() {
+        let injected_io = || std::io::Error::other("injected statement write failure");
+
+        let mut implicit = Database::open_memory();
+        implicit.query("CREATE TABLE t (id)").unwrap();
+        implicit.query("INSERT INTO t VALUES (1)").unwrap();
+        let before = implicit.current_tx();
+        let error = implicit
+            .atomic_mutation(|database| {
+                database.insert_validated("t", vec![Value::Int(2)])?;
+                database.insert_validated("t", vec![Value::Int(3)])?;
+                Err::<(), _>(PvError::Io(injected_io()))
+            })
+            .unwrap_err();
+        assert!(matches!(error, PvError::Io(_)));
+        assert!(!implicit.in_transaction());
+        assert_eq!(implicit.current_tx(), before);
+        assert_eq!(
+            implicit.query("SELECT * FROM t").unwrap().rows().unwrap(),
+            &[vec![Value::Int(1)]]
+        );
+
+        let mut explicit = Database::open_memory();
+        explicit.query("CREATE TABLE t (id)").unwrap();
+        explicit.query("INSERT INTO t VALUES (1)").unwrap();
+        explicit.begin_transaction().unwrap();
+        explicit.query("INSERT INTO t VALUES (2)").unwrap();
+        let error = explicit
+            .atomic_mutation(|database| {
+                database.insert_validated("t", vec![Value::Int(3)])?;
+                Err::<(), _>(PvError::Io(injected_io()))
+            })
+            .unwrap_err();
+        assert!(matches!(error, PvError::Io(_)));
+        assert!(
+            !explicit.in_transaction(),
+            "a mutation-phase failure must abort the outer transaction"
+        );
+        assert_eq!(
+            explicit.query("SELECT * FROM t").unwrap().rows().unwrap(),
+            &[vec![Value::Int(1)]],
+            "the failed statement and earlier uncommitted work must be restored"
+        );
+
+        // The closure API must preserve the original mutation error even though
+        // the inner statement rollback has already consumed the transaction.
+        let mut closure = Database::open_memory();
+        closure.query("CREATE TABLE t (id)").unwrap();
+        closure.query("INSERT INTO t VALUES (1)").unwrap();
+        let error = closure
+            .transaction(|database| {
+                database.atomic_mutation(|database| {
+                    database.insert_validated("t", vec![Value::Int(2)])?;
+                    Err::<(), _>(PvError::Io(injected_io()))
+                })
+            })
+            .unwrap_err();
+        assert!(matches!(error, PvError::Io(_)));
+        assert_eq!(
+            closure.query("SELECT * FROM t").unwrap().rows().unwrap(),
+            &[vec![Value::Int(1)]]
+        );
+    }
+
+    #[test]
+    fn statement_preflight_error_keeps_explicit_transaction_active() {
+        let mut db = Database::open_memory();
+        db.query("CREATE TABLE t (id PRIMARY KEY)").unwrap();
+        db.query("INSERT INTO t VALUES (1)").unwrap();
+        db.begin_transaction().unwrap();
+
+        let error = db.query("INSERT INTO t VALUES (2), (1), (3)").unwrap_err();
+        assert!(matches!(error, PvError::Schema(_)));
+        assert!(
+            db.in_transaction(),
+            "validation fails before the mutation rollback boundary"
+        );
+        assert_eq!(
+            db.query("SELECT * FROM t").unwrap().rows().unwrap(),
+            &[vec![Value::Int(1)]]
+        );
+        db.rollback_transaction().unwrap();
     }
 
     #[test]
@@ -4666,5 +5675,57 @@ mod tests {
             Err(PvError::ResourceLimit(_))
         ));
         assert_eq!(db.row_count("t", None).unwrap(), 10);
+    }
+
+    #[test]
+    fn bounded_index_candidates_and_unique_update_scans_are_metered() {
+        let mut candidates = Database::open_memory();
+        candidates.query("CREATE TABLE hits (id, kind)").unwrap();
+        candidates
+            .query(
+                "INSERT INTO hits VALUES \
+                 (1, 'same'), (2, 'same'), (3, 'same'), (4, 'same'), (5, 'same')",
+            )
+            .unwrap();
+        candidates.query("CREATE INDEX ON hits (kind)").unwrap();
+        let error = candidates
+            .query_with_limits(
+                "SELECT * FROM hits WHERE kind = 'same'",
+                &[],
+                QueryLimits::new(2, usize::MAX, usize::MAX, None),
+            )
+            .unwrap_err();
+        assert!(matches!(error, PvError::ResourceLimit(_)));
+
+        // The indexed predicate finds only one UPDATE target. The uniqueness
+        // validation still has to inspect the table, and must share the same
+        // scan budget instead of performing an unmetered second scan.
+        let mut unique = Database::open_memory();
+        unique
+            .query("CREATE TABLE guarded (id PRIMARY KEY, marker)")
+            .unwrap();
+        for id in 0..10 {
+            unique
+                .query(&format!("INSERT INTO guarded VALUES ({id}, {id})"))
+                .unwrap();
+        }
+        unique.query("CREATE INDEX ON guarded (marker)").unwrap();
+        let error = unique
+            .query_with_limits(
+                "UPDATE guarded SET id = 100 WHERE marker = 0",
+                &[],
+                QueryLimits::new(3, usize::MAX, usize::MAX, None),
+            )
+            .unwrap_err();
+        assert!(matches!(error, PvError::ResourceLimit(_)));
+        assert_eq!(unique.row_count("guarded", None).unwrap(), 10);
+        assert_eq!(
+            unique
+                .query("SELECT id FROM guarded WHERE marker = 0")
+                .unwrap()
+                .rows()
+                .unwrap(),
+            &[vec![Value::Int(0)]]
+        );
     }
 }

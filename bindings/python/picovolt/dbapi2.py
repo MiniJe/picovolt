@@ -67,6 +67,9 @@ class Connection:
     def execute(self, sql: str, params=None) -> "Cursor":
         return self.cursor().execute(sql, params)
 
+    def executemany(self, sql: str, seq_of_params) -> "Cursor":
+        return self.cursor().executemany(sql, seq_of_params)
+
     def commit(self) -> None:
         """Commit pending statements."""
         if self._db.in_transaction:
@@ -112,6 +115,24 @@ class Cursor:
             res = self._con._db.query(sql, list(params) if params else None)
         except PicoVoltError as exc:
             raise ProgrammingError(str(exc)) from None
+        self._set_result(res)
+        return self
+
+    def executemany(self, sql: str, seq_of_params) -> "Cursor":
+        try:
+            statement = self._con._db.prepare(sql)
+            try:
+                for params in seq_of_params:
+                    self._con._ensure_transaction()
+                    res = statement.execute(params)
+                    self._set_result(res)
+            finally:
+                statement.close()
+        except PicoVoltError as exc:
+            raise ProgrammingError(str(exc)) from None
+        return self
+
+    def _set_result(self, res) -> None:
         if isinstance(res, dict) and "columns" in res:
             self.description = [(c, None, None, None, None, None, None) for c in res["columns"]]
             self._rows = res["rows"]
@@ -121,12 +142,6 @@ class Cursor:
             self._rows = []
             self.rowcount = res.get("mutated", -1) if isinstance(res, dict) else -1
         self._idx = 0
-        return self
-
-    def executemany(self, sql: str, seq_of_params) -> "Cursor":
-        for params in seq_of_params:
-            self.execute(sql, params)
-        return self
 
     def fetchone(self):
         if self._idx >= len(self._rows):

@@ -1,12 +1,10 @@
 import { PersistentDb } from "picovolt/browser";
 
 const db = await PersistentDb.open("starter.pvdb");
-let result;
-try {
-  result = db.query("SELECT * FROM visits");
-} catch {
-  db.query("CREATE TABLE visits (id PRIMARY KEY, path NOT NULL)");
-  result = db.query("SELECT * FROM visits");
-}
+db.query("CREATE TABLE IF NOT EXISTS visits (id PRIMARY KEY, path NOT NULL)");
+const insert = db.prepare("INSERT INTO visits VALUES (?, ?)");
+insert.query([Date.now(), location.pathname]);
+insert.close();
+const result = db.query("SELECT * FROM visits ORDER BY id DESC LIMIT 10");
 document.querySelector("#output").textContent = JSON.stringify(result, null, 2);
-await db.save();
+await db.close();

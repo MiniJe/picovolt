@@ -56,8 +56,21 @@ type conn struct {
 	db *picovolt.DB
 }
 
-func (c *conn) Prepare(q string) (driver.Stmt, error) { return &stmt{c: c, q: q}, nil }
-func (c *conn) Close() error                          { c.db.Close(); return nil }
+func (c *conn) Prepare(q string) (driver.Stmt, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	prepared, err := c.db.Prepare(q)
+	if err != nil {
+		return nil, err
+	}
+	return &stmt{c: c, prepared: prepared}, nil
+}
+func (c *conn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.db.Close()
+	return nil
+}
 func (c *conn) Begin() (driver.Tx, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -98,40 +111,41 @@ func (t *tx) Rollback() error {
 	return nil
 }
 
-func (c *conn) run(q string) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.db.Query(q)
-}
-
-func (c *conn) runParams(q, paramsJSON string) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.db.QueryParams(q, paramsJSON)
-}
-
 type stmt struct {
-	c *conn
-	q string
+	c        *conn
+	prepared *picovolt.Stmt
 }
 
-func (s *stmt) Close() error  { return nil }
-func (s *stmt) NumInput() int { return -1 } // the engine validates placeholder arity
+func (s *stmt) Close() error {
+	s.c.mu.Lock()
+	defer s.c.mu.Unlock()
+	if s.prepared != nil {
+		s.prepared.Close()
+		s.prepared = nil
+	}
+	return nil
+}
+
+func (s *stmt) NumInput() int {
+	s.c.mu.Lock()
+	defer s.c.mu.Unlock()
+	if s.prepared == nil {
+		return -1
+	}
+	return s.prepared.ParameterCount()
+}
 
 func (s *stmt) run(args []driver.Value) (string, error) {
-	if len(args) == 0 {
-		return s.c.run(s.q)
+	s.c.mu.Lock()
+	defer s.c.mu.Unlock()
+	if s.prepared == nil {
+		return "", errors.New("picovolt: prepared statement is closed")
 	}
-	for _, a := range args {
-		if _, ok := a.([]byte); ok {
-			return "", errors.New("picovolt: []byte (blob) parameters are not supported")
-		}
+	params := make([]any, len(args))
+	for i, arg := range args {
+		params[i] = arg
 	}
-	j, err := json.Marshal(args)
-	if err != nil {
-		return "", err
-	}
-	return s.c.runParams(s.q, string(j))
+	return s.prepared.Execute(params...)
 }
 
 func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {

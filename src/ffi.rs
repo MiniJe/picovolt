@@ -14,8 +14,9 @@
 //! ## Contract
 //!
 //! - A [`PvDb`] handle is created by `pv_open_*` and must be released with
-//!   `pv_close`. It is **not** thread-safe: do not use one handle from multiple
-//!   threads without external synchronization.
+//!   `pv_close`. A [`PvStmt`] comes from `pv_prepare` and must be released with
+//!   `pv_stmt_close`. Handles are **not** thread-safe: do not use one handle
+//!   from multiple threads without external synchronization.
 //! - `pv_query` returns a newly allocated, NUL-terminated JSON string the caller
 //!   frees with `pv_string_free`; `pv_export` returns a byte buffer freed with
 //!   `pv_bytes_free`. Mixing up the free functions is undefined behavior.
@@ -30,12 +31,18 @@ use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
-use crate::Database;
+use crate::{Database, PreparedStatement};
 
 /// Opaque handle to a PicoVolt database. Allocate with `pv_open_*`, free with
 /// `pv_close`.
 pub struct PvDb {
     inner: Database,
+}
+
+/// Opaque reusable prepared statement. Allocate with [`pv_prepare`], execute
+/// with [`pv_stmt_execute`], and release with [`pv_stmt_close`].
+pub struct PvStmt {
+    inner: PreparedStatement,
 }
 
 thread_local! {
@@ -237,27 +244,13 @@ pub unsafe extern "C" fn pv_query_params(
             set_last_error("pv_query_params: params is NULL or not valid UTF-8");
             return ptr::null_mut();
         };
-        let parsed: serde_json::Value = match serde_json::from_str(pj) {
-            Ok(v) => v,
-            Err(e) => {
-                set_last_error(format!("pv_query_params: invalid params JSON: {e}"));
+        let values = match json_params_to_values("pv_query_params", pj) {
+            Ok(values) => values,
+            Err(error) => {
+                set_last_error(error);
                 return ptr::null_mut();
             }
         };
-        let serde_json::Value::Array(arr) = parsed else {
-            set_last_error("pv_query_params: params must be a JSON array");
-            return ptr::null_mut();
-        };
-        let mut values = Vec::with_capacity(arr.len());
-        for v in arr {
-            match json_to_value(v) {
-                Ok(val) => values.push(val),
-                Err(e) => {
-                    set_last_error(format!("pv_query_params: {e}"));
-                    return ptr::null_mut();
-                }
-            }
-        }
         match db.inner.query_with(sql, &values) {
             Ok(result) => match serde_json::to_string(&crate::json::result_to_json(&result)) {
                 Ok(s) => string_to_c(s),
@@ -272,6 +265,131 @@ pub unsafe extern "C" fn pv_query_params(
             }
         }
     })
+}
+
+/// Validate and retain a reusable SQL template. The returned statement is not
+/// tied to `db` and may be executed against another compatible PicoVolt handle.
+/// Returns NULL on error (see [`pv_last_error`]).
+///
+/// # Safety
+/// `db` must be a live handle and `sql` a valid pointer to a NUL-terminated
+/// UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn pv_prepare(db: *const PvDb, sql: *const c_char) -> *mut PvStmt {
+    guard(ptr::null_mut(), || {
+        clear_last_error();
+        let Some(db) = (unsafe { db.as_ref() }) else {
+            set_last_error("pv_prepare: db handle is NULL");
+            return ptr::null_mut();
+        };
+        let Some(sql) = (unsafe { cstr_to_str(sql) }) else {
+            set_last_error("pv_prepare: sql is NULL or not valid UTF-8");
+            return ptr::null_mut();
+        };
+        match db.inner.prepare(sql) {
+            Ok(inner) => Box::into_raw(Box::new(PvStmt { inner })),
+            Err(error) => {
+                set_last_error(error.to_string());
+                ptr::null_mut()
+            }
+        }
+    })
+}
+
+/// Return the number of positional `?` values required by `stmt`. Returns zero
+/// for a NULL handle and records an error; a valid zero-parameter statement also
+/// returns zero without setting an error.
+///
+/// # Safety
+/// `stmt` must be NULL or a live handle returned by [`pv_prepare`].
+#[no_mangle]
+pub unsafe extern "C" fn pv_stmt_parameter_count(stmt: *const PvStmt) -> usize {
+    guard(0, || {
+        clear_last_error();
+        match unsafe { stmt.as_ref() } {
+            Some(stmt) => stmt.inner.parameter_count(),
+            None => {
+                set_last_error("pv_stmt_parameter_count: statement handle is NULL");
+                0
+            }
+        }
+    })
+}
+
+/// Execute a prepared statement with a JSON array of positional parameters.
+/// Returns the same newly allocated JSON result as [`pv_query_params`], or NULL
+/// on error. Free the result with [`pv_string_free`].
+///
+/// # Safety
+/// `stmt` and `db` must be live PicoVolt handles and `params_json` must be a
+/// valid pointer to a NUL-terminated UTF-8 JSON array.
+#[no_mangle]
+pub unsafe extern "C" fn pv_stmt_execute(
+    stmt: *const PvStmt,
+    db: *mut PvDb,
+    params_json: *const c_char,
+) -> *mut c_char {
+    guard(ptr::null_mut(), || {
+        clear_last_error();
+        let Some(stmt) = (unsafe { stmt.as_ref() }) else {
+            set_last_error("pv_stmt_execute: statement handle is NULL");
+            return ptr::null_mut();
+        };
+        let Some(db) = (unsafe { db.as_mut() }) else {
+            set_last_error("pv_stmt_execute: db handle is NULL");
+            return ptr::null_mut();
+        };
+        let Some(pj) = (unsafe { cstr_to_str(params_json) }) else {
+            set_last_error("pv_stmt_execute: params is NULL or not valid UTF-8");
+            return ptr::null_mut();
+        };
+        let values = match json_params_to_values("pv_stmt_execute", pj) {
+            Ok(values) => values,
+            Err(error) => {
+                set_last_error(error);
+                return ptr::null_mut();
+            }
+        };
+        match stmt.inner.execute(&mut db.inner, &values) {
+            Ok(result) => match serde_json::to_string(&crate::json::result_to_json(&result)) {
+                Ok(json) => string_to_c(json),
+                Err(error) => {
+                    set_last_error(error.to_string());
+                    ptr::null_mut()
+                }
+            },
+            Err(error) => {
+                set_last_error(error.to_string());
+                ptr::null_mut()
+            }
+        }
+    })
+}
+
+/// Free a prepared-statement handle. NULL is ignored.
+///
+/// # Safety
+/// `stmt` must be NULL or a handle returned by [`pv_prepare`] that has not
+/// already been freed.
+#[no_mangle]
+pub unsafe extern "C" fn pv_stmt_close(stmt: *mut PvStmt) {
+    guard((), || {
+        if !stmt.is_null() {
+            drop(unsafe { Box::from_raw(stmt) });
+        }
+    });
+}
+
+fn json_params_to_values(function: &str, params_json: &str) -> Result<Vec<crate::Value>, String> {
+    let parsed: serde_json::Value = serde_json::from_str(params_json)
+        .map_err(|error| format!("{function}: invalid params JSON: {error}"))?;
+    let serde_json::Value::Array(array) = parsed else {
+        return Err(format!("{function}: params must be a JSON array"));
+    };
+    array
+        .into_iter()
+        .map(|value| json_to_value(value).map_err(|error| format!("{function}: {error}")))
+        .collect()
 }
 
 /// Map one JSON parameter to a PicoVolt value.
@@ -619,6 +737,52 @@ mod tests {
             pv_bytes_free(bytes, len);
             pv_close(db);
             pv_close(db2);
+        }
+    }
+
+    #[test]
+    fn prepared_statement_reuses_validated_template() {
+        unsafe {
+            let db = pv_open_memory();
+            run(db, "CREATE TABLE t (id, name)").unwrap();
+            let sql = CString::new("INSERT INTO t VALUES (?, ?)").unwrap();
+            let stmt = pv_prepare(db, sql.as_ptr());
+            assert!(!stmt.is_null());
+            assert_eq!(pv_stmt_parameter_count(stmt), 2);
+
+            for params in ["[1,\"alice\"]", "[2,\"bob\"]"] {
+                let params = CString::new(params).unwrap();
+                let result = pv_stmt_execute(stmt, db, params.as_ptr());
+                assert!(!result.is_null());
+                assert!(CStr::from_ptr(result).to_str().unwrap().contains("mutated"));
+                pv_string_free(result);
+            }
+            let wrong_arity = CString::new("[3]").unwrap();
+            assert!(pv_stmt_execute(stmt, db, wrong_arity.as_ptr()).is_null());
+            assert!(CStr::from_ptr(pv_last_error())
+                .to_str()
+                .unwrap()
+                .contains("expects 2 parameters"));
+
+            pv_stmt_close(stmt);
+            assert!(run(db, "SELECT COUNT(*) FROM t").unwrap().contains("[[2]]"));
+            pv_close(db);
+        }
+    }
+
+    #[test]
+    fn prepared_statement_rejects_invalid_inputs_without_unwinding() {
+        unsafe {
+            let db = pv_open_memory();
+            let invalid = CString::new("SELECT FROM").unwrap();
+            assert!(pv_prepare(db, invalid.as_ptr()).is_null());
+            assert!(!pv_last_error().is_null());
+            assert!(pv_prepare(ptr::null(), invalid.as_ptr()).is_null());
+            assert_eq!(pv_stmt_parameter_count(ptr::null()), 0);
+            let empty = CString::new("[]").unwrap();
+            assert!(pv_stmt_execute(ptr::null(), db, empty.as_ptr()).is_null());
+            pv_stmt_close(ptr::null_mut());
+            pv_close(db);
         }
     }
 

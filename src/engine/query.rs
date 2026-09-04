@@ -2,14 +2,16 @@
 //!
 //! PicoVolt's focus is the storage/MVCC engine, not query planning, so this is a
 //! compact hand-written tokenizer + recursive-descent parser. It covers
-//! `CREATE TABLE`/`INDEX`, `INSERT`, `DROP TABLE`, `UPDATE`/`DELETE`, and
-//! `SELECT` with column/aggregate projection, `WHERE` predicates (comparison
-//! operators, `AND`/`OR`, `LIKE`), `GROUP BY`, `BEFORE tx` time-travel,
-//! `ORDER BY`, `LIMIT`, and `OFFSET`. Anything beyond that (subqueries) is
-//! intentionally out of scope and reported as [`PvError::Query`].
+//! schema-light `CREATE TABLE`/`INDEX`, default-aware `INSERT`, `DROP TABLE`,
+//! `UPDATE`/`DELETE`, transactions, and `SELECT` with scalar/aggregate
+//! projection, aliases, equality joins, predicates, grouping, `BEFORE tx`
+//! time-travel, ordering, and pagination. Unsupported constructs such as
+//! subqueries and set operations are rejected with positioned
+//! [`PvError::Query`] diagnostics.
 
 use crate::core::errors::{PvError, Result};
 use crate::core::value::Value;
+use serde::{Deserialize, Serialize};
 
 /// A parsed statement.
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +44,17 @@ pub enum Statement {
         /// Columns declared `PRIMARY KEY` or `NOT NULL`.
         not_null_columns: Vec<String>,
     },
+    /// A schema-rich `CREATE TABLE` carrying defaults and/or check constraints.
+    CreateTableSchema {
+        /// Table name.
+        name: String,
+        /// Column declarations in storage order.
+        columns: Vec<ColumnDefinition>,
+        /// Table-wide and inline check predicates.
+        checks: Vec<Predicate>,
+        /// Suppress the existing-table error when true.
+        if_not_exists: bool,
+    },
     /// `INSERT INTO name VALUES (v, v, ...)`
     Insert {
         /// Target table.
@@ -55,6 +68,17 @@ pub enum Statement {
         table: String,
         /// Rows to insert, in source order.
         rows: Vec<Vec<Value>>,
+    },
+    /// An insert that names target columns, uses `DEFAULT`, or uses
+    /// `DEFAULT VALUES`.
+    InsertSchema {
+        /// Target table.
+        table: String,
+        /// Named targets, or `None` for complete positional rows. An empty list
+        /// represents `DEFAULT VALUES`.
+        target_columns: Option<Vec<String>>,
+        /// Rows in source order.
+        rows: Vec<Vec<InsertValue>>,
     },
     /// `CREATE INDEX ON name (col)`
     CreateIndex {
@@ -90,24 +114,24 @@ pub enum Statement {
         /// Number of result rows to skip after ordering.
         offset: usize,
     },
-    /// `SELECT * FROM left [INNER|LEFT] JOIN right ON left_col = right_col`.
+    /// A `SELECT` over an aliased table or one or more equality joins.
     SelectJoin {
         /// What to return from the combined row.
         projection: Projection,
         /// Drop duplicate output rows.
         distinct: bool,
-        /// Left input table.
-        left_table: String,
-        /// Right input table.
-        right_table: String,
-        /// Equality key in the left table.
-        left_column: String,
-        /// Equality key in the right table.
-        right_column: String,
-        /// Preserve unmatched left rows when true.
-        left_join: bool,
+        /// First relation in the `FROM` clause.
+        source: TableRef,
+        /// Equality joins, evaluated from left to right.
+        joins: Vec<JoinClause>,
+        /// Optional time-travel snapshot id shared by every input table.
+        before: Option<u64>,
         /// Optional predicate over the combined row.
         filter: Option<Predicate>,
+        /// Columns to group by; empty for a non-grouped query.
+        group_by: Vec<String>,
+        /// Optional predicate over grouped joined rows.
+        having: Option<HavingPred>,
         /// Sort keys over the combined row.
         order: Vec<OrderBy>,
         /// Optional result cap.
@@ -121,6 +145,15 @@ pub enum Statement {
         table: String,
         /// Column to assign and its new value.
         set: (String, Value),
+        /// Predicate selecting rows to update.
+        filter: Predicate,
+    },
+    /// `UPDATE name SET col = DEFAULT WHERE <pred>`.
+    UpdateDefault {
+        /// Target table.
+        table: String,
+        /// Column whose declared default should be assigned.
+        column: String,
         /// Predicate selecting rows to update.
         filter: Predicate,
     },
@@ -141,6 +174,57 @@ pub enum Statement {
         /// Table to drop when present.
         table: String,
     },
+}
+
+/// A table named in `FROM` or `JOIN`, with its optional query-local alias.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableRef {
+    /// Catalog table name.
+    pub name: String,
+    /// Query-local qualifier. When absent, `name` is the qualifier.
+    pub alias: Option<String>,
+}
+
+impl TableRef {
+    /// Qualifier exposed to column references and result metadata.
+    pub fn qualifier(&self) -> &str {
+        self.alias.as_deref().unwrap_or(&self.name)
+    }
+}
+
+/// One `INNER` or `LEFT` equality join in source order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinClause {
+    /// Relation introduced by this join.
+    pub table: TableRef,
+    /// First column reference in the equality expression.
+    pub first_column: String,
+    /// Second column reference in the equality expression.
+    pub second_column: String,
+    /// Preserve unmatched accumulated rows when true.
+    pub left_join: bool,
+}
+
+/// One schema-rich column declaration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColumnDefinition {
+    /// Column name.
+    pub name: String,
+    /// Deterministic literal default, if declared.
+    pub default: Option<Value>,
+    /// `PRIMARY KEY` or `UNIQUE`.
+    pub unique: bool,
+    /// `PRIMARY KEY` or `NOT NULL`.
+    pub not_null: bool,
+}
+
+/// One value position in a schema-aware insert.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InsertValue {
+    /// An explicit SQL literal.
+    Literal(Value),
+    /// Use the target column's declared default (or NULL when none exists).
+    Default,
 }
 
 /// What a `SELECT` returns.
@@ -173,6 +257,50 @@ pub enum SelectExpr {
     Column(String),
     /// An aggregate term such as `SUM(amount)`.
     Aggregate(Aggregate),
+    /// A row-level expression such as `LOWER(name)` or `CASE WHEN ... END`.
+    Scalar(ScalarExpr),
+}
+
+/// A non-aggregate expression evaluated against one input row.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScalarExpr {
+    /// A column reference, optionally qualified by a table or alias.
+    Column(String),
+    /// A SQL literal.
+    Literal(Value),
+    /// A focused built-in function call.
+    Function {
+        /// Function implementation.
+        function: ScalarFunc,
+        /// Function arguments.
+        arguments: Vec<ScalarExpr>,
+    },
+    /// Searched CASE: the first true predicate wins, otherwise `else_expr` or NULL.
+    Case {
+        /// Ordered `WHEN predicate THEN expression` branches.
+        branches: Vec<(Predicate, ScalarExpr)>,
+        /// Optional `ELSE` expression.
+        else_expr: Option<Box<ScalarExpr>>,
+    },
+}
+
+/// Scalar functions intentionally supported by the 1.7 compatibility surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarFunc {
+    /// Unicode lowercase text conversion.
+    Lower,
+    /// Unicode uppercase text conversion.
+    Upper,
+    /// Trim leading and trailing Unicode whitespace.
+    Trim,
+    /// Count Unicode scalar values in text or bytes in a blob.
+    Length,
+    /// Numeric absolute value with overflow checking.
+    Abs,
+    /// Return the first non-NULL argument.
+    Coalesce,
+    /// Return NULL when two values compare equal, otherwise the first value.
+    NullIf,
 }
 
 /// An aggregate function.
@@ -186,9 +314,8 @@ pub enum AggFunc {
     Min,
     /// Maximum value (any comparable type).
     Max,
-    /// Average of integer values, returned as an exact fixed-point
-    /// [`Value::Decimal`](crate::core::value::Value::Decimal). It is numeric and
-    /// orderable, but not yet storable on disk or constructible from a literal.
+    /// Average of numeric values, returned as an exact fixed-point
+    /// [`Value::Decimal`](crate::core::value::Value::Decimal).
     Avg,
 }
 
@@ -202,7 +329,7 @@ pub struct Aggregate {
 }
 
 /// A comparison operator in a `WHERE` clause.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompareOp {
     /// `=`
     Eq,
@@ -224,7 +351,7 @@ pub enum CompareOp {
 
 /// A `WHERE` predicate: comparisons combined with `AND` / `OR`. `AND` binds
 /// tighter than `OR`; parentheses override precedence.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Predicate {
     /// `column <op> value`
     Compare {
@@ -337,7 +464,14 @@ enum Tok {
     Ge,
     Star,
     Dot,
+    Semicolon,
 }
+
+/// Hard limits for parser-owned recursive structures. SQL accepted at a trust
+/// boundary must fail predictably instead of exhausting the process stack.
+const MAX_SQL_PAREN_DEPTH: usize = 64;
+const MAX_SCALAR_DEPTH: usize = 64;
+const MAX_PREDICATE_NODES: usize = 256;
 
 /// Build a fixed-point decimal mantissa (scaled by `10^DECIMAL_SCALE`) from the
 /// integer and fractional digit strings of a literal such as `12.50`. Extra
@@ -496,6 +630,7 @@ impl<'a> Lexer<'a> {
 fn tokenize(sql: &str) -> Result<Vec<(Tok, usize)>> {
     let mut toks = Vec::new();
     let mut lx = Lexer::new(sql);
+    let mut paren_depth = 0usize;
     let err = |pos, msg: &str| PvError::Query(point_at(sql, pos, msg));
     while let Some(c) = lx.peek() {
         let start = lx.pos;
@@ -505,10 +640,20 @@ fn tokenize(sql: &str) -> Result<Vec<(Tok, usize)>> {
             }
             '(' => {
                 lx.bump();
+                paren_depth = paren_depth.saturating_add(1);
+                if paren_depth > MAX_SQL_PAREN_DEPTH {
+                    return Err(err(
+                        start,
+                        &format!(
+                            "SQL expression nesting exceeds the {MAX_SQL_PAREN_DEPTH}-level limit"
+                        ),
+                    ));
+                }
                 toks.push((Tok::LParen, start));
             }
             ')' => {
                 lx.bump();
+                paren_depth = paren_depth.saturating_sub(1);
                 toks.push((Tok::RParen, start));
             }
             ',' => {
@@ -560,7 +705,8 @@ fn tokenize(sql: &str) -> Result<Vec<(Tok, usize)>> {
                 toks.push((Tok::Star, start));
             }
             ';' => {
-                lx.bump(); // statement terminator, ignored
+                lx.bump();
+                toks.push((Tok::Semicolon, start));
             }
             '\'' => {
                 lx.bump(); // opening quote
@@ -657,6 +803,7 @@ struct Cursor {
     pos: usize,
     sql: String,
     end: usize,
+    predicate_nodes: usize,
 }
 
 impl Cursor {
@@ -666,6 +813,7 @@ impl Cursor {
             pos: 0,
             sql: sql.to_string(),
             end: sql.chars().count(),
+            predicate_nodes: 0,
         }
     }
 
@@ -752,11 +900,31 @@ impl Cursor {
         }
     }
 
+    fn predicate_node(&mut self, at: usize) -> Result<()> {
+        self.predicate_nodes = self.predicate_nodes.saturating_add(1);
+        if self.predicate_nodes > MAX_PREDICATE_NODES {
+            return Err(self.err_at(
+                at,
+                format!("predicate complexity exceeds the {MAX_PREDICATE_NODES}-node limit"),
+            ));
+        }
+        Ok(())
+    }
+
     fn finish(&self) -> Result<()> {
         if self.pos == self.toks.len() {
             Ok(())
         } else {
-            Err(self.err("trailing tokens after statement"))
+            match self.peek() {
+                Some(Tok::Word(word)) => Err(self.err(format!(
+                    "unsupported or misplaced SQL construct `{}`",
+                    word.to_ascii_uppercase()
+                ))),
+                Some(token) => {
+                    Err(self.err(format!("unexpected token {token:?} after the statement")))
+                }
+                None => unreachable!("position checked above"),
+            }
         }
     }
 }
@@ -784,8 +952,17 @@ pub fn parse(sql: &str) -> Result<Statement> {
         Tok::Word(w) if w.eq_ignore_ascii_case("update") => parse_update(&mut cur)?,
         Tok::Word(w) if w.eq_ignore_ascii_case("delete") => parse_delete(&mut cur)?,
         Tok::Word(w) if w.eq_ignore_ascii_case("drop") => parse_drop(&mut cur)?,
-        other => return Err(cur.err_at(at, format!("unsupported statement: {other:?}"))),
+        Tok::Word(word) => {
+            return Err(cur.err_at(
+                at,
+                format!("unsupported statement `{}`", word.to_ascii_uppercase()),
+            ))
+        }
+        other => return Err(cur.err_at(at, format!("unsupported statement token {other:?}"))),
     };
+    while matches!(cur.peek(), Some(Tok::Semicolon)) {
+        cur.next()?;
+    }
     cur.finish()?;
     Ok(stmt)
 }
@@ -810,28 +987,97 @@ fn parse_create(cur: &mut Cursor) -> Result<Statement> {
             };
             let name = cur.ident()?;
             cur.expect(Tok::LParen)?;
-            let mut columns = Vec::new();
-            let mut unique_columns = Vec::new();
-            let mut not_null_columns = Vec::new();
+            let mut definitions = Vec::new();
+            let mut checks = Vec::new();
+            let mut rich_schema = false;
             loop {
-                let column = cur.ident()?;
-                columns.push(column.clone());
-                loop {
-                    if peek_kw(cur, "primary") {
-                        cur.next()?;
-                        cur.keyword("key")?;
-                        unique_columns.push(column.clone());
-                        not_null_columns.push(column.clone());
-                    } else if peek_kw(cur, "unique") {
-                        cur.next()?;
-                        unique_columns.push(column.clone());
-                    } else if peek_kw(cur, "not") {
-                        cur.next()?;
-                        cur.keyword("null")?;
-                        not_null_columns.push(column.clone());
-                    } else {
-                        break;
+                if ["foreign", "constraint", "unique", "primary"]
+                    .iter()
+                    .any(|keyword| peek_kw(cur, keyword))
+                {
+                    let unsupported_at = cur.here();
+                    let unsupported = cur.ident()?;
+                    return Err(cur.err_at(
+                        unsupported_at,
+                        format!(
+                            "unsupported table constraint `{}`",
+                            unsupported.to_ascii_uppercase()
+                        ),
+                    ));
+                }
+                if peek_kw(cur, "check") {
+                    rich_schema = true;
+                    checks.push(parse_check_constraint(cur)?);
+                } else {
+                    let column_at = cur.here();
+                    let column = cur.ident()?;
+                    if definitions
+                        .iter()
+                        .any(|definition: &ColumnDefinition| definition.name == column)
+                    {
+                        return Err(cur.err_at(
+                            column_at,
+                            format!("duplicate column declaration `{column}`"),
+                        ));
                     }
+                    if consume_declared_type(cur)? {
+                        rich_schema = true;
+                    }
+                    let mut definition = ColumnDefinition {
+                        name: column,
+                        default: None,
+                        unique: false,
+                        not_null: false,
+                    };
+                    let mut saw_primary_key = false;
+                    let mut saw_default = false;
+                    loop {
+                        if peek_kw(cur, "primary") {
+                            let constraint_at = cur.here();
+                            cur.next()?;
+                            cur.keyword("key")?;
+                            if saw_primary_key {
+                                return Err(
+                                    cur.err_at(constraint_at, "duplicate PRIMARY KEY constraint")
+                                );
+                            }
+                            saw_primary_key = true;
+                            definition.unique = true;
+                            definition.not_null = true;
+                        } else if peek_kw(cur, "unique") {
+                            cur.next()?;
+                            definition.unique = true;
+                        } else if peek_kw(cur, "not") {
+                            cur.next()?;
+                            cur.keyword("null")?;
+                            definition.not_null = true;
+                        } else if peek_kw(cur, "default") {
+                            let constraint_at = cur.here();
+                            cur.next()?;
+                            if saw_default {
+                                return Err(
+                                    cur.err_at(constraint_at, "duplicate DEFAULT constraint")
+                                );
+                            }
+                            definition.default = Some(parse_default_literal(cur)?);
+                            saw_default = true;
+                            rich_schema = true;
+                        } else if peek_kw(cur, "check") {
+                            checks.push(parse_check_constraint(cur)?);
+                            rich_schema = true;
+                        } else {
+                            break;
+                        }
+                    }
+                    definitions.push(definition);
+                }
+                if let Some(Tok::Word(word)) = cur.peek() {
+                    let unsupported_at = cur.here();
+                    let unsupported = word.to_ascii_uppercase();
+                    return Err(cur.err_at(
+                        unsupported_at,
+                        format!("unsupported column constraint or type modifier `{unsupported}`"),
+                    ));
                 }
                 let sep = cur.here();
                 match cur.next()? {
@@ -842,19 +1088,48 @@ fn parse_create(cur: &mut Cursor) -> Result<Statement> {
                     }
                 }
             }
-            if if_not_exists {
+            if rich_schema {
+                Ok(Statement::CreateTableSchema {
+                    name,
+                    columns: definitions,
+                    checks,
+                    if_not_exists,
+                })
+            } else if if_not_exists {
                 Ok(Statement::CreateTableIfNotExists {
                     name,
-                    columns,
-                    unique_columns,
-                    not_null_columns,
+                    columns: definitions
+                        .iter()
+                        .map(|definition| definition.name.clone())
+                        .collect(),
+                    unique_columns: definitions
+                        .iter()
+                        .filter(|definition| definition.unique)
+                        .map(|definition| definition.name.clone())
+                        .collect(),
+                    not_null_columns: definitions
+                        .iter()
+                        .filter(|definition| definition.not_null)
+                        .map(|definition| definition.name.clone())
+                        .collect(),
                 })
             } else {
                 Ok(Statement::CreateTable {
                     name,
-                    columns,
-                    unique_columns,
-                    not_null_columns,
+                    columns: definitions
+                        .iter()
+                        .map(|definition| definition.name.clone())
+                        .collect(),
+                    unique_columns: definitions
+                        .iter()
+                        .filter(|definition| definition.unique)
+                        .map(|definition| definition.name.clone())
+                        .collect(),
+                    not_null_columns: definitions
+                        .iter()
+                        .filter(|definition| definition.not_null)
+                        .map(|definition| definition.name.clone())
+                        .collect(),
                 })
             }
         }
@@ -890,16 +1165,145 @@ fn parse_create(cur: &mut Cursor) -> Result<Statement> {
     }
 }
 
+fn is_column_constraint(word: &str) -> bool {
+    matches!(
+        word.to_ascii_lowercase().as_str(),
+        "primary" | "unique" | "not" | "default" | "check"
+    )
+}
+
+/// Consume one schema-light type declaration. PicoVolt stores dynamic values,
+/// so type names and optional `(precision[, scale])` are accepted for adapter
+/// compatibility but do not coerce or reject cells.
+fn consume_declared_type(cur: &mut Cursor) -> Result<bool> {
+    let Some(Tok::Word(word)) = cur.peek() else {
+        return Ok(false);
+    };
+    if is_column_constraint(word) {
+        return Ok(false);
+    }
+    let first = cur.ident()?.to_ascii_lowercase();
+    if (first == "double" && peek_kw(cur, "precision"))
+        || (first == "character" && peek_kw(cur, "varying"))
+    {
+        cur.next()?;
+    } else if first == "national" && peek_kw(cur, "character") {
+        cur.next()?;
+        if peek_kw(cur, "varying") {
+            cur.next()?;
+        }
+    }
+    if matches!(cur.peek(), Some(Tok::LParen)) {
+        cur.next()?;
+        let at = cur.here();
+        match cur.next()? {
+            Tok::Int(value) if value > 0 => {}
+            other => {
+                return Err(cur.err_at(
+                    at,
+                    format!("type size expects a positive integer, found {other:?}"),
+                ))
+            }
+        }
+        if matches!(cur.peek(), Some(Tok::Comma)) {
+            cur.next()?;
+            let at = cur.here();
+            match cur.next()? {
+                Tok::Int(value) if value >= 0 => {}
+                other => {
+                    return Err(cur.err_at(
+                        at,
+                        format!("type scale expects a non-negative integer, found {other:?}"),
+                    ))
+                }
+            }
+        }
+        cur.expect(Tok::RParen)?;
+    }
+    Ok(true)
+}
+
+fn parse_check_constraint(cur: &mut Cursor) -> Result<Predicate> {
+    cur.keyword("check")?;
+    cur.expect(Tok::LParen)?;
+    let predicate = parse_predicate(cur)?;
+    cur.expect(Tok::RParen)?;
+    Ok(predicate)
+}
+
+fn parse_default_literal(cur: &mut Cursor) -> Result<Value> {
+    let parenthesized = matches!(cur.peek(), Some(Tok::LParen));
+    if parenthesized {
+        cur.next()?;
+    }
+    if !matches!(cur.peek(), Some(Tok::Int(_) | Tok::Dec(_) | Tok::Str(_))) && !peek_kw(cur, "null")
+    {
+        return Err(cur.err("DEFAULT supports only NULL, integer, decimal, and text literals"));
+    }
+    let value = cur.value()?;
+    if parenthesized {
+        cur.expect(Tok::RParen)?;
+    }
+    Ok(value)
+}
+
 fn parse_insert(cur: &mut Cursor) -> Result<Statement> {
     cur.keyword("into")?;
     let table = cur.ident()?;
+    let target_columns = if matches!(cur.peek(), Some(Tok::LParen)) {
+        cur.next()?;
+        let mut columns = Vec::new();
+        loop {
+            let at = cur.here();
+            let column = cur.ident()?;
+            if columns.contains(&column) {
+                return Err(cur.err_at(at, format!("duplicate INSERT target column `{column}`")));
+            }
+            columns.push(column);
+            let separator_at = cur.here();
+            match cur.next()? {
+                Tok::Comma => continue,
+                Tok::RParen => break,
+                other => {
+                    return Err(cur.err_at(
+                        separator_at,
+                        format!("expected `,` or `)`, found {other:?}"),
+                    ))
+                }
+            }
+        }
+        Some(columns)
+    } else {
+        None
+    };
+
+    if peek_kw(cur, "default") {
+        let at = cur.here();
+        cur.next()?;
+        cur.keyword("values")?;
+        if target_columns.is_some() {
+            return Err(cur.err_at(at, "DEFAULT VALUES cannot include a target-column list"));
+        }
+        return Ok(Statement::InsertSchema {
+            table,
+            target_columns: Some(Vec::new()),
+            rows: vec![Vec::new()],
+        });
+    }
     cur.keyword("values")?;
     let mut rows = Vec::new();
+    let mut uses_default = false;
     loop {
         cur.expect(Tok::LParen)?;
         let mut values = Vec::new();
         loop {
-            values.push(cur.value()?);
+            if peek_kw(cur, "default") {
+                cur.next()?;
+                values.push(InsertValue::Default);
+                uses_default = true;
+            } else {
+                values.push(InsertValue::Literal(cur.value()?));
+            }
             let sep = cur.here();
             match cur.next()? {
                 Tok::Comma => continue,
@@ -915,13 +1319,40 @@ fn parse_insert(cur: &mut Cursor) -> Result<Statement> {
         }
         cur.next()?;
     }
-    if rows.len() == 1 {
+    if target_columns.is_some() || uses_default {
+        Ok(Statement::InsertSchema {
+            table,
+            target_columns,
+            rows,
+        })
+    } else if rows.len() == 1 {
         Ok(Statement::Insert {
             table,
-            values: rows.pop().expect("one row"),
+            values: rows
+                .pop()
+                .expect("one row")
+                .into_iter()
+                .map(|value| match value {
+                    InsertValue::Literal(value) => value,
+                    InsertValue::Default => unreachable!("handled by rich insert"),
+                })
+                .collect(),
         })
     } else {
-        Ok(Statement::InsertMany { table, rows })
+        Ok(Statement::InsertMany {
+            table,
+            rows: rows
+                .into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|value| match value {
+                            InsertValue::Literal(value) => value,
+                            InsertValue::Default => unreachable!("handled by rich insert"),
+                        })
+                        .collect()
+                })
+                .collect(),
+        })
     }
 }
 
@@ -959,7 +1390,9 @@ pub fn agg_label(agg: &Aggregate) -> String {
 fn parse_having(cur: &mut Cursor) -> Result<HavingPred> {
     let mut left = parse_having_and(cur)?;
     while peek_kw(cur, "or") {
+        let at = cur.here();
         cur.next()?;
+        cur.predicate_node(at)?;
         let right = parse_having_and(cur)?;
         left = HavingPred::Or(Box::new(left), Box::new(right));
     }
@@ -969,7 +1402,9 @@ fn parse_having(cur: &mut Cursor) -> Result<HavingPred> {
 fn parse_having_and(cur: &mut Cursor) -> Result<HavingPred> {
     let mut left = parse_having_compare(cur)?;
     while peek_kw(cur, "and") {
+        let at = cur.here();
         cur.next()?;
+        cur.predicate_node(at)?;
         let right = parse_having_compare(cur)?;
         left = HavingPred::And(Box::new(left), Box::new(right));
     }
@@ -983,6 +1418,8 @@ fn parse_having_compare(cur: &mut Cursor) -> Result<HavingPred> {
         cur.expect(Tok::RParen)?;
         return Ok(inner);
     }
+    let node_at = cur.here();
+    cur.predicate_node(node_at)?;
     // The left side is an aggregate term or a grouped output column / alias.
     let is_agg = matches!(cur.peek(), Some(Tok::Word(w)) if agg_func(w).is_some())
         && matches!(cur.peek2(), Some(Tok::LParen));
@@ -1030,7 +1467,9 @@ fn parse_projection(cur: &mut Cursor) -> Result<Projection> {
             .into_iter()
             .map(|i| match i.expr {
                 SelectExpr::Column(c) => c,
-                SelectExpr::Aggregate(_) => unreachable!("all items checked to be columns"),
+                SelectExpr::Aggregate(_) | SelectExpr::Scalar(_) => {
+                    unreachable!("all items checked to be columns")
+                }
             })
             .collect();
         Ok(Projection::Columns(cols))
@@ -1045,6 +1484,8 @@ fn parse_select_item(cur: &mut Cursor) -> Result<SelectItem> {
         && matches!(cur.peek2(), Some(Tok::LParen));
     let expr = if is_agg {
         SelectExpr::Aggregate(parse_aggregate(cur)?)
+    } else if is_scalar_expression_start(cur) {
+        SelectExpr::Scalar(parse_scalar_expr(cur)?)
     } else {
         SelectExpr::Column(cur.column_ref()?)
     };
@@ -1067,11 +1508,147 @@ fn parse_select_item(cur: &mut Cursor) -> Result<SelectItem> {
     Ok(SelectItem { expr, alias })
 }
 
+fn is_scalar_expression_start(cur: &Cursor) -> bool {
+    match cur.peek() {
+        Some(Tok::Int(_) | Tok::Dec(_) | Tok::Str(_)) => true,
+        Some(Tok::Word(word)) if word.eq_ignore_ascii_case("null") => true,
+        Some(Tok::Word(word)) if word.eq_ignore_ascii_case("case") => true,
+        Some(Tok::Word(_)) => matches!(cur.peek2(), Some(Tok::LParen)),
+        _ => false,
+    }
+}
+
+fn scalar_func(word: &str) -> Option<ScalarFunc> {
+    match word.to_ascii_uppercase().as_str() {
+        "LOWER" => Some(ScalarFunc::Lower),
+        "UPPER" => Some(ScalarFunc::Upper),
+        "TRIM" => Some(ScalarFunc::Trim),
+        "LENGTH" => Some(ScalarFunc::Length),
+        "ABS" => Some(ScalarFunc::Abs),
+        "COALESCE" => Some(ScalarFunc::Coalesce),
+        "NULLIF" => Some(ScalarFunc::NullIf),
+        _ => None,
+    }
+}
+
+fn parse_scalar_expr(cur: &mut Cursor) -> Result<ScalarExpr> {
+    parse_scalar_expr_at_depth(cur, 0)
+}
+
+fn parse_scalar_expr_at_depth(cur: &mut Cursor, depth: usize) -> Result<ScalarExpr> {
+    if depth > MAX_SCALAR_DEPTH {
+        return Err(cur.err(format!(
+            "scalar expression nesting exceeds the {MAX_SCALAR_DEPTH}-level limit"
+        )));
+    }
+    if peek_kw(cur, "case") {
+        return parse_case(cur, depth);
+    }
+    if matches!(cur.peek(), Some(Tok::Int(_) | Tok::Dec(_) | Tok::Str(_))) || peek_kw(cur, "null") {
+        return cur.value().map(ScalarExpr::Literal);
+    }
+
+    let at = cur.here();
+    let name = cur.column_ref()?;
+    if !matches!(cur.peek(), Some(Tok::LParen)) {
+        return Ok(ScalarExpr::Column(name));
+    }
+    let function = scalar_func(&name)
+        .ok_or_else(|| cur.err_at(at, format!("unsupported scalar function `{name}`")))?;
+    cur.next()?; // `(`
+    let mut arguments = Vec::new();
+    if !matches!(cur.peek(), Some(Tok::RParen)) {
+        loop {
+            arguments.push(parse_scalar_expr_at_depth(cur, depth + 1)?);
+            if !matches!(cur.peek(), Some(Tok::Comma)) {
+                break;
+            }
+            cur.next()?;
+        }
+    }
+    cur.expect(Tok::RParen)?;
+    let valid_arity = match function {
+        ScalarFunc::Coalesce => !arguments.is_empty(),
+        ScalarFunc::NullIf => arguments.len() == 2,
+        ScalarFunc::Lower
+        | ScalarFunc::Upper
+        | ScalarFunc::Trim
+        | ScalarFunc::Length
+        | ScalarFunc::Abs => arguments.len() == 1,
+    };
+    if !valid_arity {
+        let expected = match function {
+            ScalarFunc::Coalesce => "at least one argument",
+            ScalarFunc::NullIf => "exactly two arguments",
+            _ => "exactly one argument",
+        };
+        return Err(cur.err_at(at, format!("{name} expects {expected}")));
+    }
+    Ok(ScalarExpr::Function {
+        function,
+        arguments,
+    })
+}
+
+fn parse_case(cur: &mut Cursor, depth: usize) -> Result<ScalarExpr> {
+    let at = cur.here();
+    cur.keyword("case")?;
+    let mut branches = Vec::new();
+    while peek_kw(cur, "when") {
+        cur.next()?;
+        let predicate = parse_predicate(cur)?;
+        cur.keyword("then")?;
+        let value = parse_scalar_expr_at_depth(cur, depth + 1)?;
+        branches.push((predicate, value));
+    }
+    if branches.is_empty() {
+        return Err(cur.err_at(at, "CASE requires at least one WHEN branch"));
+    }
+    let else_expr = if peek_kw(cur, "else") {
+        cur.next()?;
+        Some(Box::new(parse_scalar_expr_at_depth(cur, depth + 1)?))
+    } else {
+        None
+    };
+    cur.keyword("end")?;
+    Ok(ScalarExpr::Case {
+        branches,
+        else_expr,
+    })
+}
+
 /// Clause keywords that may not be used as a bare alias / output name.
 fn is_reserved_word(w: &str) -> bool {
     matches!(
         w.to_ascii_lowercase().as_str(),
-        "from"
+        "begin"
+            | "commit"
+            | "rollback"
+            | "transaction"
+            | "create"
+            | "table"
+            | "index"
+            | "insert"
+            | "into"
+            | "update"
+            | "set"
+            | "delete"
+            | "drop"
+            | "if"
+            | "exists"
+            | "key"
+            | "primary"
+            | "unique"
+            | "foreign"
+            | "not"
+            | "null"
+            | "is"
+            | "in"
+            | "between"
+            | "like"
+            | "asc"
+            | "desc"
+            | "from"
             | "where"
             | "group"
             | "having"
@@ -1085,6 +1662,37 @@ fn is_reserved_word(w: &str) -> bool {
             | "or"
             | "select"
             | "distinct"
+            | "join"
+            | "inner"
+            | "left"
+            | "right"
+            | "full"
+            | "cross"
+            | "natural"
+            | "outer"
+            | "on"
+            | "case"
+            | "when"
+            | "then"
+            | "else"
+            | "end"
+            | "default"
+            | "values"
+            | "check"
+            | "constraint"
+            | "references"
+            | "union"
+            | "intersect"
+            | "except"
+            | "returning"
+            | "with"
+            | "recursive"
+            | "using"
+            | "window"
+            | "over"
+            | "fetch"
+            | "for"
+            | "qualify"
     )
 }
 
@@ -1111,7 +1719,9 @@ fn parse_aggregate(cur: &mut Cursor) -> Result<Aggregate> {
 fn parse_predicate(cur: &mut Cursor) -> Result<Predicate> {
     let mut left = parse_and(cur)?;
     while matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("or")) {
+        let at = cur.here();
         cur.next()?;
+        cur.predicate_node(at)?;
         let right = parse_and(cur)?;
         left = Predicate::Or(Box::new(left), Box::new(right));
     }
@@ -1121,7 +1731,9 @@ fn parse_predicate(cur: &mut Cursor) -> Result<Predicate> {
 fn parse_and(cur: &mut Cursor) -> Result<Predicate> {
     let mut left = parse_comparison(cur)?;
     while matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("and")) {
+        let at = cur.here();
         cur.next()?;
+        cur.predicate_node(at)?;
         let right = parse_comparison(cur)?;
         left = Predicate::And(Box::new(left), Box::new(right));
     }
@@ -1136,6 +1748,8 @@ fn parse_comparison(cur: &mut Cursor) -> Result<Predicate> {
         cur.expect(Tok::RParen)?;
         return Ok(inner);
     }
+    let node_at = cur.here();
+    cur.predicate_node(node_at)?;
     let column = cur.column_ref()?;
 
     // Keyword-led predicate forms come before the binary operators: `[NOT] IN`,
@@ -1281,6 +1895,49 @@ fn parse_row_count(cur: &mut Cursor, keyword: &str) -> Result<Option<usize>> {
     }
 }
 
+/// Parse `table [AS] alias`. A bare alias is accepted only when the next word is
+/// not a clause keyword, so `FROM users WHERE ...` cannot consume `WHERE` as an
+/// alias. The returned position identifies the exposed qualifier for diagnostics.
+fn parse_table_ref(cur: &mut Cursor) -> Result<(TableRef, usize)> {
+    let name_at = cur.here();
+    let name = cur.ident()?;
+    if peek_kw(cur, "as") {
+        cur.next()?;
+        let alias_at = cur.here();
+        let alias = cur.ident()?;
+        if is_reserved_word(&alias) {
+            return Err(cur.err_at(
+                alias_at,
+                format!("expected a table alias after AS, found keyword `{alias}`"),
+            ));
+        }
+        return Ok((
+            TableRef {
+                name,
+                alias: Some(alias),
+            },
+            alias_at,
+        ));
+    }
+
+    let bare_alias = match cur.peek() {
+        Some(Tok::Word(word)) if !is_reserved_word(word) => Some((word.clone(), cur.here())),
+        _ => None,
+    };
+    if let Some((alias, alias_at)) = bare_alias {
+        cur.next()?;
+        Ok((
+            TableRef {
+                name,
+                alias: Some(alias),
+            },
+            alias_at,
+        ))
+    } else {
+        Ok((TableRef { name, alias: None }, name_at))
+    }
+}
+
 fn parse_select(cur: &mut Cursor) -> Result<Statement> {
     // `distinct` is the DISTINCT keyword only when it leads a real projection — not
     // when it is itself the selected column, e.g. `SELECT distinct FROM t` or
@@ -1294,9 +1951,11 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
     }
     let projection = parse_projection(cur)?;
     cur.keyword("from")?;
-    let table = cur.ident()?;
+    let (source, source_at) = parse_table_ref(cur)?;
+    let mut qualifiers = vec![(source.qualifier().to_string(), source_at)];
+    let mut joins = Vec::new();
 
-    if peek_kw(cur, "join") || peek_kw(cur, "inner") || peek_kw(cur, "left") {
+    while peek_kw(cur, "join") || peek_kw(cur, "inner") || peek_kw(cur, "left") {
         let left_join = if peek_kw(cur, "left") {
             cur.next()?;
             if peek_kw(cur, "outer") {
@@ -1310,44 +1969,38 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
             false
         };
         cur.keyword("join")?;
-        let right_table = cur.ident()?;
+        let (table, qualifier_at) = parse_table_ref(cur)?;
+        let qualifier = table.qualifier().to_string();
+        if qualifiers.iter().any(|(known, _)| known == &qualifier) {
+            return Err(cur.err_at(
+                qualifier_at,
+                format!("duplicate table qualifier `{qualifier}`"),
+            ));
+        }
+        qualifiers.push((qualifier, qualifier_at));
         cur.keyword("on")?;
-        let left_column = cur.column_ref()?;
+        let first_column = cur.column_ref()?;
         cur.expect(Tok::Eq)?;
-        let right_column = cur.column_ref()?;
-        let filter = if peek_kw(cur, "where") {
-            cur.next()?;
-            Some(parse_predicate(cur)?)
-        } else {
-            None
-        };
-        let order = if peek_kw(cur, "order") {
-            cur.next()?;
-            cur.keyword("by")?;
-            let mut keys = vec![parse_order_key(cur)?];
-            while matches!(cur.peek(), Some(Tok::Comma)) {
-                cur.next()?;
-                keys.push(parse_order_key(cur)?);
-            }
-            keys
-        } else {
-            Vec::new()
-        };
-        let limit = parse_row_count(cur, "limit")?;
-        let offset = parse_row_count(cur, "offset")?.unwrap_or(0);
-        return Ok(Statement::SelectJoin {
-            projection,
-            distinct,
-            left_table: table,
-            right_table,
-            left_column,
-            right_column,
+        let second_column = cur.column_ref()?;
+        joins.push(JoinClause {
+            table,
+            first_column,
+            second_column,
             left_join,
-            filter,
-            order,
-            limit,
-            offset,
         });
+    }
+
+    if peek_kw(cur, "right")
+        || peek_kw(cur, "full")
+        || peek_kw(cur, "cross")
+        || peek_kw(cur, "natural")
+    {
+        let at = cur.here();
+        let kind = cur.ident()?;
+        return Err(cur.err_at(
+            at,
+            format!("unsupported join type `{}`", kind.to_ascii_uppercase()),
+        ));
     }
 
     let filter = if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("where")) {
@@ -1360,10 +2013,10 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
     let group_by = if matches!(cur.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("group")) {
         cur.next()?; // consume GROUP
         cur.keyword("by")?;
-        let mut cols = vec![cur.ident()?];
+        let mut cols = vec![cur.column_ref()?];
         while matches!(cur.peek(), Some(Tok::Comma)) {
             cur.next()?;
-            cols.push(cur.ident()?);
+            cols.push(cur.column_ref()?);
         }
         cols
     } else {
@@ -1409,18 +2062,34 @@ fn parse_select(cur: &mut Cursor) -> Result<Statement> {
     let limit = parse_row_count(cur, "limit")?;
     let offset = parse_row_count(cur, "offset")?.unwrap_or(0);
 
-    Ok(Statement::Select {
-        table,
-        projection,
-        distinct,
-        before,
-        filter,
-        group_by,
-        having,
-        order,
-        limit,
-        offset,
-    })
+    if source.alias.is_some() || !joins.is_empty() {
+        Ok(Statement::SelectJoin {
+            projection,
+            distinct,
+            source,
+            joins,
+            before,
+            filter,
+            group_by,
+            having,
+            order,
+            limit,
+            offset,
+        })
+    } else {
+        Ok(Statement::Select {
+            table: source.name,
+            projection,
+            distinct,
+            before,
+            filter,
+            group_by,
+            having,
+            order,
+            limit,
+            offset,
+        })
+    }
 }
 
 fn parse_update(cur: &mut Cursor) -> Result<Statement> {
@@ -1428,14 +2097,27 @@ fn parse_update(cur: &mut Cursor) -> Result<Statement> {
     cur.keyword("set")?;
     let set_column = cur.ident()?;
     cur.expect(Tok::Eq)?;
-    let set_value = cur.value()?;
+    let use_default = peek_kw(cur, "default");
+    let set_value = if use_default {
+        cur.next()?;
+        None
+    } else {
+        Some(cur.value()?)
+    };
     cur.keyword("where")?;
     let filter = parse_predicate(cur)?;
-    Ok(Statement::Update {
-        table,
-        set: (set_column, set_value),
-        filter,
-    })
+    match set_value {
+        Some(set_value) => Ok(Statement::Update {
+            table,
+            set: (set_column, set_value),
+            filter,
+        }),
+        None => Ok(Statement::UpdateDefault {
+            table,
+            column: set_column,
+            filter,
+        }),
+    }
 }
 
 fn parse_drop(cur: &mut Cursor) -> Result<Statement> {
@@ -1914,6 +2596,42 @@ mod tests {
     }
 
     #[test]
+    fn parses_aliased_n_table_join_plan() {
+        let statement = parse(
+            "SELECT u.name, COUNT(i.label) AS n FROM users AS u \
+             JOIN orders o ON o.user_id = u.id \
+             LEFT JOIN items AS i ON o.id = i.order_id \
+             GROUP BY u.name HAVING COUNT(i.label) > 0 BEFORE 7 ORDER BY u.name",
+        )
+        .unwrap();
+        let Statement::SelectJoin {
+            source,
+            joins,
+            before,
+            group_by,
+            ..
+        } = statement
+        else {
+            panic!("expected a joined SELECT")
+        };
+        assert_eq!(source.name, "users");
+        assert_eq!(source.alias.as_deref(), Some("u"));
+        assert_eq!(joins.len(), 2);
+        assert_eq!(joins[0].table.name, "orders");
+        assert_eq!(joins[0].table.alias.as_deref(), Some("o"));
+        assert!(!joins[0].left_join);
+        assert_eq!(joins[1].table.alias.as_deref(), Some("i"));
+        assert!(joins[1].left_join);
+        assert_eq!(before, Some(7));
+        assert_eq!(group_by, ["u.name"]);
+
+        let duplicate = parse("SELECT * FROM users u JOIN orders u ON u.id = u.user_id")
+            .unwrap_err()
+            .to_string();
+        assert!(duplicate.contains("duplicate table qualifier `u`"));
+    }
+
+    #[test]
     fn parses_in_between_isnull_not() {
         use CompareOp::*;
         let f = |sql: &str| match parse(sql).unwrap() {
@@ -2009,6 +2727,74 @@ mod tests {
     }
 
     #[test]
+    fn parses_schema_defaults_checks_and_default_dml() {
+        let statement = parse(
+            "CREATE TABLE jobs (id INTEGER PRIMARY KEY, state VARCHAR(20) DEFAULT 'queued', \
+             attempts NUMERIC(8, 0) DEFAULT (0) CHECK (attempts >= 0), CHECK (state != 'broken'))",
+        )
+        .unwrap();
+        let Statement::CreateTableSchema {
+            columns, checks, ..
+        } = statement
+        else {
+            panic!("expected schema-rich CREATE TABLE")
+        };
+        assert_eq!(columns.len(), 3);
+        assert!(columns[0].unique && columns[0].not_null);
+        assert_eq!(columns[1].default, Some(Value::Text("queued".into())));
+        assert_eq!(columns[2].default, Some(Value::Int(0)));
+        assert_eq!(checks.len(), 2);
+
+        let Statement::InsertSchema {
+            target_columns,
+            rows,
+            ..
+        } = parse("INSERT INTO jobs (id, state) VALUES (1, DEFAULT), (2, 'done')").unwrap()
+        else {
+            panic!("expected schema-aware insert")
+        };
+        assert_eq!(target_columns.unwrap(), ["id", "state"]);
+        assert_eq!(rows.len(), 2);
+        assert!(matches!(rows[0][1], InsertValue::Default));
+        assert!(matches!(
+            parse("INSERT INTO jobs DEFAULT VALUES").unwrap(),
+            Statement::InsertSchema {
+                target_columns: Some(columns),
+                rows,
+                ..
+            } if columns.is_empty() && rows == vec![Vec::new()]
+        ));
+        assert!(matches!(
+            parse("UPDATE jobs SET state = DEFAULT WHERE id = 1").unwrap(),
+            Statement::UpdateDefault { column, .. } if column == "state"
+        ));
+    }
+
+    #[test]
+    fn unsupported_schema_constructs_are_actionable_and_positioned() {
+        let error = parse("CREATE TABLE t (id INTEGER DEFAULT CURRENT_TIMESTAMP)")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("DEFAULT supports only"), "{error}");
+        assert!(error.contains("line 1, column"), "{error}");
+        assert!(error.contains('^'), "{error}");
+
+        let error = parse("CREATE TABLE child (id INTEGER REFERENCES parent(id))")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unsupported column constraint"), "{error}");
+        assert!(error.contains("`REFERENCES`"), "{error}");
+
+        let error = parse("CREATE TABLE child (id INTEGER, FOREIGN KEY (id) REFERENCES p(id))")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("unsupported table constraint `FOREIGN`"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn rejects_garbage_and_unsupported() {
         assert!(parse("TRUNCATE users").is_err());
         assert!(parse("SELECT * FROM").is_err());
@@ -2042,5 +2828,59 @@ mod tests {
         assert!(e.contains("unexpected end of statement"), "{e}");
         assert!(e.contains("line 1, column 14"), "{e}");
         assert!(e.contains('^'), "{e}");
+
+        let e = parse("SELECT * FROM t UNION SELECT * FROM u")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("unsupported or misplaced SQL construct `UNION`"));
+        assert!(e.contains("line 1, column 17"), "{e}");
+    }
+
+    #[test]
+    fn parser_rejects_excessive_nesting_and_predicate_complexity() {
+        let nested = format!(
+            "SELECT * FROM t WHERE {}id = 1{}",
+            "(".repeat(MAX_SQL_PAREN_DEPTH + 1),
+            ")".repeat(MAX_SQL_PAREN_DEPTH + 1)
+        );
+        let error = parse(&nested).unwrap_err().to_string();
+        assert!(error.contains("expression nesting exceeds"), "{error}");
+
+        let mut nested_case = "'done'".to_string();
+        for _ in 0..=MAX_SCALAR_DEPTH {
+            nested_case = format!("CASE WHEN id = 1 THEN {nested_case} END");
+        }
+        let error = parse(&format!("SELECT {nested_case} FROM t"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("scalar expression nesting exceeds"),
+            "{error}"
+        );
+
+        let predicate = vec!["id = 1"; MAX_PREDICATE_NODES + 1].join(" AND ");
+        let error = parse(&format!("SELECT * FROM t WHERE {predicate}"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("predicate complexity exceeds"), "{error}");
+    }
+
+    #[test]
+    fn statement_boundaries_and_statement_keywords_cannot_be_aliases() {
+        assert!(parse("SELECT * FROM t;").is_ok());
+        assert!(parse("SELECT * FROM t;;").is_ok());
+
+        for sql in [
+            "SELECT * FROM t; DELETE FROM t WHERE id = 1",
+            "SELECT * FROM t DELETE",
+            "SELECT * FROM t UPDATE",
+            "SELECT * FROM t CREATE",
+        ] {
+            let error = parse(sql).unwrap_err().to_string();
+            assert!(
+                error.contains("unsupported or misplaced SQL construct"),
+                "{sql}: {error}"
+            );
+        }
     }
 }

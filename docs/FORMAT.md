@@ -1,4 +1,4 @@
-# PicoVolt on-disk format (`FORMAT_VERSION = 3`)
+# PicoVolt on-disk format (`FORMAT_VERSION = 4`)
 
 This document specifies the byte-level layout of PicoVolt's persisted data. It is
 the reference for the **0.11.0 format freeze**: from this version on, a change to
@@ -13,8 +13,11 @@ Version history:
   and the manifest (§6.1). A file is stamped version 2 **only when it carries that
   region**; an index-less monolith and every development workspace stay at version
   1, so version-1 builds can still read them.
-- **Version 3** (next minor): persists column-level `PRIMARY KEY`, `UNIQUE`, and
+- **Version 3** (1.4.0): persists column-level `PRIMARY KEY`, `UNIQUE`, and
   `NOT NULL` constraints. Only databases with constraints are stamped version 3.
+- **Version 4** (1.7.0): persists deterministic literal defaults and bounded
+  `CHECK` predicate trees. Only databases using either feature are stamped
+  version 4; legacy-only constraints remain version 3.
 
 All multi-byte integers are **little-endian**. Sizes are in bytes.
 
@@ -22,7 +25,9 @@ Key constants (`src/core/types.rs`):
 
 | Constant              | Value        | Meaning                                  |
 |-----------------------|--------------|------------------------------------------|
-| `FORMAT_VERSION`      | `3`          | Newest version this build can read.      |
+| `FORMAT_VERSION`      | `4`          | Newest version this build can read.      |
+| `FORMAT_VERSION_SCHEMA` | `4`        | Literal-default / CHECK schema metadata. |
+| `FORMAT_VERSION_CONSTRAINTS` | `3`   | Uniqueness/nullability metadata.         |
 | `FORMAT_VERSION_INDEX`| `2`          | Binary-index format without constraints. |
 | `FORMAT_VERSION_BASE` | `1`          | Version written when there is no index region. |
 | `PAGE_SIZE`           | `4096`       | One physical page.                       |
@@ -78,7 +83,7 @@ rejected as corruption rather than trusted.
 | Offset | Size | Field            | Notes                                            |
 |-------:|-----:|------------------|--------------------------------------------------|
 | 0      | 4    | `magic`          | `MAGIC_BYTES` = `"PVDB"`. Mismatch ⇒ `SignatureMismatch`. |
-| 4      | 2    | `format_version` | Must be `1..=FORMAT_VERSION` (1, 2, or 3). `0` or newer ⇒ `Corruption`. |
+| 4      | 2    | `format_version` | Must be `1..=FORMAT_VERSION` (1–4). `0` or newer ⇒ `Corruption`. |
 | 6      | 2    | flags            | Reserved, written as zero.                       |
 | 8      | 8    | `manifest_offset`| Absolute offset of the JSON manifest.            |
 | 16     | 8    | `cas_offset`     | Absolute offset of the CAS blob pool.            |
@@ -200,7 +205,7 @@ is `pv_manifest.json`. Schema:
 
 ```jsonc
 {
-  "format_version": 1,          // u16; absent/0 ⇒ pre-freeze ⇒ rejected
+  "format_version": 4,          // u16; absent/0 ⇒ pre-freeze ⇒ rejected
   "clock": 0,                   // u64; the MVCC transaction clock
   "page_count": 0,              // u64; pages in the page-data block
   "tables": [
@@ -209,6 +214,15 @@ is `pv_manifest.json`. Schema:
       "columns": ["id", "name", "city"],
       "unique_columns": ["id"], // v3: PRIMARY KEY or UNIQUE
       "not_null_columns": ["id"], // v3: PRIMARY KEY or NOT NULL
+      "defaults": {             // v4: SQL literal defaults by column
+        "state": { "Text": "queued" },
+        "attempts": { "Int": 0 }
+      },
+      "checks": [               // v4: persisted bounded Predicate AST
+        { "Compare": {
+          "column": "attempts", "op": "Ge", "value": { "Int": 0 }
+        } }
+      ],
       "first_page": 0,          // Option<u64>: head of the page chain
       "tail_id": 0,             // Option<u64>: the resident write page
       "row_versions": 3,        // u64
@@ -224,7 +238,7 @@ is `pv_manifest.json`. Schema:
   ],
   "cas_hashes": ["<hex>", ...], // per-blob BLAKE3 digests
   "cas_dir": [[offset, len], ...], // per-blob (offset,len) in the CAS pool
-  "index_region": [offset, len] // v2 only: absolute (offset,len) of the region
+  "index_region": [offset, len] // v2+: absolute (offset,len) of the region
 }
 ```
 
@@ -284,6 +298,9 @@ page-aligned offsets. Pages are append-only within the workspace's lifetime.
 - A reader **rejects** any file or workspace whose `format_version` is `0` or
   greater than its own `FORMAT_VERSION`. This is enforced in both the monolith
   file header (`FileHeader::decode`) and the manifest (`check_manifest_version`).
+- A monolith is also rejected when its header and manifest versions differ, or
+  when either understates the minimum version required by its index/schema
+  metadata.
 - Files written by **0.10.x and earlier are not readable** by 0.11.0+: they
   predate both the versioned header and the 28-byte (checksummed) page header.
 - **Version 2 is read by 1.3.0+ only.** A 1.3 build reads versions 1 and 2; a
@@ -293,6 +310,9 @@ page-aligned offsets. Pages are append-only within the workspace's lifetime.
 - **Version 3 preserves constraints.** A database is stamped version 3 only when
   at least one table has a persisted uniqueness or nullability constraint, so an
   older reader rejects it instead of silently failing to enforce its schema.
+- **Version 4 preserves defaults and checks.** Literal defaults and `CHECK`
+  predicates require version 4; a database using only version-3 constraints is
+  deliberately still stamped version 3.
 - Any future change to the bytes described here **must** bump `FORMAT_VERSION`,
   add a golden fixture for the new version under `tests/fixtures/`, and preserve
   the old fixtures' read tests (`tests/format_robustness.rs`).
@@ -327,6 +347,10 @@ silent corruption into a clean `Corruption` error at read time.
 | File `format_version` in range          | `FileHeader::decode`           | `Corruption`       |
 | Monolith offsets consistent & aligned   | `Monolith::open`               | `Corruption`       |
 | Manifest `format_version` in range      | `check_manifest_version`       | `Corruption`       |
+| Header/manifest version agreement       | database open/import           | `Corruption`       |
+| Feature metadata uses a sufficient version | `check_manifest_version`   | `Corruption`       |
+| Defaults/checks reference valid columns | `build_tables`                 | `Corruption`       |
+| Table names and head/tail invariants     | `build_tables`                 | `Corruption`       |
 | CAS blob extents in bounds              | `import_bytes` / `from_mapped` | `Corruption`       |
 | Per-page checksum                       | buffer-pool fault / tail load  | `Corruption`       |
 | Row page free-space invariant           | `RowPage::from_bytes`          | `Corruption`       |

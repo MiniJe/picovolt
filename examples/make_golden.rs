@@ -89,4 +89,20 @@ fn main() {
     let _ = std::fs::remove_dir_all(&ws3);
     let size3 = std::fs::metadata(&out3).unwrap().len();
     println!("wrote {} ({size3} bytes)", out3.display());
+
+    // A version-4 golden carrying literal defaults and a CHECK constraint.
+    let ws4 = dir.join("_golden_ws4");
+    let _ = std::fs::remove_dir_all(&ws4);
+    let mut db4 = Database::open_dev(&ws4).unwrap();
+    db4.query(
+        "CREATE TABLE jobs (id INTEGER PRIMARY KEY, state TEXT DEFAULT 'queued', \
+         attempts INTEGER DEFAULT 0 CHECK (attempts >= 0))",
+    )
+    .unwrap();
+    db4.query("INSERT INTO jobs (id) VALUES (1)").unwrap();
+    let out4 = dir.join("golden_v1_7_0.pvdb");
+    db4.bake(&out4).unwrap();
+    let _ = std::fs::remove_dir_all(&ws4);
+    let size4 = std::fs::metadata(&out4).unwrap().len();
+    println!("wrote {} ({size4} bytes)", out4.display());
 }

@@ -6,6 +6,61 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- Application-compatible table aliases and left-deep N-table equality
+  `INNER`/`LEFT` joins, including self-joins, joined filters, grouping,
+  aggregates, ordering, pagination, and MVCC time travel.
+- Searched `CASE WHEN` expressions and nested `LOWER`, `UPPER`, `TRIM`,
+  `LENGTH`, `ABS`, `COALESCE`, and `NULLIF` scalar functions.
+- Schema-light type declarations, deterministic literal defaults,
+  target-column/default inserts, `DEFAULT VALUES`, `UPDATE ... SET ... =
+  DEFAULT`, and persisted SQL three-valued `CHECK` constraints.
+- Reusable prepared statements across Rust, C, WebAssembly, the
+  better-sqlite3-style and OPFS/Worker JavaScript APIs, Python/DB-API, and
+  Go/`database/sql`, with exact positional-parameter counts and explicit
+  lifecycle methods.
+- A registry-only starter policy and post-publish execution gate for Rust,
+  Node, browser, Python, and Go, including a self-contained Go module header
+  and versioned native C ABI release bundles.
+
+### Changed
+
+- The on-disk format ceiling is now version 4. Files and workspaces use v4 only
+  when literal defaults or `CHECK` metadata require it; older schemas continue
+  to use their minimum v1-v3 version and all frozen fixtures remain readable.
+- Parser diagnostics now identify trailing or unsupported SQL constructs with
+  a source position, and recursive SQL/CHECK structures have explicit
+  complexity limits.
+
+### Fixed
+
+- SQL comparisons in `WHERE`, `CASE WHEN`, and `HAVING` now discard `UNKNOWN`
+  results correctly instead of treating some comparisons with `NULL` as true.
+- Multi-row inserts and updates preflight record shape and every constraint
+  before their first row mutation, preventing oversized or late-invalid rows
+  from leaving partial changes.
+- Compound inserts, deletes, and updates now roll back on mutation-phase I/O
+  failure; an explicit transaction is aborted rather than left able to commit a
+  partial statement.
+- Indexed numeric equality considers equivalent integer/fixed-point keys, while
+  mixed-numeric range predicates fall back to a correct scan instead of missing
+  rows because the persisted index order is type-strict.
+- `AVG` handles the minimum fixed-point mantissa without overflowing during
+  half-away-from-zero rounding.
+
+### Security
+
+- Persisted schema metadata, row arity, CHECK depth/size, default references,
+  table identity/head-tail invariants, and file-header/manifest feature versions
+  are validated before use.
+- Query limits now meter uniqueness scans and reject oversized equality-index
+  candidate sets before allocating them; bounded range predicates use the
+  streaming scan path.
+- Public-registry smoke tests isolate package-manager configuration and runtime
+  search paths, validate exact package/native-library provenance and versions,
+  and gate the GitHub release on every maintained registry workflow.
+
 ## [1.6.0] - 2026-09-03
 
 ### Added

@@ -41,6 +41,40 @@ func TestParameterizedQueries(t *testing.T) {
 	}
 }
 
+func TestPreparedStatementIsReusableAndChecksArity(t *testing.T) {
+	db, err := sql.Open("picovolt", "memory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("CREATE TABLE batches (id PRIMARY KEY, name)"); err != nil {
+		t.Fatal(err)
+	}
+
+	insert, err := db.Prepare("INSERT INTO batches VALUES (?, ?)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer insert.Close()
+	if _, err := insert.Exec(1, "one"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := insert.Exec(2, "two"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := insert.Exec(3); err == nil {
+		t.Fatal("expected database/sql to reject the wrong parameter count")
+	}
+
+	var n int
+	if err := db.QueryRow("SELECT COUNT(*) FROM batches").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("count = %d, want 2", n)
+	}
+}
+
 func TestTransactionsCommitAndRollback(t *testing.T) {
 	db, err := sql.Open("picovolt", "memory")
 	if err != nil {

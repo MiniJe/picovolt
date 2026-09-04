@@ -1,13 +1,9 @@
 // A runnable PicoVolt demo from Go: CRUD, an aggregate, and time-travel.
 //
-// From the repository root:
-//
-//	cargo build --release --features capi
-//	cd bindings/go/example
-//	# point the loader at the freshly built library, then run:
-//	#   Linux:   LD_LIBRARY_PATH=../../../target/release go run .
-//	#   macOS:   DYLD_LIBRARY_PATH=../../../target/release go run .
-//	#   Windows: set PATH to include ..\..\..\target\release, then: go run .
+// Install or download the matching native PicoVolt C ABI library, set
+// CGO_LDFLAGS and the platform loader path as described in ../README.md, then
+// run `go run .`. The Go module provides its own C header and does not require a
+// PicoVolt source checkout.
 package main
 
 import (

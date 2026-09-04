@@ -339,6 +339,11 @@ impl Monolith {
         ((self.header.cas_offset as usize - FILE_HEADER_SIZE) / PAGE_SIZE) as u64
     }
 
+    /// On-disk format version recorded in the monolith header.
+    pub fn format_version(&self) -> u16 {
+        self.header.format_version
+    }
+
     /// Read a page out of the mapped page-data block.
     pub fn read_page(&self, id: u64) -> Result<PageBuf> {
         if id >= self.page_count() {

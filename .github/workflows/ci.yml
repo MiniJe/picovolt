@@ -65,6 +65,19 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  starter-policy:
+    name: registry-only starter policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.9"
+      - name: Test the policy checker
+        run: python -m unittest discover -s scripts/tests -v
+      - name: Reject checkout-local starter dependencies
+        run: python scripts/check_registry_starters.py policy
+
   audit:
     name: cargo-audit
     runs-on: ubuntu-latest
@@ -86,8 +99,22 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2
+        with:
+          tool: wasm-pack
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          package-manager-cache: false
       - name: Build wasm32 with JS bindings
         run: cargo build --target wasm32-unknown-unknown --features wasm
+      - name: Test prepared statements through the published JS surfaces
+        run: |
+          wasm-pack build --target bundler --dev --out-dir pkg -- --features wasm
+          cp bindings/js/sqlite.js pkg/sqlite.js
+          cp bindings/js/browser.js pkg/browser.js
+          cp bindings/js/worker.js pkg/worker.js
+          node --experimental-wasm-modules --test bindings/js/tests/prepared.integration.mjs
 
   fuzz-build:
     name: fuzz-build (nightly)

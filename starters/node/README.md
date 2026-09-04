@@ -1,9 +1,10 @@
 # PicoVolt Node starter
 
-Requires Node.js 20 or newer and PicoVolt 1.4 or newer.
+Requires Node.js 20 or newer. The starter pins the PicoVolt version that was
+verified with this source release.
 
 ```sh
-npm install
+npm ci
 npm start
 ```
 

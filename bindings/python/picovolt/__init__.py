@@ -29,7 +29,13 @@ import os
 import sys
 from ctypes import POINTER, byref, c_char_p, c_size_t, c_uint8, c_uint64, c_void_p
 
-__all__ = ["Database", "PicoVoltError", "version", "__version__"]
+__all__ = [
+    "Database",
+    "PreparedStatement",
+    "PicoVoltError",
+    "version",
+    "__version__",
+]
 __version__ = "1.6.0"
 
 
@@ -86,6 +92,14 @@ _lib.pv_query.restype = c_void_p  # char* we own and must free
 _lib.pv_query.argtypes = [c_void_p, c_char_p]
 _lib.pv_query_params.restype = c_void_p
 _lib.pv_query_params.argtypes = [c_void_p, c_char_p, c_char_p]
+_lib.pv_prepare.restype = c_void_p
+_lib.pv_prepare.argtypes = [c_void_p, c_char_p]
+_lib.pv_stmt_parameter_count.restype = c_size_t
+_lib.pv_stmt_parameter_count.argtypes = [c_void_p]
+_lib.pv_stmt_execute.restype = c_void_p
+_lib.pv_stmt_execute.argtypes = [c_void_p, c_void_p, c_char_p]
+_lib.pv_stmt_close.restype = None
+_lib.pv_stmt_close.argtypes = [c_void_p]
 _lib.pv_import_sql.restype = c_void_p
 _lib.pv_import_sql.argtypes = [c_void_p, c_char_p]
 _lib.pv_current_tx.restype = c_uint64
@@ -102,8 +116,11 @@ _lib.pv_export.restype = c_void_p
 _lib.pv_export.argtypes = [c_void_p, POINTER(c_size_t)]
 _lib.pv_import.restype = c_void_p
 _lib.pv_import.argtypes = [POINTER(c_uint8), c_size_t]
+_lib.pv_string_free.restype = None
 _lib.pv_string_free.argtypes = [c_void_p]
+_lib.pv_bytes_free.restype = None
 _lib.pv_bytes_free.argtypes = [c_void_p, c_size_t]
+_lib.pv_close.restype = None
 _lib.pv_close.argtypes = [c_void_p]
 
 
@@ -116,6 +133,71 @@ def _last_error() -> PicoVoltError:
     msg = _lib.pv_last_error()
     text = msg.decode("utf-8", "replace") if msg else "unknown error"
     return PicoVoltError(text)
+
+
+class PreparedStatement:
+    """A reusable positional-parameter SQL statement.
+
+    The originating database is retained for the statement's lifetime and must
+    remain open for execution. Close the statement when it is no longer needed;
+    closing it does not close the database.
+    """
+
+    def __init__(self, database: "Database", sql: str) -> None:
+        self._ptr = None
+        self._database = None
+        if not isinstance(sql, str):
+            raise TypeError("sql must be a string")
+        if not database._ptr:
+            raise PicoVoltError("database is closed")
+        ptr = _lib.pv_prepare(database._ptr, sql.encode("utf-8"))
+        if not ptr:
+            raise _last_error()
+        self._ptr = ptr
+        self._database = database
+        self.source = sql
+        self.parameter_count = int(_lib.pv_stmt_parameter_count(ptr))
+
+    def execute(self, params=()) -> object:
+        """Execute the statement with one value per positional ``?``."""
+        if not self._ptr:
+            raise PicoVoltError("prepared statement is closed")
+        if self._database is None or not self._database._ptr:
+            raise PicoVoltError("database is closed")
+        values = [] if params is None else list(params)
+        if len(values) != self.parameter_count:
+            raise PicoVoltError(
+                "prepared statement expects "
+                f"{self.parameter_count} parameters, got {len(values)}"
+            )
+        payload = json.dumps(values).encode("utf-8")
+        ptr = _lib.pv_stmt_execute(self._ptr, self._database._ptr, payload)
+        if not ptr:
+            raise _last_error()
+        try:
+            raw = ctypes.string_at(ptr)
+        finally:
+            _lib.pv_string_free(ptr)
+        return json.loads(raw.decode("utf-8"))
+
+    def close(self) -> None:
+        """Release the native statement handle. Safe to call twice."""
+        if self._ptr:
+            _lib.pv_stmt_close(self._ptr)
+            self._ptr = None
+        self._database = None
+
+    def __enter__(self) -> "PreparedStatement":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 class Database:
@@ -187,6 +269,17 @@ class Database:
         finally:
             _lib.pv_string_free(ptr)
         return json.loads(raw.decode("utf-8"))
+
+    def prepare(self, sql: str) -> PreparedStatement:
+        """Validate and retain a reusable positional-parameter statement.
+
+        Values receive the same escaping and type validation as one-shot
+        parameterized queries. The caller should close the returned statement
+        or use it as a context manager.
+        """
+        if not self._ptr:
+            raise PicoVoltError("database is closed")
+        return PreparedStatement(self, sql)
 
     def import_sql(self, dump: str) -> object:
         """Import a SQL dump (e.g. ``sqlite3 db .dump``). Returns a report dict

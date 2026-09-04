@@ -14,6 +14,7 @@ use picovolt::{
 const GOLDEN: &str = "tests/fixtures/golden_v0_11_0.pvdb";
 const GOLDEN_V2: &str = "tests/fixtures/golden_v1_3_0.pvdb";
 const GOLDEN_V3: &str = "tests/fixtures/golden_v1_4_0.pvdb";
+const GOLDEN_V4: &str = "tests/fixtures/golden_v1_7_0.pvdb";
 
 /// Bake the canonical sample dataset into `<dir>/sample.pvdb` and return its path.
 fn bake_sample(dir: &std::path::Path) -> std::path::PathBuf {
@@ -89,6 +90,44 @@ fn constrained_v3_golden_preserves_schema_rules() {
     assert!(writable
         .query("INSERT INTO accounts VALUES (1, 'lin@example.com', 'Lin')")
         .is_err());
+}
+
+#[test]
+fn schema_v4_golden_preserves_defaults_and_checks() {
+    let bytes = std::fs::read(GOLDEN_V4).unwrap();
+    assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 4);
+    let mut db = Database::import_bytes(&bytes).unwrap();
+    db.query("INSERT INTO jobs (id) VALUES (2)").unwrap();
+    let row = db
+        .query("SELECT state, attempts FROM jobs WHERE id = 2")
+        .unwrap();
+    assert_eq!(
+        row.rows().unwrap(),
+        &[vec![Value::Text("queued".into()), Value::Int(0)]]
+    );
+    assert!(db
+        .query("INSERT INTO jobs (id, attempts) VALUES (3, -1)")
+        .is_err());
+}
+
+#[test]
+fn understated_schema_format_version_is_rejected() {
+    let mut bytes = std::fs::read(GOLDEN_V4).unwrap();
+    bytes[4..6].copy_from_slice(&3u16.to_le_bytes());
+    let needle = b"\"format_version\":4";
+    let position = bytes
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .expect("golden manifest contains its format version");
+    bytes[position + needle.len() - 1] = b'3';
+    let error = match Database::import_bytes(&bytes) {
+        Ok(_) => panic!("understated version unexpectedly opened"),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        error.contains("understates schema/index features"),
+        "{error}"
+    );
 }
 
 #[test]

@@ -51,6 +51,22 @@ with Database.open_memory() as db:
 module-level `version()`. A PEP 249 adapter is available as
 `picovolt.dbapi2`.
 
+For SQL executed repeatedly, prepare it once. The wrapper caches the SQL text
+and positional-parameter count, validates arity before each execution, and
+passes values through the same injection-safe binder as `query`:
+
+```python
+with db.prepare("INSERT INTO users VALUES (?, ?)") as insert:
+    print(insert.parameter_count)  # 2
+    insert.execute((1, "Ada"))
+    insert.execute((2, "Lin"))
+```
+
+Preparation validates SQL and retains a native statement handle. Close the
+statement (or use its context manager) before closing the database. A statement
+does not own or close its database, and executing it after either handle has
+been closed raises `PicoVoltError`.
+
 Run the demo:
 
 ```sh

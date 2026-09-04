@@ -47,7 +47,14 @@ pub const MAGIC_BYTES: [u8; 4] = [0x50, 0x56, 0x44, 0x42];
 ///   only stamped version 2 when it actually carries that region; an index-less
 ///   monolith stays version 1 and remains readable by version-1 builds.
 /// - Version 3: persists `PRIMARY KEY`, `UNIQUE`, and `NOT NULL` constraints.
-pub const FORMAT_VERSION: u16 = 3;
+/// - Version 4: persists literal defaults and `CHECK` constraints.
+pub const FORMAT_VERSION: u16 = 4;
+
+/// The version required by persisted literal defaults or `CHECK` constraints.
+pub const FORMAT_VERSION_SCHEMA: u16 = 4;
+
+/// The version required by persisted uniqueness/nullability constraints.
+pub const FORMAT_VERSION_CONSTRAINTS: u16 = 3;
 
 /// The version required by a binary secondary-index region without constraints.
 pub const FORMAT_VERSION_INDEX: u16 = 2;

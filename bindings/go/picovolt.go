@@ -1,29 +1,27 @@
 // Package picovolt provides Go bindings for the PicoVolt embedded database
 // engine via its C ABI (cgo).
 //
-// Build the shared library from the repository root first:
-//
-//	cargo build --release --features capi
-//
-// The cgo directives below point at ../../include for the header and
-// ../../target/release for the library, so `go build`/`go test` work from this
-// directory after that. At run time the dynamic loader must also find the
-// library (see the package README for LD_LIBRARY_PATH / PATH / install notes).
+// The module carries the matching C header. Install or download the native
+// PicoVolt library separately and make it visible to the linker (for example,
+// with CGO_LDFLAGS=-L/path/to/lib) and to the platform's dynamic loader. See the
+// package README for release-asset and source-build examples.
 //
 // A DB handle is not safe for concurrent use; guard it yourself if you share it
 // across goroutines.
 package picovolt
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../include
-#cgo LDFLAGS: -L${SRCDIR}/../../target/release -lpicovolt
+#cgo CFLAGS: -I${SRCDIR}/include
+#cgo LDFLAGS: -lpicovolt
 #include <stdlib.h>
 #include "picovolt.h"
 */
 import "C"
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"runtime"
 	"unsafe"
 )
@@ -31,6 +29,15 @@ import (
 // DB is a handle to a PicoVolt database.
 type DB struct {
 	ptr *C.PvDb
+}
+
+// Stmt is a reusable positional-parameter SQL statement. It retains a native
+// prepared handle and the database used for execution. Close the statement
+// before closing its DB. A Stmt is not safe for concurrent use, matching its DB.
+type Stmt struct {
+	db             *DB
+	ptr            *C.PvStmt
+	parameterCount int
 }
 
 // The C ABI records errors in a thread-local that pv_last_error reads back. A
@@ -142,6 +149,85 @@ func (db *DB) QueryParams(sql, paramsJSON string) (string, error) {
 	}
 	defer C.pv_string_free(res)
 	return C.GoString(res), nil
+}
+
+// Prepare validates and retains a reusable positional-parameter statement.
+func (db *DB) Prepare(sql string) (*Stmt, error) {
+	if db.ptr == nil {
+		return nil, errors.New("picovolt: database is closed")
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	csql := C.CString(sql)
+	defer C.free(unsafe.Pointer(csql))
+	ptr := C.pv_prepare(db.ptr, csql)
+	if ptr == nil {
+		return nil, lastError()
+	}
+	return &Stmt{
+		db:             db,
+		ptr:            ptr,
+		parameterCount: int(C.pv_stmt_parameter_count(ptr)),
+	}, nil
+}
+
+// ParameterCount returns the exact number of positional values Execute expects.
+func (s *Stmt) ParameterCount() int {
+	if s == nil {
+		return 0
+	}
+	return s.parameterCount
+}
+
+// Execute runs the prepared SQL with one value per positional `?` and returns
+// PicoVolt's JSON result string. Blob parameters are not supported.
+func (s *Stmt) Execute(params ...any) (string, error) {
+	if s == nil || s.ptr == nil {
+		return "", errors.New("picovolt: prepared statement is closed")
+	}
+	if s.db == nil || s.db.ptr == nil {
+		return "", errors.New("picovolt: database is closed")
+	}
+	if len(params) != s.parameterCount {
+		return "", fmt.Errorf(
+			"picovolt: prepared statement expects %d parameters, got %d",
+			s.parameterCount,
+			len(params),
+		)
+	}
+	for _, param := range params {
+		if _, ok := param.([]byte); ok {
+			return "", errors.New("picovolt: []byte (blob) parameters are not supported")
+		}
+	}
+	payload := []byte("[]")
+	if len(params) != 0 {
+		var err error
+		payload, err = json.Marshal(params)
+		if err != nil {
+			return "", fmt.Errorf("picovolt: encode prepared parameters: %w", err)
+		}
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	cparams := C.CString(string(payload))
+	defer C.free(unsafe.Pointer(cparams))
+	result := C.pv_stmt_execute(s.ptr, s.db.ptr, cparams)
+	if result == nil {
+		return "", lastError()
+	}
+	defer C.pv_string_free(result)
+	return C.GoString(result), nil
+}
+
+// Close releases the native statement handle. It is safe to call more than
+// once and does not close the database.
+func (s *Stmt) Close() {
+	if s != nil && s.ptr != nil {
+		C.pv_stmt_close(s.ptr)
+		s.ptr = nil
+		s.db = nil
+	}
 }
 
 // ImportSQL imports a SQL dump (e.g. `sqlite3 db .dump`). It returns a JSON
