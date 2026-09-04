@@ -10,6 +10,9 @@ use std::path::{Path, PathBuf};
 
 type CliResult<T> = Result<T, Box<dyn Error>>;
 
+#[cfg(all(feature = "data-tools", not(target_arch = "wasm32")))]
+mod data_tools;
+
 fn main() {
     if let Err(error) = run(std::env::args().skip(1).collect()) {
         eprintln!("pv: {error}");
@@ -23,24 +26,46 @@ fn run(args: Vec<String>) -> CliResult<()> {
             let mut db = open_database(&args[1])?;
             print_result(db.query(&args[2..].join(" "))?)
         }
-        Some("inspect") if args.len() == 2 => {
-            let db = open_database(&args[1])?;
-            println!("transaction: {}", db.current_tx());
-            for table in db.table_names() {
-                println!("table: {table}");
+        Some("explain") if args.len() >= 3 => {
+            let db = open_existing_database(&args[1])?;
+            print_result(db.explain(&args[2..].join(" "))?)
+        }
+        Some("inspect") if args.len() >= 2 => {
+            let db = open_existing_database(&args[1])?;
+            let stats = db.inspect_stats()?;
+            if args.get(2).map(String::as_str) == Some("--json") && args.len() == 3 {
+                println!("{}", serde_json::to_string_pretty(&stats)?);
+            } else if args.len() == 2 {
+                println!("transaction: {}\nformat: {}\nstorage: {}\npages: {} ({} bytes; {} orphaned)\nCAS: {} blobs, {} bytes", stats.current_transaction, stats.format_version, stats.storage_mode, stats.allocated_pages, stats.allocated_page_bytes, stats.orphaned_pages, stats.cas.blobs, stats.cas.stored_bytes);
+                for table in stats.tables {
+                    println!("table: {}\n  rows: {} live / {} versions\n  pages: {} ({} used, {} free bytes)\n  compression: {}", table.name, table.live_rows, table.row_versions, table.pages, table.used_page_bytes, table.free_page_bytes, table.compression.codec);
+                    for index in table.indexes {
+                        println!(
+                            "  index: {} ({} entries, {} keys, {} encoded bytes)",
+                            index.column, index.entries, index.distinct_keys, index.encoded_bytes
+                        );
+                    }
+                }
+            } else {
+                return Err("usage: pv inspect <database> [--json]".into());
             }
             Ok(())
         }
         Some("history") if args.len() >= 2 => history_command(&args[1..]),
         Some("diff") => diff_command(&args[1..]),
-        Some("bake") if args.len() == 3 => {
-            let mut db = Database::open_dev(&args[1])?;
-            db.bake(&args[2])?;
+        Some("bake") if args.len() == 3 || (args.len() == 4 && args[3] == "--resume") => {
+            let mut db = open_existing_database(&args[1])?;
+            if args.len() == 4 {
+                db.bake_resumable(&args[2])?;
+            } else {
+                db.bake(&args[2])?;
+            }
             println!("wrote {}", args[2]);
             Ok(())
         }
         Some("import") => import_command(&args[1..]),
         Some("export") => export_command(&args[1..]),
+        Some("dataset") => dataset_command(&args[1..]),
         Some("help") | Some("--help") | Some("-h") | None => {
             print_help();
             Ok(())
@@ -253,10 +278,52 @@ fn open_database(path: &str) -> Result<Database, PvError> {
     }
 }
 
+fn open_existing_database(path: &str) -> CliResult<Database> {
+    let p = Path::new(path);
+    if !p.is_file() && !p.join(picovolt::MANIFEST_FILE).is_file() {
+        return Err(format!("database does not exist: {path}").into());
+    }
+    Ok(open_database(path)?)
+}
+
+#[cfg(all(feature = "data-tools", not(target_arch = "wasm32")))]
+fn dataset_command(args: &[String]) -> CliResult<()> {
+    use data_tools::dataset;
+    match args.first().map(String::as_str) {
+        Some("keygen") if args.len() == 2 => println!("{}", dataset::generate_key(Path::new(&args[1]))?),
+        Some("sign") if args.len() >= 2 => {
+            let key = required_option(args, "--key")?;
+            let name = required_option(args, "--name")?;
+            let output = Path::new(required_option(args, "--output")?);
+            let signed = dataset::sign(Path::new(&args[1]), name, Path::new(key))?;
+            let parent = output.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+            let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+            serde_json::to_writer_pretty(temp.as_file_mut(), &signed)?;
+            temp.as_file().sync_all()?;
+            temp.persist_noclobber(output)?;
+            println!("signed {}", output.display());
+        }
+        Some("verify") if args.len() >= 3 => {
+            let result = dataset::verify(Path::new(&args[1]), Path::new(&args[2]), required_option(args, "--public-key")?)?;
+            println!("verified {} ({} bytes, BLAKE3 {})", result.name, result.size_bytes, result.blake3);
+        }
+        _ => return Err("usage: pv dataset keygen <private-key> | sign <image> --key <private-key> --name <name> --output <manifest> | verify <image> <manifest> --public-key <hex>".into()),
+    }
+    Ok(())
+}
+
+#[cfg(not(all(feature = "data-tools", not(target_arch = "wasm32"))))]
+fn dataset_command(_: &[String]) -> CliResult<()> {
+    Err(
+        "dataset commands require a native build: cargo install picovolt --features data-tools"
+            .into(),
+    )
+}
+
 fn import_command(args: &[String]) -> CliResult<()> {
     if args.len() < 2 {
         return Err(
-            "usage: pv import <workspace> <input> [--table name] [--format csv|jsonl|sql]".into(),
+            "usage: pv import <workspace> <input> [--table name] [--format csv|jsonl|sql|parquet|sqlite] [--source-table name]".into(),
         );
     }
     let workspace = &args[0];
@@ -290,6 +357,26 @@ fn import_command(args: &[String]) -> CliResult<()> {
         "json" | "jsonl" | "ndjson" => {
             import_jsonl(&mut db, required_option(args, "--table")?, &input)?
         }
+        #[cfg(all(feature = "data-tools", not(target_arch = "wasm32")))]
+        "parquet" => {
+            data_tools::import_parquet(&mut db, &input, required_option(args, "--table")?)? as usize
+        }
+        #[cfg(all(feature = "data-tools", not(target_arch = "wasm32")))]
+        "sqlite" | "sqlite3" | "db" => {
+            let target = required_option(args, "--table")?;
+            data_tools::import_sqlite(
+                &mut db,
+                &input,
+                option(args, "--source-table").unwrap_or(target),
+                target,
+            )? as usize
+        }
+        #[cfg(not(all(feature = "data-tools", not(target_arch = "wasm32"))))]
+        "parquet" | "sqlite" | "sqlite3" | "db" => {
+            return Err(
+                "binary imports require: cargo install picovolt --features data-tools".into(),
+            )
+        }
         _ => return Err(format!("unsupported import format `{format}`").into()),
     };
     println!("imported {imported} row(s)/statement(s)");
@@ -298,9 +385,9 @@ fn import_command(args: &[String]) -> CliResult<()> {
 
 fn export_command(args: &[String]) -> CliResult<()> {
     if args.len() < 3 {
-        return Err("usage: pv export <database> <table> <output> [--format csv|jsonl]".into());
+        return Err("usage: pv export <database> <table> <output> [--format csv|jsonl|parquet] [--before tx (Parquet only)]".into());
     }
-    let mut db = open_database(&args[0])?;
+    let mut db = open_existing_database(&args[0])?;
     let output = PathBuf::from(&args[2]);
     let format = option(args, "--format")
         .map(str::to_owned)
@@ -312,17 +399,43 @@ fn export_command(args: &[String]) -> CliResult<()> {
         })
         .unwrap_or_else(|| "csv".into())
         .to_ascii_lowercase();
+    #[cfg(all(feature = "data-tools", not(target_arch = "wasm32")))]
+    if format == "parquet" {
+        let before = option(args, "--before")
+            .map(str::parse::<u64>)
+            .transpose()?;
+        let count = data_tools::export_parquet(&db, &args[1], &output, before)?;
+        println!("exported {count} row(s) to {}", output.display());
+        return Ok(());
+    }
+    if format == "parquet" {
+        return Err("Parquet export requires: cargo install picovolt --features data-tools".into());
+    }
+    if !matches!(format.as_str(), "csv" | "json" | "jsonl" | "ndjson") {
+        return Err(format!("unsupported export format `{format}`").into());
+    }
+    if args.iter().any(|arg| arg == "--before") {
+        return Err("--before is currently supported only for Parquet export".into());
+    }
     let QueryResult::Rows { columns, rows } = db.query(&format!("SELECT * FROM {}", args[1]))?
     else {
         unreachable!("SELECT always returns rows")
     };
-    let mut out = BufWriter::new(File::create(&output)?);
+    let parent = output
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    let mut out = BufWriter::new(temporary.as_file_mut());
     match format.as_str() {
         "csv" => write_csv(&mut out, &columns, &rows)?,
         "json" | "jsonl" | "ndjson" => write_jsonl(&mut out, &columns, &rows)?,
         _ => return Err(format!("unsupported export format `{format}`").into()),
     }
     out.flush()?;
+    drop(out);
+    temporary.as_file().sync_all()?;
+    temporary.persist(&output)?;
     println!("exported {} row(s) to {}", rows.len(), output.display());
     Ok(())
 }
@@ -530,12 +643,19 @@ fn print_result(result: QueryResult) -> CliResult<()> {
 fn print_help() {
     println!("PicoVolt command-line interface\n");
     println!("  pv query <database> <sql>");
-    println!("  pv inspect <database>");
+    println!("  pv explain <database> <select-sql>");
+    println!("  pv inspect <database> [--json]");
     println!("  pv history <database> [--table name] [--limit transactions]");
     println!("  pv diff <database> <table> --from <tx> --to <tx> [--format csv|jsonl]");
-    println!("  pv bake <workspace> <output.pvdb>");
-    println!("  pv import <workspace> <input> [--table name] [--format csv|jsonl|sql]");
-    println!("  pv export <database> <table> <output> [--format csv|jsonl]");
+    println!("  pv bake <database> <output.pvdb> [--resume]");
+    println!("  pv import <workspace> <input> [--table name] [--format csv|jsonl|sql|parquet|sqlite] [--source-table name]");
+    println!("  pv export <database> <table> <output> [--format csv|jsonl|parquet] [--before tx (Parquet)]");
+    println!("  pv dataset keygen <private-key>");
+    println!("  pv dataset sign <image> --key <private-key> --name <name> --output <manifest>");
+    println!("  pv dataset verify <image> <manifest> --public-key <hex>");
+    println!(
+        "\nParquet, SQLite, and dataset signing require a native --features data-tools build."
+    );
     println!("\nA database path ending in a file is opened read-only; a directory is a writable workspace.");
 }
 

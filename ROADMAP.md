@@ -9,7 +9,7 @@ model hypothesis lives in [docs/MONETIZATION.md](docs/MONETIZATION.md).
 
 ## Where PicoVolt is now
 
-Version **1.7.1** is the current release. The engine
+Version **1.8.0** adds data movement and inspection. The engine
 includes page-backed storage, MVCC time-travel queries, persisted secondary
 indexes, a stable 1.x file format, Rust/JavaScript/Python/Go/C bindings, a CLI,
 an optional bounded HTTP server, and a durable browser path using OPFS and a Web
@@ -72,16 +72,16 @@ Release gate: every maintained starter runs only against packages installed from
 the public registries, with no source-tree fallback. The release workflows now
 enforce this as a post-publish gate rather than accepting a syntactic pin alone.
 
-## 1.8 — Data movement and inspection
+## 1.8 — Data movement and inspection (implemented)
 
 **Outcome:** a team can evaluate PicoVolt on existing data and understand what the
 engine stored and why a query used a particular path.
 
-Planned scope:
+Delivered scope:
 
-- Parquet import/export and direct binary SQLite import;
-- `pv diff` for row-level changes between MVCC snapshots (implemented for the
-  upcoming release with deterministic CSV/JSONL output and multiset semantics);
+- optional native Parquet import/export and direct binary SQLite table import;
+- `pv diff` for row-level changes between MVCC snapshots with deterministic
+  CSV/JSONL output and multiset semantics;
 - `EXPLAIN` output for scans, indexes, joins, sorting, and limits;
 - manifest, page, index, and compression statistics in `pv inspect`;
 - a documented, resumable pipeline for baking large production images;
@@ -89,6 +89,9 @@ Planned scope:
 
 Release gate: round-trip and differential tests over representative public
 datasets, including datasets larger than the configured buffer pool.
+The UCI Iris fixture and mixed-type generated data exercise this gate with a
+two-page cache. See [Data tools](docs/DATA_TOOLS.md) for supported types,
+transaction disk requirements, memory limits, and signing trust boundaries.
 
 ## 1.9 — Stabilization
 

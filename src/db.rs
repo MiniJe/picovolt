@@ -17,11 +17,13 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 #[cfg(feature = "enterprise")]
 use std::sync::Arc;
 use std::time::Instant;
+
+mod explain;
 
 #[cfg(not(target_arch = "wasm32"))]
 use fs2::FileExt;
@@ -250,6 +252,102 @@ impl QueryResult {
             _ => None,
         }
     }
+}
+
+/// A read-only physical and logical inventory returned by
+/// [`Database::inspect_stats`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DatabaseStats {
+    /// Effective `.pvdb` format version a bake would produce.
+    pub format_version: u16,
+    /// Current committed MVCC transaction.
+    pub current_transaction: u64,
+    /// Active storage backend (`development`, `memory`, `production`, or
+    /// `streamed`).
+    pub storage_mode: String,
+    /// Whether the current handle accepts writes.
+    pub writable: bool,
+    /// Fixed physical page size.
+    pub page_size: usize,
+    /// Pages allocated by the backend, including pages orphaned by dropped
+    /// tables until compaction is implemented.
+    pub allocated_pages: u64,
+    /// Allocated bytes occupied by the page region.
+    pub allocated_page_bytes: u64,
+    /// Allocated pages no longer reachable from a table.
+    pub orphaned_pages: u64,
+    /// Current buffer-pool state.
+    pub buffer_pool: BufferPoolStats,
+    /// Content-addressed blob inventory.
+    pub cas: CasStats,
+    /// Table inventories in catalog order.
+    pub tables: Vec<TableStats>,
+}
+
+/// Buffer-pool counters included in [`DatabaseStats`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BufferPoolStats {
+    /// Configured maximum resident pages.
+    pub capacity_pages: usize,
+    /// Pages resident when inspection completed.
+    pub resident_pages: usize,
+}
+
+/// Content-addressed blob counters included in [`DatabaseStats`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CasStats {
+    /// Number of distinct deduplicated blobs.
+    pub blobs: usize,
+    /// Sum of the stored blob payload sizes.
+    pub stored_bytes: u64,
+}
+
+/// Per-table storage inventory included in [`DatabaseStats`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TableStats {
+    /// Catalog table name.
+    pub name: String,
+    /// Column names in storage order.
+    pub columns: Vec<String>,
+    /// Rows visible at the current transaction.
+    pub live_rows: u64,
+    /// All stored MVCC record versions, including tombstones.
+    pub row_versions: u64,
+    /// Reachable row pages.
+    pub pages: u64,
+    /// Bytes used by row-page headers, slots, and record payloads.
+    pub used_page_bytes: u64,
+    /// Free bytes inside reachable row pages.
+    pub free_page_bytes: u64,
+    /// Current physical compression. Row pages are currently uncompressed; the
+    /// explicit fields make that limitation machine-readable.
+    pub compression: CompressionStats,
+    /// Secondary indexes in column order.
+    pub indexes: Vec<IndexStats>,
+}
+
+/// Compression counters included in [`TableStats`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CompressionStats {
+    /// Physical encoding currently used by table pages.
+    pub codec: String,
+    /// Pages using the cold columnar codec.
+    pub compressed_pages: u64,
+    /// Bytes saved relative to the allocated row-page representation.
+    pub saved_bytes: u64,
+}
+
+/// Secondary-index counters included in [`TableStats`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct IndexStats {
+    /// Indexed column.
+    pub column: String,
+    /// Record-version addresses stored in the index.
+    pub entries: usize,
+    /// Distinct keys stored in the index.
+    pub distinct_keys: usize,
+    /// Encoded bytes contributed to a baked binary index region.
+    pub encoded_bytes: usize,
 }
 
 /// Resource bounds for executing SQL supplied by an untrusted caller.
@@ -812,9 +910,113 @@ impl Database {
     }
 
     /// Compile the current database into a `.pvdb` monolith at `out_path`.
+    /// Pages stream directly to a temporary file; the destination is replaced
+    /// only after a complete, synced image is available. CAS and indexes remain
+    /// resident in the database, but no whole-image allocation is required.
     pub fn bake(&mut self, out_path: impl AsRef<Path>) -> Result<()> {
-        let bytes = self.bake_to_bytes()?;
-        fs::write(out_path, bytes)?;
+        let path = out_path.as_ref();
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        self.bake_to_writer(file.as_file_mut())?;
+        file.as_file().sync_all()?;
+        file.persist(path).map_err(|e| PvError::Io(e.error))?;
+        Ok(())
+    }
+
+    /// Write a production image sequentially without collecting its pages.
+    /// The caller owns the output and is responsible for atomic publication.
+    pub fn bake_to_writer(&mut self, out: &mut impl Write) -> Result<()> {
+        self.flush()?;
+        let page_count = self.cache.borrow().backend().page_count();
+        let cas_offset = page_count
+            .checked_mul(PAGE_SIZE as u64)
+            .and_then(|n| n.checked_add(FILE_HEADER_SIZE as u64))
+            .ok_or_else(|| PvError::Corruption("image size overflow".into()))?;
+        let mut cas_dir = Vec::with_capacity(self.cas.len());
+        let mut cas_size = 0u64;
+        for id in 0..self.cas.len() as u64 {
+            let size = self.cas.get(id)?.len() as u64;
+            cas_dir.push((cas_size, size));
+            cas_size = cas_size
+                .checked_add(size)
+                .ok_or_else(|| PvError::Corruption("CAS size overflow".into()))?;
+        }
+        let (region, descs) = self.build_index_region();
+        let index_offset = cas_offset
+            .checked_add(cas_size)
+            .ok_or_else(|| PvError::Corruption("image size overflow".into()))?;
+        let manifest_offset = index_offset
+            .checked_add(region.len() as u64)
+            .ok_or_else(|| PvError::Corruption("image size overflow".into()))?;
+        let mut manifest = self.build_manifest(
+            false,
+            &IndexPlan::Binary {
+                descs,
+                offset: index_offset,
+                len: region.len() as u64,
+            },
+        )?;
+        manifest.cas_dir = cas_dir;
+        out.write_all(
+            &FileHeader::new_versioned(manifest_offset, cas_offset, manifest.format_version)
+                .encode(),
+        )?;
+        for id in 0..page_count {
+            let page = self.cache.borrow().backend().read_page(id)?;
+            verify_page_checksum(id, &page)?;
+            out.write_all(&page[..])?;
+        }
+        for id in 0..self.cas.len() as u64 {
+            out.write_all(self.cas.get(id)?)?;
+        }
+        out.write_all(&region)?;
+        serde_json::to_writer(&mut *out, &manifest)?;
+        out.flush()?;
+        Ok(())
+    }
+
+    /// Resume a sequential bake from `<out_path>.partial`. Existing bytes are
+    /// compared against the source before reuse; a changed source or corrupt
+    /// partial fails without publishing. The source must remain quiescent.
+    /// A partial is retained on failure and renamed only after sync completes.
+    pub fn bake_resumable(&mut self, out_path: impl AsRef<Path>) -> Result<()> {
+        let path = out_path.as_ref();
+        let mut partial = path.as_os_str().to_os_string();
+        partial.push(".partial");
+        let partial = PathBuf::from(partial);
+        if let Ok(metadata) = fs::symlink_metadata(&partial) {
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                return Err(PvError::Schema(
+                    "bake partial must be a regular file".into(),
+                ));
+            }
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&partial)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        file.try_lock_exclusive()?;
+        let existing = file.metadata()?.len();
+        let mut writer = ResumeWriter {
+            file,
+            position: 0,
+            existing,
+        };
+        self.bake_to_writer(&mut writer)?;
+        if writer.position < existing {
+            return Err(PvError::Corruption(
+                "bake partial is longer than the expected image".into(),
+            ));
+        }
+        writer.file.sync_all()?;
+        drop(writer);
+        fs::rename(&partial, path)?;
         Ok(())
     }
 
@@ -1089,6 +1291,15 @@ impl Database {
         mut budget: Option<&mut QueryBudget>,
     ) -> Result<QueryResult> {
         match statement {
+            Statement::Explain { statement } => {
+                let result = self.explain_statement(&statement, budget.is_some())?;
+                if let (Some(budget), QueryResult::Rows { rows, .. }) = (budget, &result) {
+                    for row in rows {
+                        budget.materialize(row)?;
+                    }
+                }
+                Ok(result)
+            }
             Statement::Begin => {
                 self.begin_transaction()?;
                 Ok(QueryResult::Done)
@@ -2414,6 +2625,90 @@ impl Database {
         self.tables.keys().cloned().collect()
     }
 
+    /// Inspect logical rows, physical pages, indexes, the buffer pool, and CAS
+    /// usage without mutating the database.
+    ///
+    /// Inspection walks page headers and MVCC envelopes through the bounded
+    /// cache. It does not materialize row bodies. Compression counters are
+    /// deliberately explicit: the production table path currently stores
+    /// uncompressed row pages, even though the standalone columnar codec exists.
+    pub fn inspect_stats(&self) -> Result<DatabaseStats> {
+        let (storage_mode, allocated_pages) = {
+            let cache = self.cache.borrow();
+            let mode = match cache.backend() {
+                Backend::Dev(_) => "development",
+                Backend::Mem(_) => "memory",
+                Backend::Prod(_) => "production",
+                Backend::Remote(_) => "streamed",
+            };
+            (mode.to_owned(), cache.backend().page_count())
+        };
+
+        let mut cas_bytes = 0u64;
+        for id in 0..self.cas.len() as u64 {
+            cas_bytes = cas_bytes
+                .checked_add(self.cas.get(id)?.len() as u64)
+                .ok_or_else(|| PvError::Corruption("CAS byte count overflowed".into()))?;
+        }
+
+        let mut reachable_pages = 0u64;
+        let mut tables = Vec::with_capacity(self.tables.len());
+        for (name, table) in &self.tables {
+            let live_rows = self.count_visible(name, None, None)?;
+            let usage = {
+                let mut cache = self.cache.borrow_mut();
+                table_page_usage(&mut cache, table)?
+            };
+            reachable_pages = reachable_pages.saturating_add(usage.pages);
+            let indexes = table
+                .indexes
+                .iter()
+                .map(|(column, index)| IndexStats {
+                    column: column.clone(),
+                    entries: index.len(),
+                    distinct_keys: index.distinct_keys(),
+                    encoded_bytes: index.encode_binary().len(),
+                })
+                .collect();
+            tables.push(TableStats {
+                name: name.clone(),
+                columns: table.columns.clone(),
+                live_rows,
+                row_versions: table.row_versions,
+                pages: usage.pages,
+                used_page_bytes: usage.used_bytes,
+                free_page_bytes: usage.free_bytes,
+                compression: CompressionStats {
+                    codec: "row-slotted-uncompressed".into(),
+                    compressed_pages: 0,
+                    saved_bytes: 0,
+                },
+                indexes,
+            });
+        }
+
+        let cache = self.cache.borrow();
+        Ok(DatabaseStats {
+            format_version: effective_format_version(&self.tables),
+            current_transaction: self.current_tx(),
+            storage_mode,
+            writable: cache.is_writable(),
+            page_size: PAGE_SIZE,
+            allocated_pages,
+            allocated_page_bytes: allocated_pages.saturating_mul(PAGE_SIZE as u64),
+            orphaned_pages: allocated_pages.saturating_sub(reachable_pages),
+            buffer_pool: BufferPoolStats {
+                capacity_pages: cache.capacity(),
+                resident_pages: cache.resident(),
+            },
+            cas: CasStats {
+                blobs: self.cas.len(),
+                stored_bytes: cas_bytes,
+            },
+            tables,
+        })
+    }
+
     /// Toggle eager persistence after each mutation (development mode only).
     pub fn set_autocommit(&mut self, on: bool) {
         self.autocommit = on;
@@ -2632,6 +2927,36 @@ enum IndexPlan {
         offset: u64,
         len: u64,
     },
+}
+
+struct ResumeWriter {
+    file: File,
+    position: u64,
+    existing: u64,
+}
+
+impl Write for ResumeWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let reuse = self
+            .existing
+            .saturating_sub(self.position)
+            .min(bytes.len() as u64) as usize;
+        if reuse > 0 {
+            let mut old = [0; 64 * 1024];
+            for chunk in bytes[..reuse].chunks(old.len()) {
+                self.file.read_exact(&mut old[..chunk.len()])?;
+                if old[..chunk.len()] != *chunk {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "bake partial does not match source; keep the source unchanged or choose a new output path"));
+                }
+            }
+        }
+        self.file.write_all(&bytes[reuse..])?;
+        self.position += bytes.len() as u64;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3991,6 +4316,81 @@ fn combine_mantissa(int_sum: i128, dec_sum: i128) -> Result<i128> {
 // ---------------------------------------------------------------------------
 // Page-backed helpers (free functions to keep field borrows disjoint)
 // ---------------------------------------------------------------------------
+
+fn effective_format_version(tables: &BTreeMap<String, Table>) -> u16 {
+    let mut version = FORMAT_VERSION_BASE;
+    if tables.values().any(|table| !table.indexes.is_empty()) {
+        version = version.max(FORMAT_VERSION_INDEX);
+    }
+    if tables
+        .values()
+        .any(|table| !table.unique_columns.is_empty() || !table.not_null_columns.is_empty())
+    {
+        version = version.max(FORMAT_VERSION_CONSTRAINTS);
+    }
+    if tables
+        .values()
+        .any(|table| !table.defaults.is_empty() || !table.checks.is_empty())
+    {
+        version = version.max(FORMAT_VERSION_SCHEMA);
+    }
+    version
+}
+
+#[derive(Default)]
+struct TablePageUsage {
+    pages: u64,
+    used_bytes: u64,
+    free_bytes: u64,
+}
+
+fn row_page_usage(bytes: &[u8]) -> Result<(Option<PageId>, u64, u64)> {
+    let page = RowPageRef::new(bytes)?;
+    let header = page.header();
+    let slot_bytes = (header.slot_count as usize)
+        .checked_mul(SLOT_SIZE)
+        .ok_or_else(|| PvError::Corruption("row-page slot bytes overflowed".into()))?;
+    let slot_end = PAGE_HEADER_SIZE
+        .checked_add(slot_bytes)
+        .ok_or_else(|| PvError::Corruption("row-page slot boundary overflowed".into()))?;
+    let free_end = header.free_space_ptr as usize;
+    if free_end > PAGE_SIZE || slot_end > free_end {
+        return Err(PvError::Corruption(format!(
+            "row page header out of range: slot_count={}, free_space_ptr={}",
+            header.slot_count, header.free_space_ptr
+        )));
+    }
+    let free = free_end - slot_end;
+    let used = PAGE_SIZE - free;
+    Ok((page.next_page(), used as u64, free as u64))
+}
+
+fn table_page_usage(cache: &mut PageCache, table: &Table) -> Result<TablePageUsage> {
+    let max_hops = cache.backend().page_count().saturating_add(1);
+    let mut next = table.first_page;
+    let mut usage = TablePageUsage::default();
+    while let Some(page_id) = next {
+        usage.pages = usage.pages.saturating_add(1);
+        if usage.pages > max_hops {
+            return Err(PvError::Corruption(
+                "page chain longer than total page count (cycle?)".into(),
+            ));
+        }
+        let (following, used, free) = if Some(page_id) == table.tail_id {
+            if let Some(tail) = &table.tail {
+                row_page_usage(tail.as_bytes())?
+            } else {
+                cache.with_page(page_id, |bytes| row_page_usage(bytes))?
+            }
+        } else {
+            cache.with_page(page_id, |bytes| row_page_usage(bytes))?
+        };
+        usage.used_bytes = usage.used_bytes.saturating_add(used);
+        usage.free_bytes = usage.free_bytes.saturating_add(free);
+        next = following;
+    }
+    Ok(usage)
+}
 
 fn column_index(table: &Table, column: &str) -> Result<usize> {
     table

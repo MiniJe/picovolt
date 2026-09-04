@@ -111,8 +111,11 @@ cargo run --release --example repl     # interactive SQL shell (pvsql)
 cargo run --release --example bench    # evaluation harness across modes and workloads
 ```
 
-Install the first-class CLI with `cargo install picovolt`, then use `pv query`,
+Install the full CLI with `cargo install picovolt --features data-tools`, then use `pv query`,
 `pv inspect`, `pv history`, `pv diff`, `pv import`, `pv export`, and `pv bake`.
+Parquet/SQLite conversion, query explanations, inspection, resumable baking,
+and dataset signing are documented in [Data tools](docs/DATA_TOOLS.md).
+
 Compare two MVCC snapshots with:
 
 ```sh

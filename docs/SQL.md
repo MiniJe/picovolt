@@ -18,6 +18,8 @@ used by the Rust, JavaScript, Python, Go, C, CLI, and HTTP surfaces.
 - `SELECT`, including projection, `DISTINCT`, aggregates, equality joins,
   filtering, grouping, time travel, ordering, and pagination
 - `BEGIN`, `COMMIT`, and `ROLLBACK` on stateful database handles
+- `EXPLAIN SELECT ...` returns `step`, `operation`, and `detail` columns without
+  scanning rows; see [Data tools](DATA_TOOLS.md) for interpretation and limits
 
 Positional `?` parameters work through the parameterized and prepared-statement
 APIs. Parameters represent values, not table or column names.

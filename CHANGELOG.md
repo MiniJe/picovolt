@@ -6,8 +6,19 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-09-04
+
 ### Added
 
+- Optional native `data-tools` CLI feature with atomic Parquet import/export,
+  read-only SQLite table import, and Ed25519 signed dataset manifests.
+- `EXPLAIN SELECT` and `pv explain` describe execution paths without reading rows.
+- `Database::inspect_stats` and `pv inspect --json` expose pages, row versions,
+  CAS, indexes, cache usage, and the current uncompressed row-page encoding.
+- Streaming atomic filesystem baking, `bake_to_writer`, and verified-prefix
+  resumable baking through `pv bake --resume`.
+- Public Iris/SQLite differential and Parquet round-trip release tests using
+  datasets larger than a two-page buffer pool.
 - Added `pv diff <database> <table> --from <tx> --to <tx>` for deterministic,
   duplicate-aware row changes between MVCC snapshots, with CSV and JSONL output.
 
@@ -627,7 +638,8 @@ runs both natively and in the browser through WebAssembly.
   test plus a `cargo-fuzz` crate), and `cargo audit` blocks vulnerability
   advisories. Both run in CI; non-blocking audit warnings are reviewed separately.
 
-[Unreleased]: https://github.com/MiniJe/picovolt/compare/v1.7.1...HEAD
+[Unreleased]: https://github.com/MiniJe/picovolt/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/MiniJe/picovolt/compare/v1.7.1...v1.8.0
 [1.7.1]: https://github.com/MiniJe/picovolt/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/MiniJe/picovolt/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/MiniJe/picovolt/compare/v1.5.0...v1.6.0

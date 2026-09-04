@@ -46,6 +46,10 @@ jobs:
           cargo test --locked --all-targets --features enterprise
       - name: Test
         run: cargo test --locked --all-targets
+      - name: Native data tooling
+        run: |
+          cargo clippy --locked --all-targets --features data-tools -- -D warnings
+          cargo test --locked --features data-tools --test data_movement --test data_inspection --bin pv
       - name: Test (capi)
         run: cargo test --locked --all-targets --features capi
       - name: Server build + clippy
