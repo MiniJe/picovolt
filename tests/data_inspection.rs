@@ -50,7 +50,7 @@ fn explain_matches_access_paths_without_reading_pages() {
         db.explain("SELECT a.id FROM t a LEFT JOIN t b ON a.id = b.id ORDER BY a.id LIMIT 1")
             .unwrap()
     )
-    .contains(&"left equality join".into()));
+    .contains(&"adaptive indexed left join".into()));
     assert!(operations(
         db.explain("SELECT name, COUNT(*) FROM t GROUP BY name HAVING COUNT(*) > 0 ORDER BY name")
             .unwrap()

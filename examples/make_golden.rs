@@ -105,4 +105,30 @@ fn main() {
     let _ = std::fs::remove_dir_all(&ws4);
     let size4 = std::fs::metadata(&out4).unwrap().len();
     println!("wrote {} ({size4} bytes)", out4.display());
+
+    // A version-5 golden with an integrated MVCC cold page and packed decimal
+    // column. The tail stays row-slotted so the imported image remains writable.
+    let ws5 = dir.join("_golden_ws5");
+    let _ = std::fs::remove_dir_all(&ws5);
+    let mut db5 = Database::open_dev(&ws5).unwrap();
+    db5.query("CREATE TABLE ledger (id PRIMARY KEY, state, amount)")
+        .unwrap();
+    for id in 0..240i64 {
+        db5.insert(
+            "ledger",
+            vec![
+                Value::Int(id),
+                Value::Text(if id % 2 == 0 { "open" } else { "closed" }.into()),
+                Value::Decimal((id % 7) as i128 * 1_000_000),
+            ],
+        )
+        .unwrap();
+    }
+    let compacted = db5.compact_step(64).unwrap();
+    assert!(compacted.compacted_pages > 0);
+    let out5 = dir.join("golden_v1_9_0.pvdb");
+    db5.bake(&out5).unwrap();
+    let _ = std::fs::remove_dir_all(&ws5);
+    let size5 = std::fs::metadata(&out5).unwrap().len();
+    println!("wrote {} ({size5} bytes)", out5.display());
 }

@@ -1,0 +1,77 @@
+name: Stabilization soak
+
+on:
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: Seconds per fuzz target
+        default: "180"
+        type: string
+      stress_steps:
+        description: Model operations per shard
+        default: "5000"
+        type: string
+      crash_cycles:
+        description: Abrupt-process recovery cycles
+        default: "256"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - decode_monolith
+          - decode_wasm
+          - decode_columnar
+          - decode_record
+          - decode_index
+          - parse_sql
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@be39649afda95dbf70f87cce95f68b8d5797b296 # nightly
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+        with:
+          tool: cargo-fuzz
+      - name: Seed golden-image decoder corpus
+        if: matrix.target == 'decode_monolith'
+        run: |
+          mkdir -p fuzz/corpus/decode_monolith
+          cp tests/fixtures/*.pvdb fuzz/corpus/decode_monolith/
+      - name: Run bounded fuzz shard
+        env:
+          FUZZ_SECONDS: ${{ inputs.fuzz_seconds || '180' }}
+        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time="$FUZZ_SECONDS" -rss_limit_mb=2048
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: fuzz-${{ matrix.target }}-${{ github.run_id }}
+          path: fuzz/artifacts
+          if-no-files-found: ignore
+
+  model-stress:
+    name: model + recovery stress
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Run deterministic model shard
+        env:
+          PICOVOLT_STRESS_STEPS: ${{ inputs.stress_steps || '5000' }}
+        run: cargo test --locked --release --test model_stress -- --nocapture
+      - name: Run abrupt-process recovery shard
+        env:
+          PICOVOLT_CRASH_CYCLES: ${{ inputs.crash_cycles || '256' }}
+        run: cargo test --locked --release --test crash_recovery -- --nocapture

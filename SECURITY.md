@@ -21,16 +21,24 @@ regression test:
   pool, manifest, and image boundaries before slicing.
 - **Page-chain traversal is capped** at the total page count, so a cyclic
   `next_page` link returns an error instead of looping forever.
-- **Page slot and record reads are bounds-checked,** so a crafted page returns an
-  error rather than reading out of bounds.
+- **Page-chain ownership is checked before indexed mutations.** A corrupt index
+  cannot redirect an update/delete into another table's page; scans also verify
+  their declared tail and exact MVCC record-version count.
+- **Page slot, record, and cold-column reads are bounds-checked.** Cold pages
+  prove their claimed row/column shape could have fit the source row page before
+  allocating decoded values, so a tiny crafted page cannot request an
+  attacker-sized logical matrix.
 - **Header, manifest, and feature versions must agree exactly.** An image is
-  rejected if either version understates its index or schema metadata, or if its
-  table identities, head/tail page ids, schema references, row arity, or record
-  constraints are inconsistent.
+  rejected if either version understates its index, schema, or cold-page
+  metadata, or if its table identities, head/tail page ids, schema references,
+  row arity, or record constraints are inconsistent.
 - **SQL and persisted predicate trees have explicit complexity limits.** Parser
   depth, node counts, statement boundaries, defaults, and `CHECK` expressions
   are validated before execution so hostile input cannot grow the process stack
   or smuggle an unparsed suffix into a supported statement.
+- **SQL dump splitting preserves quoted identifiers.** Apostrophes, semicolons,
+  punctuation, and keyword names inside delimiters remain identifier data rather
+  than becoming executable syntax during compatibility rewriting.
 - **Query budgets cover internal work as well as returned rows.** Uniqueness
   scans, existing-row checks, and equality-index candidate sets are charged
   before large allocations; bounded range predicates use a streaming path.
@@ -49,16 +57,23 @@ regression test:
 - **The optional HTTP server is bounded and authenticated for network use.** It
   has a finite request queue and query budgets, rejects browser-origin query
   requests, requires JSON, and refuses a non-loopback bind without a bearer token.
-- **Bit-pack width is validated at runtime** (`bits` in `1..=8`), fixing a panic
-  found by the fuzz-lite test on a malformed dictionary.
+- **Compressed and index encodings are canonical.** Varint overflow and
+  overlong forms, invalid bit-pack widths/padding, oversized dictionaries,
+  duplicate binary-index keys, and trailing payload bytes are rejected rather
+  than decoded ambiguously.
+- **Persisted offsets are platform-safe.** File, CAS, and binary-index offsets
+  and lengths are checked-converted before they become slice indices, including
+  on 32-bit and WebAssembly targets.
 
-The decoders are fuzzed. A deterministic test,
+The decoders and SQL parser are fuzzed. A deterministic test,
 [`tests/fuzz_smoke.rs`](tests/fuzz_smoke.rs), runs in CI on every platform, and a
 coverage-guided [`fuzz/`](fuzz) cargo-fuzz crate
-(`cargo +nightly fuzz run decode_monolith | decode_wasm | decode_columnar`) runs
-on Linux. `cargo audit` reports no vulnerability failures and runs in CI; its
-non-failing yanked/transitive warnings are still reviewed during dependency
-updates.
+(`cargo +nightly fuzz run parse_sql | decode_record | decode_index |
+decode_monolith | decode_wasm | decode_columnar`) runs in bounded weekly Linux
+jobs. Successful monolith inputs are fully inspected and scanned so lazy page,
+record, CAS, and index decoders are exercised. `cargo audit` reports no
+vulnerability failures and runs in CI; its non-failing yanked/transitive
+warnings are still reviewed during dependency updates.
 
 ## Threat model notes
 

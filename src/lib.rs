@@ -57,6 +57,9 @@ pub mod engine;
 pub mod enterprise;
 pub mod storage;
 
+/// History-preserving baked-image format migration.
+pub mod upgrade;
+
 mod db;
 
 /// Best-effort import of a SQL dump (see [`Database::import_sql`]).
@@ -83,9 +86,10 @@ pub use crate::core::types::*;
 pub use crate::core::value::{Row, Value};
 #[doc(inline)]
 pub use crate::db::{
-    pv_bake, pv_open_dev, pv_open_prod, BufferPoolStats, CasStats, CompressionStats, Database,
-    DatabaseStats, Durability, IndexStats, PreparedStatement, QueryLimits, QueryResult, TableStats,
-    MANIFEST_FILE, TRANSACTION_BACKUP_DIR, TRANSACTION_LOCK_FILE, TRANSACTION_MARKER_FILE,
+    pv_bake, pv_open_dev, pv_open_prod, BufferPoolStats, CasStats, CompactionReport,
+    CompressionStats, Database, DatabaseStats, Durability, IndexStats, PreparedStatement,
+    QueryLimits, QueryResult, TableStats, MANIFEST_FILE, TRANSACTION_BACKUP_DIR,
+    TRANSACTION_LOCK_FILE, TRANSACTION_MARKER_FILE,
 };
 #[doc(inline)]
 pub use crate::engine::compliance::{ComplianceMonitor, RuntimeMetrics};
@@ -103,3 +107,7 @@ pub use crate::enterprise::{
 };
 #[doc(inline)]
 pub use crate::migrate::ImportReport;
+#[doc(inline)]
+pub use crate::upgrade::{
+    migrate_file, plan_file_migration, MigrationOptions, MigrationPlan, MigrationReport,
+};

@@ -53,6 +53,8 @@ fn run(args: Vec<String>) -> CliResult<()> {
         }
         Some("history") if args.len() >= 2 => history_command(&args[1..]),
         Some("diff") => diff_command(&args[1..]),
+        Some("migrate") => migrate_command(&args[1..]),
+        Some("compact") => compact_command(&args[1..]),
         Some("bake") if args.len() == 3 || (args.len() == 4 && args[3] == "--resume") => {
             let mut db = open_existing_database(&args[1])?;
             if args.len() == 4 {
@@ -74,6 +76,131 @@ fn run(args: Vec<String>) -> CliResult<()> {
             Err(format!("unknown or incomplete command `{command}`; run `pv help`").into())
         }
     }
+}
+
+fn migrate_command(args: &[String]) -> CliResult<()> {
+    if args.len() < 2 {
+        return Err(
+            "usage: pv migrate <source.pvdb> <destination.pvdb> [--dry-run] [--backup <backup.pvdb>] [--json]"
+                .into(),
+        );
+    }
+    let source = Path::new(&args[0]);
+    let destination = Path::new(&args[1]);
+    let mut backup = None;
+    let mut json = false;
+    let mut dry_run = false;
+    let mut index = 2usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--backup" if backup.is_none() => {
+                let value = args
+                    .get(index + 1)
+                    .filter(|value| !value.starts_with("--"))
+                    .ok_or("--backup requires a path")?;
+                backup = Some(PathBuf::from(value));
+                index += 2;
+            }
+            "--backup" => return Err("--backup may be specified only once".into()),
+            "--json" if !json => {
+                json = true;
+                index += 1;
+            }
+            "--json" => return Err("--json may be specified only once".into()),
+            "--dry-run" if !dry_run => {
+                dry_run = true;
+                index += 1;
+            }
+            "--dry-run" => return Err("--dry-run may be specified only once".into()),
+            other => return Err(format!("unknown pv migrate option `{other}`").into()),
+        }
+    }
+    if dry_run {
+        let plan = picovolt::plan_file_migration(source, destination, backup.as_deref())?;
+        if json {
+            println!("{}", serde_json::to_string_pretty(&plan)?);
+        } else {
+            println!(
+                "dry run: format {} -> {}; {} table(s), {} record version(s), {} bytes\nverification: {}\nno files were created",
+                plan.source_format,
+                plan.target_format,
+                plan.tables,
+                plan.row_versions,
+                plan.source_bytes,
+                plan.verification_hash
+            );
+        }
+        return Ok(());
+    }
+
+    let report =
+        picovolt::migrate_file(source, destination, &picovolt::MigrationOptions { backup })?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "migrated {} -> {} (format {} -> {}, {} record version(s), verified {})",
+            report.source.display(),
+            report.destination.display(),
+            report.source_format,
+            report.target_format,
+            report.row_versions,
+            report.verification_hash
+        );
+        if let Some(backup) = report.backup {
+            println!(
+                "rollback: remove the new destination and reopen the unchanged source; exact backup: {}",
+                backup.display()
+            );
+        } else {
+            println!("rollback: remove the new destination and reopen the unchanged source");
+        }
+    }
+    Ok(())
+}
+
+fn compact_command(args: &[String]) -> CliResult<()> {
+    if args.is_empty() {
+        return Err("usage: pv compact <workspace> [--max-pages <count>] [--json]".into());
+    }
+    let mut max_pages = None;
+    let mut json = false;
+    let mut index = 1usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--max-pages" if max_pages.is_none() => {
+                let value = args
+                    .get(index + 1)
+                    .filter(|value| !value.starts_with("--"))
+                    .ok_or("--max-pages requires a non-negative integer")?;
+                max_pages = Some(value.parse::<usize>()?);
+                index += 2;
+            }
+            "--max-pages" => return Err("--max-pages may be specified only once".into()),
+            "--json" if !json => {
+                json = true;
+                index += 1;
+            }
+            "--json" => return Err("--json may be specified only once".into()),
+            other => return Err(format!("unknown pv compact option `{other}`").into()),
+        }
+    }
+    let mut database = open_existing_database(&args[0])?;
+    if !database.is_writable() {
+        return Err(
+            "pv compact requires a development workspace; migrate baked images out-of-place".into(),
+        );
+    }
+    let report = database.compact_step(max_pages.unwrap_or(usize::MAX))?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "compacted {} of {} examined page(s); saved {} encoded byte(s); skipped {}",
+            report.compacted_pages, report.examined_pages, report.saved_bytes, report.skipped_pages
+        );
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -647,6 +774,10 @@ fn print_help() {
     println!("  pv inspect <database> [--json]");
     println!("  pv history <database> [--table name] [--limit transactions]");
     println!("  pv diff <database> <table> --from <tx> --to <tx> [--format csv|jsonl]");
+    println!(
+        "  pv migrate <source.pvdb> <destination.pvdb> [--dry-run] [--backup backup.pvdb] [--json]"
+    );
+    println!("  pv compact <workspace> [--max-pages count] [--json]");
     println!("  pv bake <database> <output.pvdb> [--resume]");
     println!("  pv import <workspace> <input> [--table name] [--format csv|jsonl|sql|parquet|sqlite] [--source-table name]");
     println!("  pv export <database> <table> <output> [--format csv|jsonl|parquet] [--before tx (Parquet)]");
@@ -671,6 +802,61 @@ mod tests {
         );
         assert_eq!(parse_scalar("42"), Value::Int(42));
         assert_eq!(parse_scalar(""), Value::Null);
+    }
+
+    #[test]
+    fn migrate_rejects_unknown_duplicate_and_incomplete_options_before_io() {
+        let unknown = migrate_command(&[
+            "missing-source.pvdb".into(),
+            "missing-destination.pvdb".into(),
+            "--wat".into(),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(unknown.contains("unknown pv migrate option"));
+
+        let duplicate = migrate_command(&[
+            "missing-source.pvdb".into(),
+            "missing-destination.pvdb".into(),
+            "--json".into(),
+            "--json".into(),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(duplicate.contains("--json may be specified only once"));
+
+        let missing_backup = migrate_command(&[
+            "missing-source.pvdb".into(),
+            "missing-destination.pvdb".into(),
+            "--backup".into(),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(missing_backup.contains("--backup requires a path"));
+    }
+
+    #[test]
+    fn compact_rejects_unknown_duplicate_and_incomplete_options_before_io() {
+        let unknown = compact_command(&["missing-workspace".into(), "--wat".into()])
+            .unwrap_err()
+            .to_string();
+        assert!(unknown.contains("unknown pv compact option"));
+
+        let duplicate = compact_command(&[
+            "missing-workspace".into(),
+            "--max-pages".into(),
+            "1".into(),
+            "--max-pages".into(),
+            "2".into(),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(duplicate.contains("--max-pages may be specified only once"));
+
+        let missing_count = compact_command(&["missing-workspace".into(), "--max-pages".into()])
+            .unwrap_err()
+            .to_string();
+        assert!(missing_count.contains("--max-pages requires a non-negative integer"));
     }
 
     #[test]

@@ -271,7 +271,7 @@ fn malformed_dev_schema_metadata_and_versions_are_rejected() {
     });
     assert_corruption(
         open_dev_error(&understated),
-        "understates schema/index features",
+        "understates persisted features",
     );
 
     let future = temp.path().join("future-version");

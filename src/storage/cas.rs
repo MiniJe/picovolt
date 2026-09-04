@@ -105,9 +105,11 @@ impl CasStore {
 
     /// Borrow the blob bytes for `id`.
     pub fn get(&self, id: CasId) -> Result<&[u8]> {
+        let index = usize::try_from(id)
+            .map_err(|_| PvError::CasMiss(format!("id {id} is too large for this platform")))?;
         let entry = self
             .entries
-            .get(id as usize)
+            .get(index)
             .ok_or_else(|| PvError::CasMiss(format!("id {id}")))?;
         Ok(match &entry.blob {
             Blob::Owned(v) => v.as_slice(),
@@ -117,9 +119,11 @@ impl CasStore {
 
     /// Lower-hex BLAKE3 digest of blob `id` (the dev-mode file name).
     pub fn hash_hex(&self, id: CasId) -> Result<String> {
+        let index = usize::try_from(id)
+            .map_err(|_| PvError::CasMiss(format!("id {id} is too large for this platform")))?;
         let entry = self
             .entries
-            .get(id as usize)
+            .get(index)
             .ok_or_else(|| PvError::CasMiss(format!("id {id}")))?;
         Ok(hex(&entry.hash))
     }
@@ -186,11 +190,15 @@ impl CasStore {
             let hash = parse_hex32(hex_hash)?;
             // SECURITY: validate every (offset, len) lies within the mapping with
             // checked arithmetic, so `get()`'s slice can never panic out of bounds.
+            let rel_off = usize::try_from(rel_off)
+                .map_err(|_| PvError::Corruption("CAS offset is too large".into()))?;
+            let len = usize::try_from(len)
+                .map_err(|_| PvError::Corruption("CAS length is too large".into()))?;
             let offset = base
-                .checked_add(rel_off as usize)
+                .checked_add(rel_off)
                 .ok_or_else(|| PvError::Corruption("CAS offset overflow".into()))?;
             let end = offset
-                .checked_add(len as usize)
+                .checked_add(len)
                 .ok_or_else(|| PvError::Corruption("CAS extent overflow".into()))?;
             if end > pool_end {
                 return Err(PvError::Corruption(format!(
@@ -203,7 +211,7 @@ impl CasStore {
                 blob: Blob::Mapped {
                     mmap: mmap.clone(),
                     offset,
-                    len: len as usize,
+                    len,
                 },
             });
             store.by_hash.insert(hash, id as CasId);
@@ -358,7 +366,11 @@ mod tests {
         let mmap = Arc::new(unsafe { Mmap::map(&file).unwrap() });
         let valid_hash = "00".repeat(32); // 64 hex chars
                                           // A blob claiming to extend past the 64-byte mapping must be rejected.
-        let result = CasStore::from_mapped(mmap, 0, 64, &[(0, 1_000)], &[valid_hash]);
+        let result = CasStore::from_mapped(mmap.clone(), 0, 64, &[(0, 1_000)], &[valid_hash]);
+        assert!(matches!(result, Err(PvError::Corruption(_))));
+
+        let valid_hash = "00".repeat(32);
+        let result = CasStore::from_mapped(mmap, 0, 64, &[(u64::MAX, 1)], &[valid_hash]);
         assert!(matches!(result, Err(PvError::Corruption(_))));
     }
 

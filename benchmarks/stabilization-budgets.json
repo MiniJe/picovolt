@@ -1,0 +1,9 @@
+{
+  "open": 250.0,
+  "scan": 500.0,
+  "point_lookup": 50.0,
+  "top_n": 150.0,
+  "join": 300.0,
+  "bake": 750.0,
+  "recovery_open": 750.0
+}

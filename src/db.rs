@@ -10,9 +10,10 @@
 //! * **secondary indexes** ([`crate::storage::index`]), opt-in equality indexes
 //!   turn `WHERE col = value` into a lookup instead of a full scan.
 //!
-//! A table is a singly linked chain of row pages (each header points to the
-//! next), so the manifest stores only a head page id per table, O(tables), not
-//! O(pages), keeping per-insert manifest writes cheap.
+//! A table is a singly linked chain of mutable row pages and optional immutable
+//! packed cold pages (each header points to the next), so the manifest stores
+//! only a head page id per table, O(tables), not O(pages), keeping per-insert
+//! manifest writes cheap.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,9 +32,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::errors::{PvError, Result};
 use crate::core::types::{
-    pack_addr, unpack_addr, FileHeader, PageId, RecordAddr, RecordEnvelope, TxId, FILE_HEADER_SIZE,
-    FORMAT_VERSION, FORMAT_VERSION_BASE, FORMAT_VERSION_CONSTRAINTS, FORMAT_VERSION_INDEX,
-    FORMAT_VERSION_SCHEMA, PAGE_HEADER_SIZE, PAGE_SIZE,
+    pack_addr, unpack_addr, FileHeader, PageId, PageType, RecordAddr, RecordEnvelope, TxId,
+    FILE_HEADER_SIZE, FORMAT_VERSION, FORMAT_VERSION_BASE, FORMAT_VERSION_COLUMNAR,
+    FORMAT_VERSION_CONSTRAINTS, FORMAT_VERSION_INDEX, FORMAT_VERSION_SCHEMA, PAGE_HEADER_SIZE,
+    PAGE_SIZE,
 };
 use crate::core::value::{Row, Value, DECIMAL_DEN};
 use crate::engine::compliance::{ComplianceMonitor, RuntimeMetrics};
@@ -47,7 +49,7 @@ use crate::engine::wasm::WasmRuntime;
 use crate::storage::cache::{PageCache, DEFAULT_CACHE_PAGES};
 use crate::storage::cas::{verify_blob_hash_hex, CasStore};
 use crate::storage::index::SecondaryIndex;
-use crate::storage::page::{RowPage, RowPageRef, SLOT_SIZE};
+use crate::storage::page::{ColdPage, RowPage, RowPageRef, SLOT_SIZE};
 use crate::storage::record::{decode_record, encode_record};
 use crate::storage::vle::{
     bake_monolith_bytes_with_index, verify_page_checksum, Backend, DevStore, MemStore, Monolith,
@@ -82,6 +84,14 @@ struct Table {
     /// Resident write buffer (the current tail page); `None` in read-only mode.
     tail: Option<RowPage>,
     row_versions: u64,
+    cold_pages: u64,
+    /// Next page to consider during bounded cooperative compaction. Persisting
+    /// this hint prevents a small pass from retrying the same incompressible
+    /// leading page forever.
+    compaction_cursor: Option<PageId>,
+    /// Lazily validated ownership set used before an indexed mutation patches a
+    /// physical address. New pages are added when the chain grows.
+    page_ids: RefCell<Option<BTreeSet<PageId>>>,
     indexes: BTreeMap<String, SecondaryIndex>,
 }
 
@@ -123,7 +133,7 @@ fn check_manifest_version(m: &Manifest) -> Result<()> {
     let required = required_manifest_version(m);
     if m.format_version < required {
         return Err(PvError::Corruption(format!(
-            "workspace format version {} understates schema/index features that require version {required}",
+            "workspace format version {} understates persisted features that require version {required}",
             m.format_version
         )));
     }
@@ -164,6 +174,13 @@ fn required_manifest_version(manifest: &Manifest) -> u16 {
     {
         required = required.max(FORMAT_VERSION_SCHEMA);
     }
+    if manifest
+        .tables
+        .iter()
+        .any(|table| table.cold_pages > 0 || table.compaction_cursor.is_some())
+    {
+        required = required.max(FORMAT_VERSION_COLUMNAR);
+    }
     required
 }
 
@@ -182,6 +199,12 @@ struct TableMeta {
     first_page: Option<u64>,
     tail_id: Option<u64>,
     row_versions: u64,
+    /// Number of non-tail pages using the version-5 MVCC columnar layout.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    cold_pages: u64,
+    /// Next page to consider in a later bounded compaction pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    compaction_cursor: Option<u64>,
     #[serde(default)]
     indexed_columns: Vec<String>,
     /// Secondary indexes serialized as JSON `(key, addresses)` pairs directly in
@@ -214,6 +237,10 @@ struct BinIndexDesc {
     column: String,
     offset: u64,
     len: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 // ---------------------------------------------------------------------------
@@ -313,14 +340,13 @@ pub struct TableStats {
     pub live_rows: u64,
     /// All stored MVCC record versions, including tombstones.
     pub row_versions: u64,
-    /// Reachable row pages.
+    /// Reachable row and cold pages.
     pub pages: u64,
-    /// Bytes used by row-page headers, slots, and record payloads.
+    /// Encoded bytes used inside reachable pages.
     pub used_page_bytes: u64,
-    /// Free bytes inside reachable row pages.
+    /// Free bytes inside reachable pages.
     pub free_page_bytes: u64,
-    /// Current physical compression. Row pages are currently uncompressed; the
-    /// explicit fields make that limitation machine-readable.
+    /// Current physical compression across mutable row and packed cold pages.
     pub compression: CompressionStats,
     /// Secondary indexes in column order.
     pub indexes: Vec<IndexStats>,
@@ -334,6 +360,23 @@ pub struct CompressionStats {
     /// Pages using the cold columnar codec.
     pub compressed_pages: u64,
     /// Bytes saved relative to the allocated row-page representation.
+    pub saved_bytes: u64,
+}
+
+/// Result of one bounded cooperative cold-page compaction pass.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CompactionReport {
+    /// Eligible non-tail row pages evaluated during this pass.
+    pub examined_pages: u64,
+    /// Row pages converted to the version-5 columnar layout.
+    pub compacted_pages: u64,
+    /// Evaluated row pages whose encoded form did not save space.
+    pub skipped_pages: u64,
+    /// Used bytes in row pages selected for conversion.
+    pub input_bytes: u64,
+    /// Encoded bytes in the replacement columnar pages.
+    pub encoded_bytes: u64,
+    /// Logical bytes saved inside fixed-size pages.
     pub saved_bytes: u64,
 }
 
@@ -490,6 +533,23 @@ impl QueryBudget {
         Ok(())
     }
 
+    fn materialize_value(&mut self, value: &Value, context: &str) -> Result<()> {
+        self.checkpoint()?;
+        let bytes = std::mem::size_of::<Value>().saturating_add(match value {
+            Value::Text(value) => value.len(),
+            Value::Blob(value) => value.len(),
+            Value::Null | Value::Int(_) | Value::Decimal(_) => 0,
+        });
+        self.materialized_bytes = self.materialized_bytes.saturating_add(bytes);
+        if self.materialized_bytes > self.limits.max_materialized_bytes {
+            return Err(PvError::ResourceLimit(format!(
+                "{context} materialized more than {} bytes",
+                self.limits.max_materialized_bytes
+            )));
+        }
+        Ok(())
+    }
+
     fn check_result(&self, result: &QueryResult) -> Result<()> {
         if let QueryResult::Rows { rows, .. } = result {
             self.checkpoint()?;
@@ -544,6 +604,10 @@ pub struct Database {
     root: Option<PathBuf>,
     autocommit: bool,
     durability: Durability,
+    /// Lowest format version retained when this handle is flushed or baked.
+    /// Feature detection may raise it further, but never silently downgrades a
+    /// file that was explicitly migrated.
+    format_version_floor: u16,
     /// Cached write handle for the manifest, so autocommit doesn't reopen it.
     manifest_file: RefCell<Option<File>>,
     active_transaction: Option<ActiveTransaction>,
@@ -578,6 +642,7 @@ impl Database {
                 root: Some(root),
                 autocommit: true,
                 durability: Durability::Fast,
+                format_version_floor: manifest.format_version,
                 manifest_file: RefCell::new(None),
                 active_transaction: None,
                 #[cfg(feature = "enterprise")]
@@ -594,6 +659,7 @@ impl Database {
                 root: Some(root),
                 autocommit: true,
                 durability: Durability::Fast,
+                format_version_floor: FORMAT_VERSION_BASE,
                 manifest_file: RefCell::new(None),
                 active_transaction: None,
                 #[cfg(feature = "enterprise")]
@@ -639,6 +705,7 @@ impl Database {
             root: None,
             autocommit: false,
             durability: Durability::Fast,
+            format_version_floor: manifest.format_version,
             manifest_file: RefCell::new(None),
             active_transaction: None,
             #[cfg(feature = "enterprise")]
@@ -710,9 +777,14 @@ impl Database {
         }
         let mut cas = CasStore::new_memory();
         for (&(off, len), expected_hash) in manifest.cas_dir.iter().zip(&manifest.cas_hashes) {
-            let off = off as usize;
+            let off = usize::try_from(off).map_err(|_| {
+                PvError::Corruption("streamed: CAS blob offset is too large".into())
+            })?;
+            let len = usize::try_from(len).map_err(|_| {
+                PvError::Corruption("streamed: CAS blob length is too large".into())
+            })?;
             let end = off
-                .checked_add(len as usize)
+                .checked_add(len)
                 .filter(|&e| e <= pool.len())
                 .ok_or_else(|| PvError::Corruption("streamed: CAS blob out of bounds".into()))?;
             let blob = &pool[off..end];
@@ -726,11 +798,17 @@ impl Database {
         let region: &[u8] = match manifest.index_region {
             None => &[],
             Some((off, len)) => {
-                let rel = (off as usize).checked_sub(cas_offset).ok_or_else(|| {
+                let off = usize::try_from(off).map_err(|_| {
+                    PvError::Corruption("streamed: index region offset is too large".into())
+                })?;
+                let len = usize::try_from(len).map_err(|_| {
+                    PvError::Corruption("streamed: index region length is too large".into())
+                })?;
+                let rel = off.checked_sub(cas_offset).ok_or_else(|| {
                     PvError::Corruption("streamed: index region before CAS pool".into())
                 })?;
                 let end = rel
-                    .checked_add(len as usize)
+                    .checked_add(len)
                     .filter(|&e| e <= tail.len())
                     .ok_or_else(|| {
                         PvError::Corruption("streamed: index region out of bounds".into())
@@ -751,6 +829,7 @@ impl Database {
             root: None,
             autocommit: false,
             durability: Durability::Fast,
+            format_version_floor: manifest.format_version,
             manifest_file: RefCell::new(None),
             active_transaction: None,
             #[cfg(feature = "enterprise")]
@@ -776,6 +855,7 @@ impl Database {
             root: None,
             autocommit: false,
             durability: Durability::Fast,
+            format_version_floor: FORMAT_VERSION_BASE,
             manifest_file: RefCell::new(None),
             active_transaction: None,
             #[cfg(feature = "enterprise")]
@@ -793,8 +873,10 @@ impl Database {
     /// bounds-checked, so a malformed image yields an error, never a panic.
     pub fn import_bytes(bytes: &[u8]) -> Result<Self> {
         let header = FileHeader::decode(bytes)?; // validates the magic signature
-        let cas_offset = header.cas_offset as usize;
-        let manifest_offset = header.manifest_offset as usize;
+        let cas_offset = usize::try_from(header.cas_offset)
+            .map_err(|_| PvError::Corruption("import: CAS offset is too large".into()))?;
+        let manifest_offset = usize::try_from(header.manifest_offset)
+            .map_err(|_| PvError::Corruption("import: manifest offset is too large".into()))?;
         if cas_offset < FILE_HEADER_SIZE
             || manifest_offset < cas_offset
             || manifest_offset > bytes.len()
@@ -828,9 +910,12 @@ impl Database {
         let pool = &bytes[cas_offset..pool_end];
         let mut cas = CasStore::new_memory();
         for (&(off, len), expected_hash) in manifest.cas_dir.iter().zip(&manifest.cas_hashes) {
-            let off = off as usize;
+            let off = usize::try_from(off)
+                .map_err(|_| PvError::Corruption("import: CAS blob offset is too large".into()))?;
+            let len = usize::try_from(len)
+                .map_err(|_| PvError::Corruption("import: CAS blob length is too large".into()))?;
             let end = off
-                .checked_add(len as usize)
+                .checked_add(len)
                 .filter(|&e| e <= pool.len())
                 .ok_or_else(|| PvError::Corruption("import: CAS blob out of bounds".into()))?;
             let blob = &pool[off..end];
@@ -850,6 +935,7 @@ impl Database {
             root: None,
             autocommit: false,
             durability: Durability::Fast,
+            format_version_floor: manifest.format_version,
             manifest_file: RefCell::new(None),
             active_transaction: None,
             #[cfg(feature = "enterprise")]
@@ -1691,6 +1777,9 @@ impl Database {
                 tail_id: None,
                 tail: None,
                 row_versions: 0,
+                cold_pages: 0,
+                compaction_cursor: None,
+                page_ids: RefCell::new(None),
                 indexes: BTreeMap::new(),
             },
         );
@@ -2090,12 +2179,7 @@ impl Database {
             .collect();
 
         for join in joins {
-            let (right_columns, right_rows) = self.select_filtered_bounded(
-                &join.table.name,
-                None,
-                before,
-                budget.as_deref_mut(),
-            )?;
+            let right_columns = self.column_names(&join.table.name)?;
             let qualified_right: Vec<String> = right_columns
                 .iter()
                 .map(|column| format!("{}.{}", join.table.qualifier(), column))
@@ -2107,15 +2191,44 @@ impl Database {
                 &join.second_column,
             )?;
 
-            let mut right_by_key: BTreeMap<Value, Vec<&Row>> = BTreeMap::new();
-            for row in &right_rows {
-                if row[right_key] != Value::Null {
-                    right_by_key
-                        .entry(join_key(&row[right_key]))
-                        .or_default()
-                        .push(row);
+            let mut probe_keys = BTreeSet::new();
+            for row in &rows {
+                if row[left_key] == Value::Null {
+                    continue;
+                }
+                let key = join_key(&row[left_key]);
+                if !probe_keys.contains(&key) {
+                    if let Some(budget) = budget.as_deref_mut() {
+                        budget.materialize_value(&key, "join probe keys")?;
+                    }
+                    probe_keys.insert(key);
                 }
             }
+            let bounded = budget.is_some();
+            let mut right_by_key = self.indexed_join_map(
+                &join.table.name,
+                right_key,
+                &probe_keys,
+                before,
+                budget.as_deref_mut(),
+                bounded,
+            )?;
+            if right_by_key.is_none() {
+                let (_, right_rows) = self.select_filtered_bounded(
+                    &join.table.name,
+                    None,
+                    before,
+                    budget.as_deref_mut(),
+                )?;
+                let mut map: BTreeMap<Value, Vec<Row>> = BTreeMap::new();
+                for row in right_rows {
+                    if row[right_key] != Value::Null {
+                        map.entry(join_key(&row[right_key])).or_default().push(row);
+                    }
+                }
+                right_by_key = Some(map);
+            }
+            let right_by_key = right_by_key.expect("scan or index always produces a map");
 
             let mut joined_rows = Vec::new();
             for left in &rows {
@@ -2175,6 +2288,59 @@ impl Database {
         } else {
             project_select(columns, rows, projection, order, distinct, limit, offset)
         }
+    }
+
+    /// Build the right-side join map by probing a secondary index once per
+    /// distinct left key. Returns `None` when no index exists or the unbounded
+    /// cost estimate favors one sequential build scan.
+    fn indexed_join_map(
+        &self,
+        table_name: &str,
+        right_key: usize,
+        probe_keys: &BTreeSet<Value>,
+        before: Option<u64>,
+        mut budget: Option<&mut QueryBudget>,
+        bounded: bool,
+    ) -> Result<Option<BTreeMap<Value, Vec<Row>>>> {
+        let table = self
+            .tables
+            .get(table_name)
+            .ok_or_else(|| PvError::TableNotFound(table_name.into()))?;
+        let column = table.columns.get(right_key).ok_or_else(|| {
+            PvError::Corruption("join key is outside the right table schema".into())
+        })?;
+        let Some(index) = table.indexes.get(column) else {
+            return Ok(None);
+        };
+        let row_versions = usize::try_from(table.row_versions).unwrap_or(usize::MAX);
+        if !bounded && probe_keys.len().saturating_mul(4) > row_versions.max(1) {
+            return Ok(None);
+        }
+
+        let snapshot = Snapshot::as_of(before.unwrap_or_else(|| self.txm.current()));
+        let mut cache = self.cache.borrow_mut();
+        let mut map = BTreeMap::<Value, Vec<Row>>::new();
+        for key in probe_keys {
+            let mut addresses = index_equality_candidates(index, key, budget.as_deref_mut())?;
+            addresses.sort_unstable();
+            addresses.dedup();
+            for address in addresses {
+                if let Some(budget) = budget.as_deref_mut() {
+                    budget.scan_row()?;
+                }
+                let (envelope, row) = read_record_at(&mut cache, table, &self.cas, address)?;
+                if snapshot.sees(&envelope)
+                    && row[right_key] != Value::Null
+                    && join_key(&row[right_key]) == *key
+                {
+                    if let Some(budget) = budget.as_deref_mut() {
+                        budget.materialize(&row)?;
+                    }
+                    map.entry(key.clone()).or_default().push(row);
+                }
+            }
+        }
+        Ok(Some(map))
     }
 
     /// The column names of `table`, in order.
@@ -2629,9 +2795,8 @@ impl Database {
     /// usage without mutating the database.
     ///
     /// Inspection walks page headers and MVCC envelopes through the bounded
-    /// cache. It does not materialize row bodies. Compression counters are
-    /// deliberately explicit: the production table path currently stores
-    /// uncompressed row pages, even though the standalone columnar codec exists.
+    /// cache. It does not materialize row bodies. Compression counters describe
+    /// the actual mix of mutable row pages and format-v5 packed cold pages.
     pub fn inspect_stats(&self) -> Result<DatabaseStats> {
         let (storage_mode, allocated_pages) = {
             let cache = self.cache.borrow();
@@ -2679,9 +2844,15 @@ impl Database {
                 used_page_bytes: usage.used_bytes,
                 free_page_bytes: usage.free_bytes,
                 compression: CompressionStats {
-                    codec: "row-slotted-uncompressed".into(),
-                    compressed_pages: 0,
-                    saved_bytes: 0,
+                    codec: if usage.cold_pages == 0 {
+                        "row-slotted".into()
+                    } else if usage.cold_pages == usage.pages {
+                        "columnar-packed".into()
+                    } else {
+                        "row+columnar-packed".into()
+                    },
+                    compressed_pages: usage.cold_pages,
+                    saved_bytes: usage.saved_bytes,
                 },
                 indexes,
             });
@@ -2689,7 +2860,7 @@ impl Database {
 
         let cache = self.cache.borrow();
         Ok(DatabaseStats {
-            format_version: effective_format_version(&self.tables),
+            format_version: effective_format_version(&self.tables, self.format_version_floor),
             current_transaction: self.current_tx(),
             storage_mode,
             writable: cache.is_writable(),
@@ -2707,6 +2878,228 @@ impl Database {
             },
             tables,
         })
+    }
+
+    /// Attempt up to `max_pages` immutable, non-tail page positions and convert
+    /// eligible row pages into the MVCC-preserving version-5 columnar layout.
+    /// This bounds each encoding/rewrite slice rather than starting a hidden
+    /// thread; chain validation and the crash-recovery snapshot may inspect or
+    /// copy additional storage. Pages that do not become smaller are left alone.
+    /// The pass uses the same crash-recoverable whole-workspace transaction as
+    /// SQL mutations, so page replacement and catalog metadata publish atomically.
+    pub fn compact_step(&mut self, max_pages: usize) -> Result<CompactionReport> {
+        self.ensure_writable()?;
+        if self.in_transaction() {
+            return Err(PvError::Transaction(
+                "cold-page compaction cannot run inside an active transaction".into(),
+            ));
+        }
+        let empty = CompactionReport {
+            examined_pages: 0,
+            compacted_pages: 0,
+            skipped_pages: 0,
+            input_bytes: 0,
+            encoded_bytes: 0,
+            saved_bytes: 0,
+        };
+        if max_pages == 0 {
+            return Ok(empty);
+        }
+        self.transaction(|database| database.compact_step_transaction(max_pages))
+    }
+
+    fn compact_step_transaction(&mut self, max_pages: usize) -> Result<CompactionReport> {
+        let mut report = CompactionReport {
+            examined_pages: 0,
+            compacted_pages: 0,
+            skipped_pages: 0,
+            input_bytes: 0,
+            encoded_bytes: 0,
+            saved_bytes: 0,
+        };
+
+        // Publish the decoder capability in the same recovery transaction as
+        // the first cold page and its catalog count.
+        if self.format_version_floor < FORMAT_VERSION_COLUMNAR {
+            self.format_version_floor = FORMAT_VERSION_COLUMNAR;
+        }
+
+        let names = self.table_names();
+        let mut visited_pages = 0usize;
+        for name in names {
+            if visited_pages >= max_pages {
+                break;
+            }
+            let (first_page, cursor, tail_id) = {
+                let table = self.tables.get(&name).expect("catalog name exists");
+                (table.first_page, table.compaction_cursor, table.tail_id)
+            };
+            {
+                let table = self.tables.get(&name).expect("catalog name exists");
+                ensure_table_page_ids(&mut self.cache.borrow_mut(), table)?;
+            }
+            let mut next = cursor.or(first_page);
+            let max_hops = self.cache.borrow().backend().page_count().saturating_add(1);
+            let mut hops = 0u64;
+            while let Some(page_id) = next {
+                hops += 1;
+                if hops > max_hops {
+                    return Err(PvError::Corruption(
+                        "page chain longer than total page count (cycle?)".into(),
+                    ));
+                }
+                if Some(page_id) == tail_id || visited_pages >= max_pages {
+                    break;
+                }
+                // Already-packed pages are cheap but still count toward the
+                // caller's physical work slice. This keeps a crafted or older
+                // manifest without a resume cursor from forcing an unbounded
+                // walk through an otherwise valid cold-page chain.
+                visited_pages += 1;
+                enum Candidate {
+                    AlreadyCold(Option<PageId>),
+                    Row {
+                        next: Option<PageId>,
+                        used: u64,
+                        replacement: Option<(Box<[u8; PAGE_SIZE]>, usize)>,
+                    },
+                }
+                let candidate = {
+                    let table = self.tables.get(&name).expect("catalog name exists");
+                    let mut cache = self.cache.borrow_mut();
+                    cache.with_page(page_id, |bytes| match PageType::try_from(bytes[8])? {
+                        PageType::Columnar => {
+                            if table.cold_pages == 0 {
+                                return Err(PvError::Corruption(
+                                    "table contains an undeclared cold page".into(),
+                                ));
+                            }
+                            Ok(Candidate::AlreadyCold(ColdPage::next_page(bytes)?))
+                        }
+                        PageType::Row => {
+                            let page = RowPageRef::new(bytes)?;
+                            let next = page.next_page();
+                            let (_, used, _) = row_page_usage(bytes)?;
+                            let mut records = Vec::with_capacity(page.slot_count() as usize);
+                            for slot in 0..page.slot_count() {
+                                let (envelope, row) = decode_record(page.record(slot)?, &self.cas)?;
+                                if row.len() != table.columns.len() {
+                                    return Err(PvError::Corruption(
+                                        "record field count does not match table columns".into(),
+                                    ));
+                                }
+                                records.push((envelope, row));
+                            }
+                            let replacement = match ColdPage::from_records(
+                                page_id,
+                                next,
+                                used as u32,
+                                &records,
+                            ) {
+                                Ok((page, encoded)) if encoded < used as usize => {
+                                    Some((page, encoded))
+                                }
+                                Ok(_) | Err(PvError::PageFull { .. }) => None,
+                                Err(error) => return Err(error),
+                            };
+                            Ok(Candidate::Row {
+                                next,
+                                used,
+                                replacement,
+                            })
+                        }
+                    })?
+                };
+
+                let following = match &candidate {
+                    Candidate::AlreadyCold(next) | Candidate::Row { next, .. } => *next,
+                };
+                if following.is_none() {
+                    return Err(PvError::Corruption(format!(
+                        "table `{name}` page chain ended before its declared tail"
+                    )));
+                }
+
+                match candidate {
+                    Candidate::AlreadyCold(following) => {
+                        self.tables
+                            .get_mut(&name)
+                            .expect("catalog name exists")
+                            .compaction_cursor = following;
+                        next = following;
+                    }
+                    Candidate::Row {
+                        next: following,
+                        used,
+                        replacement: Some((page, encoded)),
+                    } => {
+                        report.examined_pages += 1;
+                        self.cache.borrow_mut().write(page_id, page)?;
+                        let table = self.tables.get_mut(&name).expect("catalog name exists");
+                        table.cold_pages += 1;
+                        table.compaction_cursor = following;
+                        report.compacted_pages += 1;
+                        report.input_bytes = report.input_bytes.saturating_add(used);
+                        report.encoded_bytes = report.encoded_bytes.saturating_add(encoded as u64);
+                        report.saved_bytes = report
+                            .saved_bytes
+                            .saturating_add(used.saturating_sub(encoded as u64));
+                        next = following;
+                    }
+                    Candidate::Row {
+                        next: following,
+                        replacement: None,
+                        ..
+                    } => {
+                        report.examined_pages += 1;
+                        report.skipped_pages += 1;
+                        self.tables
+                            .get_mut(&name)
+                            .expect("catalog name exists")
+                            .compaction_cursor = following;
+                        next = following;
+                    }
+                }
+            }
+        }
+        Ok(report)
+    }
+
+    /// Raise the writer floor so the next bake emits the newest readable format
+    /// while preserving pages, indexes, CAS data, and complete MVCC history.
+    /// Used by the format migrator; this does not rewrite or discard rows.
+    pub fn upgrade_format_to_latest(&mut self) -> (u16, u16) {
+        let before = effective_format_version(&self.tables, self.format_version_floor);
+        self.format_version_floor = FORMAT_VERSION;
+        (before, FORMAT_VERSION)
+    }
+
+    /// A deterministic digest over catalog metadata and every MVCC record
+    /// version. Migration verification uses this to prove history and schema
+    /// survived, rather than comparing only the latest visible rows.
+    pub fn verification_hash(&self) -> Result<String> {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"picovolt-verification-v1\0");
+        hasher.update(&self.current_tx().to_le_bytes());
+        for (name, table) in &self.tables {
+            hash_len_prefixed(&mut hasher, name.as_bytes());
+            hash_len_prefixed(&mut hasher, &serde_json::to_vec(&table.columns)?);
+            hash_len_prefixed(&mut hasher, &serde_json::to_vec(&table.unique_columns)?);
+            hash_len_prefixed(&mut hasher, &serde_json::to_vec(&table.not_null_columns)?);
+            hash_len_prefixed(&mut hasher, &serde_json::to_vec(&table.defaults)?);
+            hash_len_prefixed(&mut hasher, &serde_json::to_vec(&table.checks)?);
+            let mut cache = self.cache.borrow_mut();
+            scan(&mut cache, table, &self.cas, |_address, envelope, row| {
+                hasher.update(&envelope.encode());
+                hash_len_prefixed(&mut hasher, &serde_json::to_vec(row)?);
+                Ok(())
+            })?;
+            for (column, index) in &table.indexes {
+                hash_len_prefixed(&mut hasher, column.as_bytes());
+                hash_len_prefixed(&mut hasher, &index.encode_binary());
+            }
+        }
+        Ok(hasher.finalize().to_hex().to_string())
     }
 
     /// Toggle eager persistence after each mutation (development mode only).
@@ -2871,6 +3264,8 @@ impl Database {
                     first_page: t.first_page,
                     tail_id: t.tail_id,
                     row_versions: t.row_versions,
+                    cold_pages: t.cold_pages,
+                    compaction_cursor: t.compaction_cursor,
                     indexed_columns: t.indexes.keys().cloned().collect(),
                     indexes,
                     binary_indexes,
@@ -2886,13 +3281,18 @@ impl Database {
             .tables
             .values()
             .any(|table| !table.defaults.is_empty() || !table.checks.is_empty());
-        let schema_version = if has_schema_constraints {
+        let has_cold_pages = self.tables.values().any(|table| table.cold_pages > 0);
+        let mut schema_version = if has_schema_constraints {
             FORMAT_VERSION_SCHEMA
         } else if has_legacy_constraints {
             FORMAT_VERSION_CONSTRAINTS
         } else {
             FORMAT_VERSION_BASE
         };
+        if has_cold_pages {
+            schema_version = schema_version.max(FORMAT_VERSION_COLUMNAR);
+        }
+        schema_version = schema_version.max(self.format_version_floor);
         let (format_version, index_region) = match plan {
             // JSON indexes predate the binary index region and do not by
             // themselves advance the format version.
@@ -4317,8 +4717,8 @@ fn combine_mantissa(int_sum: i128, dec_sum: i128) -> Result<i128> {
 // Page-backed helpers (free functions to keep field borrows disjoint)
 // ---------------------------------------------------------------------------
 
-fn effective_format_version(tables: &BTreeMap<String, Table>) -> u16 {
-    let mut version = FORMAT_VERSION_BASE;
+fn effective_format_version(tables: &BTreeMap<String, Table>, floor: u16) -> u16 {
+    let mut version = FORMAT_VERSION_BASE.max(floor);
     if tables.values().any(|table| !table.indexes.is_empty()) {
         version = version.max(FORMAT_VERSION_INDEX);
     }
@@ -4334,7 +4734,15 @@ fn effective_format_version(tables: &BTreeMap<String, Table>) -> u16 {
     {
         version = version.max(FORMAT_VERSION_SCHEMA);
     }
+    if tables.values().any(|table| table.cold_pages > 0) {
+        version = version.max(FORMAT_VERSION_COLUMNAR);
+    }
     version
+}
+
+fn hash_len_prefixed(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+    hasher.update(&(bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
 }
 
 #[derive(Default)]
@@ -4342,6 +4750,8 @@ struct TablePageUsage {
     pages: u64,
     used_bytes: u64,
     free_bytes: u64,
+    cold_pages: u64,
+    saved_bytes: u64,
 }
 
 fn row_page_usage(bytes: &[u8]) -> Result<(Option<PageId>, u64, u64)> {
@@ -4365,29 +4775,179 @@ fn row_page_usage(bytes: &[u8]) -> Result<(Option<PageId>, u64, u64)> {
     Ok((page.next_page(), used as u64, free as u64))
 }
 
+fn page_usage(bytes: &[u8]) -> Result<(Option<PageId>, u64, u64, bool, u64)> {
+    let page_type = PageType::try_from(*bytes.get(8).ok_or(PvError::BufferTooSmall {
+        needed: PAGE_HEADER_SIZE,
+        actual: bytes.len(),
+    })?)?;
+    match page_type {
+        PageType::Row => {
+            let (next, used, free) = row_page_usage(bytes)?;
+            Ok((next, used, free, false, 0))
+        }
+        PageType::Columnar => {
+            let next = ColdPage::next_page(bytes)?;
+            let used = ColdPage::encoded_len(bytes)? as u64;
+            let original = ColdPage::original_used_bytes(bytes)? as u64;
+            Ok((
+                next,
+                used,
+                (PAGE_SIZE as u64).saturating_sub(used),
+                true,
+                original.saturating_sub(used),
+            ))
+        }
+    }
+}
+
+/// Confirm that a persisted maintenance cursor belongs to this table before it
+/// is trusted as a page-rewrite starting point. This keeps a crafted manifest
+/// from steering compaction into another table's page chain.
+fn table_chain_contains_page(cache: &mut PageCache, table: &Table, target: PageId) -> Result<bool> {
+    ensure_table_page_ids(cache, table)?;
+    Ok(table
+        .page_ids
+        .borrow()
+        .as_ref()
+        .expect("ownership set initialized")
+        .contains(&target))
+}
+
+fn ensure_table_page_ids(cache: &mut PageCache, table: &Table) -> Result<()> {
+    if table.page_ids.borrow().is_some() {
+        return Ok(());
+    }
+    let page_count = cache.backend().page_count();
+    let max_hops = page_count.saturating_add(1);
+    let mut hops = 0u64;
+    let mut next = table.first_page;
+    let mut ids = BTreeSet::new();
+    let mut cold_pages = 0u64;
+    let mut cursor_found = table.compaction_cursor.is_none();
+    while let Some(page_id) = next {
+        hops += 1;
+        if hops > max_hops {
+            return Err(PvError::Corruption(
+                "page chain longer than total page count (cycle?)".into(),
+            ));
+        }
+        if page_id >= page_count {
+            return Err(PvError::Corruption(format!(
+                "table page {page_id} is outside the {page_count}-page backend"
+            )));
+        }
+        if !ids.insert(page_id) {
+            return Err(PvError::Corruption("cyclic table page chain".into()));
+        }
+        if table.compaction_cursor == Some(page_id) {
+            cursor_found = true;
+        }
+        let (following, cold) = if Some(page_id) == table.tail_id {
+            if let Some(tail) = &table.tail {
+                (tail.next_page(), false)
+            } else {
+                cache.with_page(page_id, page_link_and_kind)?
+            }
+        } else {
+            cache.with_page(page_id, page_link_and_kind)?
+        };
+        if cold {
+            cold_pages += 1;
+            if cold_pages > table.cold_pages {
+                return Err(PvError::Corruption(
+                    "page chain contains more cold pages than the manifest declares".into(),
+                ));
+            }
+        }
+        if Some(page_id) == table.tail_id && following.is_some() {
+            return Err(PvError::Corruption(
+                "table tail page links to another page".into(),
+            ));
+        }
+        next = following;
+    }
+    if table.tail_id.is_some_and(|tail| !ids.contains(&tail)) {
+        return Err(PvError::Corruption(
+            "table page chain does not reach its declared tail".into(),
+        ));
+    }
+    if cold_pages != table.cold_pages {
+        return Err(PvError::Corruption(format!(
+            "manifest declares {} cold page(s), page chain contains {cold_pages}",
+            table.cold_pages
+        )));
+    }
+    if !cursor_found {
+        return Err(PvError::Corruption(
+            "table compaction cursor is outside its page chain".into(),
+        ));
+    }
+    *table.page_ids.borrow_mut() = Some(ids);
+    Ok(())
+}
+
+fn page_link_and_kind(bytes: &[u8; PAGE_SIZE]) -> Result<(Option<PageId>, bool)> {
+    match PageType::try_from(bytes[8])? {
+        PageType::Row => Ok((RowPageRef::new(bytes)?.next_page(), false)),
+        PageType::Columnar => Ok((ColdPage::next_page(bytes)?, true)),
+    }
+}
+
 fn table_page_usage(cache: &mut PageCache, table: &Table) -> Result<TablePageUsage> {
     let max_hops = cache.backend().page_count().saturating_add(1);
     let mut next = table.first_page;
     let mut usage = TablePageUsage::default();
+    let mut cursor_found = table.compaction_cursor.is_none();
+    let mut tail_found = table.tail_id.is_none();
     while let Some(page_id) = next {
+        if table.compaction_cursor == Some(page_id) {
+            cursor_found = true;
+        }
+        if table.tail_id == Some(page_id) {
+            tail_found = true;
+        }
         usage.pages = usage.pages.saturating_add(1);
         if usage.pages > max_hops {
             return Err(PvError::Corruption(
                 "page chain longer than total page count (cycle?)".into(),
             ));
         }
-        let (following, used, free) = if Some(page_id) == table.tail_id {
+        let (following, used, free, cold, saved) = if Some(page_id) == table.tail_id {
             if let Some(tail) = &table.tail {
-                row_page_usage(tail.as_bytes())?
+                let (next, used, free) = row_page_usage(tail.as_bytes())?;
+                (next, used, free, false, 0)
             } else {
-                cache.with_page(page_id, |bytes| row_page_usage(bytes))?
+                cache.with_page(page_id, |bytes| page_usage(bytes))?
             }
         } else {
-            cache.with_page(page_id, |bytes| row_page_usage(bytes))?
+            cache.with_page(page_id, |bytes| page_usage(bytes))?
         };
         usage.used_bytes = usage.used_bytes.saturating_add(used);
         usage.free_bytes = usage.free_bytes.saturating_add(free);
+        usage.cold_pages = usage.cold_pages.saturating_add(u64::from(cold));
+        usage.saved_bytes = usage.saved_bytes.saturating_add(saved);
+        if table.tail_id == Some(page_id) && following.is_some() {
+            return Err(PvError::Corruption(
+                "table tail page links to another page".into(),
+            ));
+        }
         next = following;
+    }
+    if usage.cold_pages != table.cold_pages {
+        return Err(PvError::Corruption(format!(
+            "manifest declares {} cold page(s), page chain contains {}",
+            table.cold_pages, usage.cold_pages
+        )));
+    }
+    if !cursor_found {
+        return Err(PvError::Corruption(
+            "table compaction cursor is outside its page chain".into(),
+        ));
+    }
+    if !tail_found {
+        return Err(PvError::Corruption(
+            "table page chain does not reach its declared tail".into(),
+        ));
     }
     Ok(usage)
 }
@@ -4407,6 +4967,9 @@ fn append_record(cache: &mut PageCache, table: &mut Table, record: &[u8]) -> Res
         let id = cache.alloc_page()?;
         table.tail = Some(RowPage::new(id));
         table.tail_id = Some(id);
+        if let Some(page_ids) = table.page_ids.borrow_mut().as_mut() {
+            page_ids.insert(id);
+        }
         if table.first_page.is_none() {
             table.first_page = Some(id);
         }
@@ -4426,6 +4989,9 @@ fn append_record(cache: &mut PageCache, table: &mut Table, record: &[u8]) -> Res
             let slot = fresh.insert(record)?;
             table.tail = Some(fresh);
             table.tail_id = Some(new_id);
+            if let Some(page_ids) = table.page_ids.borrow_mut().as_mut() {
+                page_ids.insert(new_id);
+            }
             table.row_versions += 1;
             Ok(pack_addr(new_id, slot))
         }
@@ -4445,15 +5011,35 @@ fn read_record_at(
         if let Some(tail) = &table.tail {
             decode_record(tail.record(slot)?, cas)?
         } else {
-            cache.with_page(pid, |buf| {
-                let page = RowPageRef::new(buf)?;
-                decode_record(page.record(slot)?, cas)
+            cache.with_page(pid, |buf| match PageType::try_from(buf[8])? {
+                PageType::Row => {
+                    let page = RowPageRef::new(buf)?;
+                    decode_record(page.record(slot)?, cas)
+                }
+                PageType::Columnar => {
+                    if table.cold_pages == 0 {
+                        return Err(PvError::Corruption(
+                            "table contains an undeclared cold page".into(),
+                        ));
+                    }
+                    ColdPage::record(buf, slot)
+                }
             })?
         }
     } else {
-        cache.with_page(pid, |buf| {
-            let page = RowPageRef::new(buf)?;
-            decode_record(page.record(slot)?, cas)
+        cache.with_page(pid, |buf| match PageType::try_from(buf[8])? {
+            PageType::Row => {
+                let page = RowPageRef::new(buf)?;
+                decode_record(page.record(slot)?, cas)
+            }
+            PageType::Columnar => {
+                if table.cold_pages == 0 {
+                    return Err(PvError::Corruption(
+                        "table contains an undeclared cold page".into(),
+                    ));
+                }
+                ColdPage::record(buf, slot)
+            }
         })?
     };
     if decoded.1.len() != table.columns.len() {
@@ -4477,6 +5063,9 @@ fn scan(
     // page at most once, so it can never exceed the total page count.
     let max_hops = cache.backend().page_count().saturating_add(1);
     let mut hops = 0u64;
+    let mut cold_pages = 0u64;
+    let mut record_versions = 0u64;
+    let mut tail_found = table.tail_id.is_none();
     let mut next = table.first_page;
     while let Some(pid) = next {
         hops += 1;
@@ -4485,7 +5074,11 @@ fn scan(
                 "page chain longer than total page count (cycle?)".into(),
             ));
         }
-        if Some(pid) == table.tail_id {
+        let is_tail = Some(pid) == table.tail_id;
+        if is_tail {
+            tail_found = true;
+        }
+        if is_tail {
             if let Some(tail) = &table.tail {
                 for slot in 0..tail.slot_count() {
                     let (env, row) = decode_record(tail.record(slot)?, cas)?;
@@ -4494,25 +5087,82 @@ fn scan(
                             "record field count does not match table columns".into(),
                         ));
                     }
+                    record_versions = record_versions.saturating_add(1);
                     visit(pack_addr(pid, slot), &env, &row)?;
                 }
                 next = tail.next_page();
+                if next.is_some() {
+                    return Err(PvError::Corruption(
+                        "table tail page links to another page".into(),
+                    ));
+                }
                 continue;
             }
         }
-        next = cache.with_page(pid, |buf| {
-            let page = RowPageRef::new(buf)?;
-            for slot in 0..page.slot_count() {
-                let (env, row) = decode_record(page.record(slot)?, cas)?;
-                if row.len() != table.columns.len() {
+        next = cache.with_page(pid, |buf| match PageType::try_from(buf[8])? {
+            PageType::Row => {
+                let page = RowPageRef::new(buf)?;
+                for slot in 0..page.slot_count() {
+                    let (env, row) = decode_record(page.record(slot)?, cas)?;
+                    if row.len() != table.columns.len() {
+                        return Err(PvError::Corruption(
+                            "record field count does not match table columns".into(),
+                        ));
+                    }
+                    record_versions = record_versions.saturating_add(1);
+                    visit(pack_addr(pid, slot), &env, &row)?;
+                }
+                Ok(page.next_page())
+            }
+            PageType::Columnar => {
+                if table.cold_pages == 0 {
                     return Err(PvError::Corruption(
-                        "record field count does not match table columns".into(),
+                        "table contains an undeclared cold page".into(),
                     ));
                 }
-                visit(pack_addr(pid, slot), &env, &row)?;
+                cold_pages += 1;
+                if cold_pages > table.cold_pages {
+                    return Err(PvError::Corruption(
+                        "page chain contains more cold pages than the manifest declares".into(),
+                    ));
+                }
+                let records = ColdPage::records(buf)?;
+                for (slot, (env, row)) in records.into_iter().enumerate() {
+                    if row.len() != table.columns.len() {
+                        return Err(PvError::Corruption(
+                            "record field count does not match table columns".into(),
+                        ));
+                    }
+                    let slot = u16::try_from(slot)
+                        .map_err(|_| PvError::Corruption("cold-page slot overflow".into()))?;
+                    record_versions = record_versions.saturating_add(1);
+                    visit(pack_addr(pid, slot), &env, &row)?;
+                }
+                ColdPage::next_page(buf)
             }
-            Ok(page.next_page())
         })?;
+        if is_tail && next.is_some() {
+            return Err(PvError::Corruption(
+                "table tail page links to another page".into(),
+            ));
+        }
+    }
+    if cold_pages != table.cold_pages {
+        return Err(PvError::Corruption(format!(
+            "manifest declares {} cold page(s), page chain contains {cold_pages}",
+            table.cold_pages
+        )));
+    }
+    if !tail_found {
+        return Err(PvError::Corruption(
+            "table page chain does not reach its declared tail".into(),
+        ));
+    }
+    if record_versions != table.row_versions {
+        return Err(PvError::Corruption(format!(
+            "manifest declares {} record version(s), page chain contains {record_versions}",
+            table.row_versions
+        )));
     }
     Ok(())
 }
@@ -4526,6 +5176,9 @@ fn scan_envelopes(
 ) -> Result<()> {
     let max_hops = cache.backend().page_count().saturating_add(1);
     let mut hops = 0u64;
+    let mut cold_pages = 0u64;
+    let mut record_versions = 0u64;
+    let mut tail_found = table.tail_id.is_none();
     let mut next = table.first_page;
     while let Some(pid) = next {
         hops += 1;
@@ -4534,22 +5187,76 @@ fn scan_envelopes(
                 "page chain longer than total page count (cycle?)".into(),
             ));
         }
-        if Some(pid) == table.tail_id {
+        let is_tail = Some(pid) == table.tail_id;
+        if is_tail {
+            tail_found = true;
+        }
+        if is_tail {
             if let Some(tail) = &table.tail {
                 for slot in 0..tail.slot_count() {
+                    record_versions = record_versions.saturating_add(1);
                     visit(&RecordEnvelope::decode(tail.record(slot)?)?)?;
                 }
                 next = tail.next_page();
+                if next.is_some() {
+                    return Err(PvError::Corruption(
+                        "table tail page links to another page".into(),
+                    ));
+                }
                 continue;
             }
         }
-        next = cache.with_page(pid, |buf| {
-            let page = RowPageRef::new(buf)?;
-            for slot in 0..page.slot_count() {
-                visit(&RecordEnvelope::decode(page.record(slot)?)?)?;
+        next = cache.with_page(pid, |buf| match PageType::try_from(buf[8])? {
+            PageType::Row => {
+                let page = RowPageRef::new(buf)?;
+                for slot in 0..page.slot_count() {
+                    record_versions = record_versions.saturating_add(1);
+                    visit(&RecordEnvelope::decode(page.record(slot)?)?)?;
+                }
+                Ok(page.next_page())
             }
-            Ok(page.next_page())
+            PageType::Columnar => {
+                if table.cold_pages == 0 {
+                    return Err(PvError::Corruption(
+                        "table contains an undeclared cold page".into(),
+                    ));
+                }
+                cold_pages += 1;
+                if cold_pages > table.cold_pages {
+                    return Err(PvError::Corruption(
+                        "page chain contains more cold pages than the manifest declares".into(),
+                    ));
+                }
+                let (envelopes, next) = ColdPage::envelopes(buf)?;
+                for envelope in envelopes {
+                    record_versions = record_versions.saturating_add(1);
+                    visit(&envelope)?;
+                }
+                Ok(next)
+            }
         })?;
+        if is_tail && next.is_some() {
+            return Err(PvError::Corruption(
+                "table tail page links to another page".into(),
+            ));
+        }
+    }
+    if cold_pages != table.cold_pages {
+        return Err(PvError::Corruption(format!(
+            "manifest declares {} cold page(s), page chain contains {cold_pages}",
+            table.cold_pages
+        )));
+    }
+    if !tail_found {
+        return Err(PvError::Corruption(
+            "table page chain does not reach its declared tail".into(),
+        ));
+    }
+    if record_versions != table.row_versions {
+        return Err(PvError::Corruption(format!(
+            "manifest declares {} record version(s), page chain contains {record_versions}",
+            table.row_versions
+        )));
     }
     Ok(())
 }
@@ -4562,12 +5269,32 @@ fn patch_delete_at(
     tx: TxId,
 ) -> Result<()> {
     let (pid, slot) = unpack_addr(addr);
+    if !table_chain_contains_page(cache, table, pid)? {
+        return Err(PvError::Corruption(format!(
+            "record address {addr} points outside its table page chain"
+        )));
+    }
     if Some(pid) == table.tail_id {
         if let Some(tail) = table.tail.as_mut() {
             return tail.patch_envelope_deleted(slot, tx);
         }
     }
-    cache.with_page_mut(pid, |page| page.patch_envelope_deleted(slot, tx))
+    cache.with_page_bytes_mut(pid, |bytes| match PageType::try_from(bytes[8])? {
+        PageType::Row => {
+            let mut page = RowPage::from_bytes(Box::new(*bytes))?;
+            page.patch_envelope_deleted(slot, tx)?;
+            *bytes = *page.into_bytes();
+            Ok(())
+        }
+        PageType::Columnar => {
+            if table.cold_pages == 0 {
+                return Err(PvError::Corruption(
+                    "table contains an undeclared cold page".into(),
+                ));
+            }
+            ColdPage::patch_envelope_deleted(bytes, slot, tx)
+        }
+    })
 }
 
 /// Slice the binary index region out of a full `.pvdb` byte image (an mmap or an
@@ -4589,9 +5316,12 @@ fn slice_index_region<'a>(
                     "index region overlaps the CAS pool".into(),
                 ));
             }
-            let off = off as usize;
+            let off = usize::try_from(off)
+                .map_err(|_| PvError::Corruption("index region offset is too large".into()))?;
+            let len = usize::try_from(len)
+                .map_err(|_| PvError::Corruption("index region length is too large".into()))?;
             let end = off
-                .checked_add(len as usize)
+                .checked_add(len)
                 .filter(|&e| e <= image.len() && e <= manifest_offset)
                 .ok_or_else(|| PvError::Corruption("index region out of bounds".into()))?;
             Ok(&image[off..end])
@@ -4707,6 +5437,9 @@ fn build_tables(
             tail_id: meta.tail_id,
             tail: loaded_tail,
             row_versions: meta.row_versions,
+            cold_pages: meta.cold_pages,
+            compaction_cursor: meta.compaction_cursor,
+            page_ids: RefCell::new(None),
             indexes: BTreeMap::new(),
         };
         tables.insert(meta.name.clone(), table);
@@ -4721,9 +5454,14 @@ fn build_tables(
         if !meta.binary_indexes.is_empty() {
             let table = tables.get_mut(&meta.name).expect("just inserted");
             for desc in &meta.binary_indexes {
-                let start = desc.offset as usize;
+                let start = usize::try_from(desc.offset).map_err(|_| {
+                    PvError::Corruption("index region descriptor offset is too large".into())
+                })?;
+                let len = usize::try_from(desc.len).map_err(|_| {
+                    PvError::Corruption("index region descriptor length is too large".into())
+                })?;
                 let end = start
-                    .checked_add(desc.len as usize)
+                    .checked_add(len)
                     .filter(|&e| e <= index_region.len())
                     .ok_or_else(|| {
                         PvError::Corruption("index region descriptor out of bounds".into())
@@ -5675,6 +6413,9 @@ mod tests {
             tail_id: None,
             tail: None,
             row_versions: 0,
+            cold_pages: 0,
+            compaction_cursor: None,
+            page_ids: RefCell::new(None),
             indexes: BTreeMap::new(),
         };
         let result = scan(&mut cache, &table, &cas, |_, _, _| Ok(()));

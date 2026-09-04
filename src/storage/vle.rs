@@ -252,7 +252,10 @@ impl DevStore {
 
     /// Read every allocated page, in id order, opening each chunk file once.
     pub fn read_all_pages(&self) -> Result<Vec<PageBuf>> {
-        let mut out = Vec::with_capacity(self.page_count as usize);
+        let capacity = usize::try_from(self.page_count).map_err(|_| {
+            PvError::Corruption("workspace page count is too large for this platform".into())
+        })?;
+        let mut out = Vec::with_capacity(capacity);
         let mut id = 0u64;
         while id < self.page_count {
             let chunk_ix = id / PAGES_PER_CHUNK;
@@ -280,6 +283,8 @@ impl DevStore {
 pub struct Monolith {
     mmap: Arc<Mmap>,
     header: FileHeader,
+    cas_offset: usize,
+    manifest_offset: usize,
     // Keeps the private snapshot alive on platforms where mappings retain a
     // relationship with their source handle.
     _snapshot_file: File,
@@ -318,10 +323,14 @@ impl Monolith {
         // the mapping is borrowed.
         let mmap = unsafe { Mmap::map(&snapshot_file)? };
         let header = FileHeader::decode(&mmap[..FILE_HEADER_SIZE])?;
-        if header.cas_offset < FILE_HEADER_SIZE as u64
-            || header.manifest_offset < header.cas_offset
-            || header.manifest_offset as usize > mmap.len()
-            || (header.cas_offset as usize - FILE_HEADER_SIZE) % PAGE_SIZE != 0
+        let cas_offset = usize::try_from(header.cas_offset)
+            .map_err(|_| PvError::Corruption("monolith CAS offset is too large".into()))?;
+        let manifest_offset = usize::try_from(header.manifest_offset)
+            .map_err(|_| PvError::Corruption("monolith manifest offset is too large".into()))?;
+        if cas_offset < FILE_HEADER_SIZE
+            || manifest_offset < cas_offset
+            || manifest_offset > mmap.len()
+            || (cas_offset - FILE_HEADER_SIZE) % PAGE_SIZE != 0
         {
             return Err(PvError::Corruption(
                 "monolith offsets are inconsistent".into(),
@@ -330,13 +339,15 @@ impl Monolith {
         Ok(Self {
             mmap: Arc::new(mmap),
             header,
+            cas_offset,
+            manifest_offset,
             _snapshot_file: snapshot_file,
         })
     }
 
     /// Number of pages packed into the page-data block.
     pub fn page_count(&self) -> u64 {
-        ((self.header.cas_offset as usize - FILE_HEADER_SIZE) / PAGE_SIZE) as u64
+        ((self.cas_offset - FILE_HEADER_SIZE) / PAGE_SIZE) as u64
     }
 
     /// On-disk format version recorded in the monolith header.
@@ -357,17 +368,17 @@ impl Monolith {
 
     /// Absolute offset of the CAS blob pool within the file.
     pub fn cas_offset(&self) -> usize {
-        self.header.cas_offset as usize
+        self.cas_offset
     }
 
     /// Absolute offset of the trailing JSON manifest.
     pub fn manifest_offset(&self) -> usize {
-        self.header.manifest_offset as usize
+        self.manifest_offset
     }
 
     /// The trailing JSON manifest payload.
     pub fn manifest_bytes(&self) -> &[u8] {
-        &self.mmap[self.header.manifest_offset as usize..]
+        &self.mmap[self.manifest_offset..]
     }
 
     /// A clonable handle to the underlying mapping (for [`crate::storage::cas`]).
@@ -409,9 +420,10 @@ impl MemStore {
 
     /// Overwrite an allocated page.
     pub fn write_page(&self, id: u64, page: &[u8; PAGE_SIZE]) -> Result<()> {
+        let index = usize::try_from(id).map_err(|_| PvError::PageFault { page_id: id })?;
         let mut pages = self.pages.borrow_mut();
         let slot = pages
-            .get_mut(id as usize)
+            .get_mut(index)
             .ok_or(PvError::PageFault { page_id: id })?;
         **slot = *page;
         Ok(())
@@ -427,9 +439,10 @@ impl MemStore {
 
     /// Read a page.
     pub fn read_page(&self, id: u64) -> Result<PageBuf> {
+        let index = usize::try_from(id).map_err(|_| PvError::PageFault { page_id: id })?;
         self.pages
             .borrow()
-            .get(id as usize)
+            .get(index)
             .cloned()
             .ok_or(PvError::PageFault { page_id: id })
     }

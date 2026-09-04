@@ -160,6 +160,23 @@ impl PageCache {
         Ok(out)
     }
 
+    /// Read-modify-write raw page bytes, marking the page dirty. This is used by
+    /// page-kind-aware maintenance code (for example, patching the fixed MVCC
+    /// envelope block in a cold columnar page).
+    pub fn with_page_bytes_mut<R>(
+        &mut self,
+        id: PageId,
+        f: impl FnOnce(&mut [u8; PAGE_SIZE]) -> Result<R>,
+    ) -> Result<R> {
+        self.ensure_loaded(id)?;
+        let last_used = self.tick();
+        let entry = self.entries.get_mut(&id).expect("just loaded");
+        entry.last_used = last_used;
+        let out = f(&mut entry.page)?;
+        entry.dirty = true;
+        Ok(out)
+    }
+
     /// `fsync` durable backends to stable storage (no-op for in-memory).
     pub fn sync(&self) -> Result<()> {
         self.backend.sync_data()

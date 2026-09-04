@@ -1,4 +1,4 @@
-# PicoVolt on-disk format (`FORMAT_VERSION = 4`)
+# PicoVolt on-disk format (`FORMAT_VERSION = 5`)
 
 This document specifies the byte-level layout of PicoVolt's persisted data. It is
 the reference for the **0.11.0 format freeze**: from this version on, a change to
@@ -18,6 +18,11 @@ Version history:
 - **Version 4** (1.7.0): persists deterministic literal defaults and bounded
   `CHECK` predicate trees. Only databases using either feature are stamped
   version 4; legacy-only constraints remain version 3.
+- **Version 5** (1.9.0): adds integrated cold columnar pages. These pages keep
+  page-chain links and fixed-width MVCC envelopes while packing transposed
+  decimal mantissas, and the manifest may retain a bounded-maintenance cursor.
+  Databases containing cold pages or maintenance progress, and images explicitly
+  upgraded with `pv migrate`, are stamped version 5.
 
 All multi-byte integers are **little-endian**. Sizes are in bytes.
 
@@ -25,7 +30,8 @@ Key constants (`src/core/types.rs`):
 
 | Constant              | Value        | Meaning                                  |
 |-----------------------|--------------|------------------------------------------|
-| `FORMAT_VERSION`      | `4`          | Newest version this build can read.      |
+| `FORMAT_VERSION`      | `5`          | Newest version this build can read.      |
+| `FORMAT_VERSION_COLUMNAR` | `5`      | Integrated cold-page layout.             |
 | `FORMAT_VERSION_SCHEMA` | `4`        | Literal-default / CHECK schema metadata. |
 | `FORMAT_VERSION_CONSTRAINTS` | `3`   | Uniqueness/nullability metadata.         |
 | `FORMAT_VERSION_INDEX`| `2`          | Binary-index format without constraints. |
@@ -84,7 +90,7 @@ rejected as corruption rather than trusted.
 | Offset | Size | Field            | Notes                                            |
 |-------:|-----:|------------------|--------------------------------------------------|
 | 0      | 4    | `magic`          | `MAGIC_BYTES` = `"PVDB"`. Mismatch ⇒ `SignatureMismatch`. |
-| 4      | 2    | `format_version` | Must be `1..=FORMAT_VERSION` (1–4). `0` or newer ⇒ `Corruption`. |
+| 4      | 2    | `format_version` | Must be `1..=FORMAT_VERSION` (1–5). `0` or newer ⇒ `Corruption`. |
 | 6      | 2    | flags            | Reserved, written as zero.                       |
 | 8      | 8    | `manifest_offset`| Absolute offset of the JSON manifest.            |
 | 16     | 8    | `cas_offset`     | Absolute offset of the CAS blob pool.            |
@@ -117,13 +123,19 @@ The hot, mutable, slotted page.
 
 The cold, packed, transposed page (column blocks with §4 compression).
 
-| Offset | Size | Field          | Notes                              |
-|-------:|-----:|----------------|------------------------------------|
-| 0      | 8    | `page_id`      |                                    |
-| 8      | 1    | type = `0x02`  | `PageType::Columnar`.              |
-| 9      | 2    | `row_count`    | Logical rows across the columns.   |
-| 11     | 13   | reserved       | Zero.                              |
-| 24     | 4    | `checksum`     | Per-page checksum (§3.3).           |
+| Offset | Size | Field                 | Notes                              |
+|-------:|-----:|-----------------------|------------------------------------|
+| 0      | 8    | `page_id`             |                                    |
+| 8      | 1    | type = `0x02`         | `PageType::Columnar`.              |
+| 9      | 2    | `row_count`           | Logical rows across the columns.   |
+| 11     | 8    | `next_page`           | v5 integrated page link, or `NO_PAGE`. |
+| 19     | 4    | `original_used_bytes` | Used bytes before transposition.   |
+| 23     | 1    | `layout`              | `0` standalone codec; `1` integrated v5 page. |
+| 24     | 4    | `checksum`            | Per-page checksum (§3.3).          |
+
+The public standalone `ColumnarPage` codec retains a zeroed 13-byte reserved
+area and does not appear in a table chain. An integrated page always carries
+layout marker `1`; readers reject other nonzero markers.
 
 ### 3.3 Per-page integrity checksum
 
@@ -176,19 +188,25 @@ A version is visible to a snapshot at `target_tx` iff
 
 ## 4. Columnar column blocks
 
-After a columnar page header comes a `u16` `arity`, then one block per column:
+After a standalone columnar page header comes a `u16` `arity`, then one block per
+column. An integrated v5 page inserts `row_count` fixed 24-byte MVCC envelopes
+between `arity` and the column blocks. Slot ordinal is preserved, so an existing
+`page_id << 16 | slot` index address still identifies the same record version.
 
 ```
 arity: u16
 repeated arity times:
-  tag: u8            # 1 = delta-z ints, 2 = dictionary text, 3 = raw tagged
+  tag: u8            # 1 = delta-z, 2 = dictionary, 3 = raw, 4 = packed decimal
   payload_len: u32
   payload: payload_len bytes
 ```
 
 Encodings: integer columns use Delta-Z (zig-zag + LEB128 of successive deltas);
-low-cardinality text uses a bit-packed dictionary; anything else falls back to a
-raw tagged encoding. Decoders bounds-check every length and reject unknown tags.
+low-cardinality text uses a bit-packed dictionary; fixed-scale decimal columns
+use canonical zig-zag `i128` LEB128 (at most 19 bytes per mantissa); anything
+else falls back to a raw tagged encoding, whose value tag `4` also carries a
+packed decimal. Decoders bounds-check every length, reject overflow and
+noncanonical varints, and reject unknown tags.
 
 ## 5. CAS blob pool
 
@@ -207,7 +225,7 @@ is `pv_manifest.json`. Schema:
 
 ```jsonc
 {
-  "format_version": 4,          // u16; absent/0 ⇒ pre-freeze ⇒ rejected
+  "format_version": 5,          // u16; absent/0 ⇒ pre-freeze ⇒ rejected
   "clock": 0,                   // u64; the MVCC transaction clock
   "page_count": 0,              // u64; pages in the page-data block
   "tables": [
@@ -228,6 +246,8 @@ is `pv_manifest.json`. Schema:
       "first_page": 0,          // Option<u64>: head of the page chain
       "tail_id": 0,             // Option<u64>: the resident write page
       "row_versions": 3,        // u64
+      "cold_pages": 1,          // v5; omitted when zero
+      "compaction_cursor": 0,   // v5 optional page id; next bounded candidate
       "indexed_columns": [],    // columns with a secondary index
       // One of the following persists each index, depending on the form (§6.1):
       "indexes": [              // dev workspaces / v1: JSON (key, addresses) pairs
@@ -316,6 +336,10 @@ page-aligned offsets. Pages are append-only within the workspace's lifetime.
 - **Version 4 preserves defaults and checks.** Literal defaults and `CHECK`
   predicates require version 4; a database using only version-3 constraints is
   deliberately still stamped version 3.
+- **Version 5 preserves cold pages and maintenance progress.** A nonzero
+  `cold_pages` count or a `compaction_cursor` requires version 5. Before using a
+  persisted cursor as a rewrite target, the engine proves it belongs to that
+  table's bounded page chain.
 - Any future change to the bytes described here **must** bump `FORMAT_VERSION`,
   add a golden fixture for the new version under `tests/fixtures/`, and preserve
   the old fixtures' read tests (`tests/format_robustness.rs`).
@@ -342,6 +366,13 @@ Per-page checksums (§3.3) are orthogonal to the durability policy: they detect 
 page that was torn or rotted on the medium regardless of how it got there, turning
 silent corruption into a clean `Corruption` error at read time.
 
+Explicit multi-statement writes and cold-page compaction use a synced
+whole-workspace rollback image plus a recovery marker. The marker is the commit
+point: a reopen that finds it restores the prior workspace before serving data.
+For compaction this publishes the version-5 floor, replacement pages, cold-page
+count, and resume cursor together instead of exposing partially updated
+maintenance metadata.
+
 ## 10. What is verified on open / read
 
 | Check                                   | Where                          | On failure         |
@@ -354,6 +385,8 @@ silent corruption into a clean `Corruption` error at read time.
 | Feature metadata uses a sufficient version | `check_manifest_version`   | `Corruption`       |
 | Defaults/checks reference valid columns | `build_tables`                 | `Corruption`       |
 | Table names and head/tail invariants     | `build_tables`                 | `Corruption`       |
+| Tail reachability / record-version count | page-chain scan                | `Corruption`       |
+| Compaction cursor / mutation page ownership | maintenance / indexed mutation | `Corruption`    |
 | CAS blob extents in bounds              | `import_bytes` / `from_mapped` | `Corruption`       |
 | Per-page checksum                       | buffer-pool fault / tail load  | `Corruption`       |
 | Row page free-space invariant           | `RowPage::from_bytes`          | `Corruption`       |

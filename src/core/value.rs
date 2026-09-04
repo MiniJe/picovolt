@@ -27,8 +27,8 @@ pub enum Value {
     /// A 64-bit signed integer (also used for timestamps and auto-increment ids).
     Int(i64),
     /// A fixed-point decimal: the numeric value is `mantissa / 10^DECIMAL_SCALE`.
-    /// Currently produced only by `AVG`; it is comparable and displayable but not
-    /// yet storable on disk or constructible from a SQL literal.
+    /// Decimal literals, aggregate results, and programmatic values are storable;
+    /// version-5 cold pages encode mantissas with packed zig-zag LEB128.
     Decimal(i128),
     /// UTF-8 text.
     Text(String),

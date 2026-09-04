@@ -12,7 +12,14 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(mut file) = tempfile::NamedTempFile::new() {
         if file.write_all(data).is_ok() && file.flush().is_ok() {
             // Must never panic, only return Ok/Err, on arbitrary bytes.
-            let _ = picovolt::Database::open_prod(file.path());
+            if let Ok(database) = picovolt::Database::open_prod(file.path()) {
+                // Opening is intentionally lazy. Force page-chain, record, CAS,
+                // and index paths so valid-ish mutations reach deep decoders.
+                let _ = database.inspect_stats();
+                for table in database.table_names() {
+                    let _ = database.for_each_row(&table, None, |_| Ok(()));
+                }
+            }
         }
     }
 });

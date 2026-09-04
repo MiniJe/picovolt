@@ -455,6 +455,10 @@ pub struct OrderBy {
 #[derive(Debug, Clone, PartialEq)]
 enum Tok {
     Word(String),
+    /// A delimited identifier (`"name"`, `` `name` ``, or `[name]`). Keeping
+    /// this distinct from [`Tok::Word`] prevents quoted keywords from being
+    /// interpreted as SQL clauses.
+    Ident(String),
     Str(String),
     Int(i64),
     Dec(i128),
@@ -483,7 +487,7 @@ const MAX_PREDICATE_NODES: usize = 256;
 /// fractional digits past the scale are truncated; fewer are zero-padded.
 fn decimal_mantissa(int_part: &str, frac: &str, negative: bool) -> Option<i128> {
     use crate::core::value::{DECIMAL_DEN, DECIMAL_SCALE};
-    let int_val: i128 = int_part.parse().ok()?;
+    let int_val: u128 = int_part.parse().ok()?;
     let scale = DECIMAL_SCALE as usize;
     let mut f = frac.to_string();
     if f.len() > scale {
@@ -492,33 +496,55 @@ fn decimal_mantissa(int_part: &str, frac: &str, negative: bool) -> Option<i128> 
     while f.len() < scale {
         f.push('0');
     }
-    let frac_val: i128 = f.parse().ok()?;
-    let mag = int_val.checked_mul(DECIMAL_DEN)?.checked_add(frac_val)?;
-    Some(if negative { -mag } else { mag })
+    let frac_val: u128 = f.parse().ok()?;
+    let mag = int_val
+        .checked_mul(DECIMAL_DEN as u128)?
+        .checked_add(frac_val)?;
+    if negative {
+        let min_magnitude = (i128::MAX as u128) + 1;
+        if mag == min_magnitude {
+            Some(i128::MIN)
+        } else {
+            i128::try_from(mag).ok()?.checked_neg()
+        }
+    } else {
+        i128::try_from(mag).ok()
+    }
+}
+
+fn sql_quote_closing(opening: char) -> Option<char> {
+    match opening {
+        '\'' => Some('\''),
+        '"' => Some('"'),
+        '`' => Some('`'),
+        '[' => Some(']'),
+        _ => None,
+    }
 }
 
 /// Substitute each `?` placeholder in `sql` with the matching parameter, rendered
-/// as a safely-escaped SQL literal. Placeholders inside string literals are left
-/// untouched, and the parameter count must match exactly. This is what lets the
-/// bindings offer parameterized queries without callers building SQL by hand.
+/// as a safely-escaped SQL literal. Question marks inside string literals or
+/// quoted identifiers are left untouched, and the parameter count must match
+/// exactly. This is what lets the bindings offer parameterized queries without
+/// callers building SQL by hand.
 pub fn bind_params(sql: &str, params: &[Value]) -> crate::Result<String> {
     let mut out = String::with_capacity(sql.len() + params.len() * 4);
-    let mut in_str = false;
+    let mut quoted = None;
     let mut next = 0usize;
     let mut chars = sql.chars().peekable();
     while let Some(c) = chars.next() {
-        if in_str {
+        if let Some(closing) = quoted {
             out.push(c);
-            if c == '\'' {
-                if chars.peek() == Some(&'\'') {
-                    out.push('\'');
+            if c == closing {
+                if chars.peek() == Some(&closing) {
+                    out.push(closing);
                     chars.next();
                 } else {
-                    in_str = false;
+                    quoted = None;
                 }
             }
-        } else if c == '\'' {
-            in_str = true;
+        } else if let Some(closing) = sql_quote_closing(c) {
+            quoted = Some(closing);
             out.push(c);
         } else if c == '?' {
             let v = params.get(next).ok_or_else(|| {
@@ -545,20 +571,24 @@ pub fn bind_params(sql: &str, params: &[Value]) -> crate::Result<String> {
 }
 
 /// Count positional `?` placeholders, ignoring question marks inside SQL string
-/// literals. Used by [`crate::PreparedStatement`] to validate arguments before
-/// execution.
+/// literals and quoted identifiers. Used by [`crate::PreparedStatement`] to
+/// validate arguments before execution.
 pub fn parameter_count(sql: &str) -> usize {
     let mut count = 0;
-    let mut in_str = false;
+    let mut quoted = None;
     let mut chars = sql.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '\'' {
-            if in_str && chars.peek() == Some(&'\'') {
-                chars.next();
-            } else {
-                in_str = !in_str;
+        if let Some(closing) = quoted {
+            if c == closing {
+                if chars.peek() == Some(&closing) {
+                    chars.next();
+                } else {
+                    quoted = None;
+                }
             }
-        } else if c == '?' && !in_str {
+        } else if let Some(closing) = sql_quote_closing(c) {
+            quoted = Some(closing);
+        } else if c == '?' {
             count += 1;
         }
     }
@@ -737,6 +767,39 @@ fn tokenize(sql: &str) -> Result<Vec<(Tok, usize)>> {
                 }
                 toks.push((Tok::Str(s), start));
             }
+            '"' | '`' | '[' => {
+                let opening = lx.bump().expect("peeked delimiter");
+                let closing = if opening == '[' { ']' } else { opening };
+                let mut identifier = String::new();
+                let mut closed = false;
+                loop {
+                    match lx.bump() {
+                        Some(ch) if ch == closing && lx.peek() == Some(closing) => {
+                            lx.bump();
+                            identifier.push(closing);
+                        }
+                        Some(ch) if ch == closing => {
+                            closed = true;
+                            break;
+                        }
+                        Some(ch) if ch.is_control() => {
+                            return Err(err(
+                                start,
+                                "quoted identifiers cannot contain control characters",
+                            ));
+                        }
+                        Some(ch) => identifier.push(ch),
+                        None => break,
+                    }
+                }
+                if !closed {
+                    return Err(err(start, "unterminated quoted identifier"));
+                }
+                if identifier.is_empty() {
+                    return Err(err(start, "quoted identifiers cannot be empty"));
+                }
+                toks.push((Tok::Ident(identifier), start));
+            }
             '-' | '0'..='9' => {
                 let negative = c == '-';
                 if negative {
@@ -869,9 +932,13 @@ impl Cursor {
     fn ident(&mut self) -> Result<String> {
         let at = self.here();
         match self.next()? {
-            Tok::Word(w) => Ok(w),
+            Tok::Word(w) | Tok::Ident(w) => Ok(w),
             other => Err(self.err_at(at, format!("expected identifier, found {other:?}"))),
         }
+    }
+
+    fn ident_is_quoted(&self) -> bool {
+        matches!(self.peek(), Some(Tok::Ident(_)))
     }
 
     fn column_ref(&mut self) -> Result<String> {
@@ -1514,8 +1581,9 @@ fn parse_select_item(cur: &mut Cursor) -> Result<SelectItem> {
     let alias = if peek_kw(cur, "as") {
         cur.next()?; // consume AS
         let at = cur.here();
+        let quoted = cur.ident_is_quoted();
         let name = cur.ident()?;
-        if is_reserved_word(&name) {
+        if !quoted && is_reserved_word(&name) {
             return Err(cur.err_at(
                 at,
                 format!("expected an alias name after AS, found keyword `{name}`"),
@@ -1924,8 +1992,9 @@ fn parse_table_ref(cur: &mut Cursor) -> Result<(TableRef, usize)> {
     if peek_kw(cur, "as") {
         cur.next()?;
         let alias_at = cur.here();
+        let quoted = cur.ident_is_quoted();
         let alias = cur.ident()?;
-        if is_reserved_word(&alias) {
+        if !quoted && is_reserved_word(&alias) {
             return Err(cur.err_at(
                 alias_at,
                 format!("expected a table alias after AS, found keyword `{alias}`"),
@@ -1942,6 +2011,7 @@ fn parse_table_ref(cur: &mut Cursor) -> Result<(TableRef, usize)> {
 
     let bare_alias = match cur.peek() {
         Some(Tok::Word(word)) if !is_reserved_word(word) => Some((word.clone(), cur.here())),
+        Some(Tok::Ident(identifier)) => Some((identifier.clone(), cur.here())),
         _ => None,
     };
     if let Some((alias, alias_at)) = bare_alias {
@@ -2744,6 +2814,51 @@ mod tests {
         );
         // An unterminated literal is still an error.
         assert!(parse("INSERT INTO t VALUES ('oops)").is_err());
+    }
+
+    #[test]
+    fn quoted_identifiers_preserve_keywords_and_punctuation() {
+        assert_eq!(
+            parse(r#"SELECT "select", [a;b], `o'brien` FROM "odd table""#).unwrap(),
+            Statement::Select {
+                table: "odd table".into(),
+                projection: Projection::Columns(vec![
+                    "select".into(),
+                    "a;b".into(),
+                    "o'brien".into(),
+                ]),
+                distinct: false,
+                before: None,
+                filter: None,
+                group_by: vec![],
+                having: None,
+                order: vec![],
+                limit: None,
+                offset: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn decimal_literal_accepts_the_minimum_mantissa() {
+        let sql = format!("INSERT INTO t VALUES ({})", Value::Decimal(i128::MIN));
+        assert_eq!(
+            parse(&sql).unwrap(),
+            Statement::Insert {
+                table: "t".into(),
+                values: vec![Value::Decimal(i128::MIN)],
+            }
+        );
+    }
+
+    #[test]
+    fn parameter_binding_ignores_all_quoted_question_marks() {
+        let sql = r#"SELECT '?', "?", `?`, [?] FROM t WHERE id = ?"#;
+        assert_eq!(parameter_count(sql), 1);
+        assert_eq!(
+            bind_params(sql, &[Value::Int(7)]).unwrap(),
+            r#"SELECT '?', "?", `?`, [?] FROM t WHERE id = 7"#
+        );
     }
 
     #[test]

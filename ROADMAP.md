@@ -9,7 +9,8 @@ model hypothesis lives in [docs/MONETIZATION.md](docs/MONETIZATION.md).
 
 ## Where PicoVolt is now
 
-Version **1.8.0** adds data movement and inspection. The engine
+The **1.9.0 release candidate** adds measured stabilization and a verified
+format-v5 upgrade path. The engine
 includes page-backed storage, MVCC time-travel queries, persisted secondary
 indexes, a stable 1.x file format, Rust/JavaScript/Python/Go/C bindings, a CLI,
 an optional bounded HTTP server, and a durable browser path using OPFS and a Web
@@ -93,24 +94,29 @@ The UCI Iris fixture and mixed-type generated data exercise this gate with a
 two-page cache. See [Data tools](docs/DATA_TOOLS.md) for supported types,
 transaction disk requirements, memory limits, and signing trust boundaries.
 
-## 1.9 — Stabilization
+## 1.9 — Stabilization (implemented; release-candidate soak in progress)
 
 **Outcome:** 2.0 begins from measured behavior and a proven migration path rather
 than from an API redesign performed in the dark.
 
-Planned scope:
+Delivered scope:
 
-- index-assisted N-table planning and benchmark-driven optimizer work;
-- packed decimal encoding and background columnar compaction;
-- `pv migrate` with dry-run, backup, verification, and rollback guidance;
-- sustained parser/decoder fuzzing and multi-day stress runs;
-- performance regression budgets for open, scan, point lookup, top-N, join, bake,
-  and recovery workloads;
-- a release-candidate period focused on downstream compatibility.
+- adaptive index-assisted N-table joins with bounded-work coverage;
+- packed decimal encoding and cooperative, bounded-rewrite columnar compaction
+  that preserves stable record addresses and complete MVCC history;
+- `pv migrate` with dry-run, no-clobber output, optional byte-for-byte backup,
+  deep verification, and rollback guidance;
+- parser, record, index, columnar, monolith, and WASM fuzz targets plus
+  deterministic model and crash/recovery stress jobs;
+- machine-readable performance budgets for open, scan, point lookup, top-N,
+  join, bake, and recovery workloads;
+- format-v5 golden images and migration tests over the complete historical
+  golden-file corpus.
 
-Release gate: no unresolved critical or high-severity findings, 30 days of
-release-candidate soak, and successful migration of the complete golden-file
-corpus.
+The automated portion of the release gate is implemented. The stable tag still
+requires no unresolved critical or high-severity findings and a 30-day
+release-candidate soak focused on downstream compatibility; the golden-file
+migration gate runs in CI on every change.
 
 ## 2.0 — A production concurrency contract
 

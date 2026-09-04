@@ -15,6 +15,7 @@ const GOLDEN: &str = "tests/fixtures/golden_v0_11_0.pvdb";
 const GOLDEN_V2: &str = "tests/fixtures/golden_v1_3_0.pvdb";
 const GOLDEN_V3: &str = "tests/fixtures/golden_v1_4_0.pvdb";
 const GOLDEN_V4: &str = "tests/fixtures/golden_v1_7_0.pvdb";
+const GOLDEN_V5: &str = "tests/fixtures/golden_v1_9_0.pvdb";
 
 /// Bake the canonical sample dataset into `<dir>/sample.pvdb` and return its path.
 fn bake_sample(dir: &std::path::Path) -> std::path::PathBuf {
@@ -111,6 +112,31 @@ fn schema_v4_golden_preserves_defaults_and_checks() {
 }
 
 #[test]
+fn columnar_v5_golden_preserves_decimals_history_and_index_addresses() {
+    let bytes = std::fs::read(GOLDEN_V5).unwrap();
+    assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 5);
+    let mut db = Database::import_bytes(&bytes).unwrap();
+    let stats = db.inspect_stats().unwrap();
+    let ledger = stats
+        .tables
+        .iter()
+        .find(|table| table.name == "ledger")
+        .unwrap();
+    assert!(ledger.compression.compressed_pages > 0);
+    assert!(ledger.compression.saved_bytes > 0);
+    assert_eq!(
+        db.query("SELECT amount FROM ledger WHERE id = 6")
+            .unwrap()
+            .rows()
+            .unwrap(),
+        &[vec![Value::Decimal(6_000_000)]]
+    );
+    db.query("UPDATE ledger SET state = 'settled' WHERE id = 0")
+        .unwrap();
+    assert_eq!(db.row_count("ledger", None).unwrap(), 240);
+}
+
+#[test]
 fn understated_schema_format_version_is_rejected() {
     let mut bytes = std::fs::read(GOLDEN_V4).unwrap();
     bytes[4..6].copy_from_slice(&3u16.to_le_bytes());
@@ -124,10 +150,24 @@ fn understated_schema_format_version_is_rejected() {
         Ok(_) => panic!("understated version unexpectedly opened"),
         Err(error) => error.to_string(),
     };
-    assert!(
-        error.contains("understates schema/index features"),
-        "{error}"
-    );
+    assert!(error.contains("understates persisted features"), "{error}");
+}
+
+#[test]
+fn understated_columnar_format_version_is_rejected() {
+    let mut bytes = std::fs::read(GOLDEN_V5).unwrap();
+    bytes[4..6].copy_from_slice(&4u16.to_le_bytes());
+    let needle = b"\"format_version\":5";
+    let position = bytes
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .expect("golden manifest contains its format version");
+    bytes[position + needle.len() - 1] = b'4';
+    let error = match Database::import_bytes(&bytes) {
+        Ok(_) => panic!("understated version unexpectedly opened"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("understates persisted features"), "{error}");
 }
 
 #[test]
@@ -217,6 +257,19 @@ fn truncated_monolith_errors_cleanly() {
 }
 
 #[test]
+fn oversized_header_offsets_error_cleanly() {
+    let original = std::fs::read(GOLDEN_V5).unwrap();
+    for range in [8..16, 16..24] {
+        let mut bytes = original.clone();
+        bytes[range].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(
+            Database::import_bytes(&bytes).is_err(),
+            "an offset that cannot name a byte in the image must be rejected"
+        );
+    }
+}
+
+#[test]
 fn unsupported_header_version_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let out = bake_sample(dir.path());
@@ -277,5 +330,118 @@ fn dev_workspace_without_format_version_is_rejected() {
     assert!(
         matches!(result, Err(PvError::Corruption(_))),
         "a pre-freeze workspace must be rejected"
+    );
+}
+
+#[test]
+fn compaction_rejects_a_cursor_into_another_table_chain() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("cursor.pv");
+    {
+        let mut db = Database::open_dev(&workspace).unwrap();
+        db.query("CREATE TABLE first (id)").unwrap();
+        db.query("CREATE TABLE second (id)").unwrap();
+        db.query("INSERT INTO first VALUES (1)").unwrap();
+        db.query("INSERT INTO second VALUES (2)").unwrap();
+        db.flush_now().unwrap();
+    }
+
+    let manifest_path = workspace.join(picovolt::MANIFEST_FILE);
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    let tables = manifest["tables"].as_array_mut().unwrap();
+    let second_page = tables
+        .iter()
+        .find(|table| table["name"] == "second")
+        .and_then(|table| table["first_page"].as_u64())
+        .unwrap();
+    let first = tables
+        .iter_mut()
+        .find(|table| table["name"] == "first")
+        .unwrap();
+    first["compaction_cursor"] = second_page.into();
+    manifest["format_version"] = 5.into();
+    std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+    let mut db = Database::open_dev(&workspace).unwrap();
+    let error = db.compact_step(1).unwrap_err().to_string();
+    assert!(error.contains("outside its page chain"), "{error}");
+    assert_eq!(db.row_count("first", None).unwrap(), 1);
+    assert_eq!(db.row_count("second", None).unwrap(), 1);
+}
+
+#[test]
+fn compaction_validates_cold_page_counts_even_without_a_cursor() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("cold-count.pv");
+    {
+        let mut db = Database::open_dev(&workspace).unwrap();
+        db.query("CREATE TABLE events (id)").unwrap();
+        db.query("INSERT INTO events VALUES (1)").unwrap();
+        db.flush_now().unwrap();
+    }
+
+    let manifest_path = workspace.join(picovolt::MANIFEST_FILE);
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["format_version"] = 5.into();
+    manifest["tables"][0]["cold_pages"] = 1.into();
+    manifest["tables"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("compaction_cursor");
+    std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+    let mut db = Database::open_dev(&workspace).unwrap();
+    let error = db.compact_step(1).unwrap_err().to_string();
+    assert!(error.contains("declares 1 cold page"), "{error}");
+}
+
+#[test]
+fn indexed_mutation_rejects_an_address_from_another_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("index-owner.pv");
+    {
+        let mut db = Database::open_dev(&workspace).unwrap();
+        db.query("CREATE TABLE first (id, value)").unwrap();
+        db.query("CREATE TABLE second (id, value)").unwrap();
+        db.query("CREATE INDEX ON first (id)").unwrap();
+        db.query("INSERT INTO first VALUES (1, 'first')").unwrap();
+        db.query("INSERT INTO second VALUES (1, 'second')").unwrap();
+        db.flush_now().unwrap();
+    }
+
+    let manifest_path = workspace.join(picovolt::MANIFEST_FILE);
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    let tables = manifest["tables"].as_array_mut().unwrap();
+    let second_page = tables
+        .iter()
+        .find(|table| table["name"] == "second")
+        .and_then(|table| table["first_page"].as_u64())
+        .unwrap();
+    let first = tables
+        .iter_mut()
+        .find(|table| table["name"] == "first")
+        .unwrap();
+    first["indexes"][0]["pairs"][0][1][0] = (second_page << 16).into();
+    std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+    let mut db = Database::open_dev(&workspace).unwrap();
+    let error = db
+        .query("UPDATE first SET value = 'changed' WHERE id = 1")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("outside its table page chain"), "{error}");
+    assert_eq!(
+        db.query("SELECT value FROM first").unwrap().rows().unwrap(),
+        &[vec![Value::Text("first".into())]]
+    );
+    assert_eq!(
+        db.query("SELECT value FROM second")
+            .unwrap()
+            .rows()
+            .unwrap(),
+        &[vec![Value::Text("second".into())]]
     );
 }

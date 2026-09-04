@@ -93,8 +93,8 @@ Delivered in this order:
 1. Explicit `BEGIN`, `COMMIT`, and `ROLLBACK` across every binding. **Shipped in
    1.6.0.**
 2. N-table equality `INNER JOIN` and `LEFT JOIN`, aliases, self-joins, and joined
-   grouping. **Shipped in 1.7.0; planner/index optimization remains 1.9
-   work.**
+   grouping. **Shipped in 1.7.0; adaptive indexed right-side probes are complete
+   for 1.9.0.**
 3. Primary-key, unique, not-null, default, and check constraints with atomic,
    actionable failures. **Shipped through 1.7.0.**
 4. Reusable prepared-statement objects in every maintained binding. **Shipped
@@ -158,12 +158,13 @@ until users explicitly ask for product telemetry.
 
 ## Immediate next sprint
 
-1. Publish one reproducible 1.7 compatibility report across Rust, browser,
-   Node, Python, Go, and C, then recruit applications against the measured gaps.
-2. Recruit real-data trials for the completed 1.8 Parquet, SQLite, and snapshot
-   diff tools; prioritize missing conversions from concrete datasets.
-3. Use the new `EXPLAIN` and `pv inspect` metrics to establish baseline plans
-   and performance budgets before 1.9 optimizer work.
+1. Run the 1.9 release-candidate migration and compatibility trial against real
+   1.x databases, retaining verification hashes and rollback results.
+2. Recruit real-data trials for the 1.8 Parquet, SQLite, and snapshot-diff tools
+   plus the 1.9 compaction path; prioritize missing conversions from concrete
+   datasets.
+3. Publish the 1.9 benchmark JSON and compare it with SQLite and DuckDB only on
+   workloads the projects genuinely share.
 4. Publish the starters as standalone templates and measure clean installs and
    completed first queries.
 5. Start the public weekly adoption dashboard and recruit the first three
