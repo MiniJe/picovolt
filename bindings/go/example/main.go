@@ -1,4 +1,5 @@
-// A runnable PicoVolt demo from Go: CRUD, an aggregate, and time-travel.
+// A runnable PicoVolt demo from Go: prepared writes, schema constraints,
+// scalar expressions, an aggregate, and time-travel.
 //
 // Install or download the matching native PicoVolt C ABI library, set
 // CGO_LDFLAGS and the platform loader path as described in ../README.md, then
@@ -28,9 +29,18 @@ func main() {
 		}
 	}
 
-	must(db.Query("CREATE TABLE fruit (name, qty)"))
-	must(db.Query("INSERT INTO fruit VALUES ('apple', 3)"))
-	must(db.Query("INSERT INTO fruit VALUES ('pear', 5)"))
+	must(db.Query(
+		"CREATE TABLE fruit (" +
+			"name TEXT PRIMARY KEY, " +
+			"qty INTEGER DEFAULT 0 CHECK (qty >= 0))",
+	))
+	insert, err := db.Prepare("INSERT INTO fruit (name, qty) VALUES (?, ?)")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer insert.Close()
+	must(insert.Execute("apple", 3))
+	must(insert.Execute("pear", 5))
 
 	// "BEFORE n" reads the table as of transaction n (inclusive); the last
 	// insert is the newest tx, so this snapshot predates the delete below.
@@ -38,7 +48,11 @@ func main() {
 
 	must(db.Query("DELETE FROM fruit WHERE name = 'pear'"))
 
-	rows, err := db.Query("SELECT * FROM fruit")
+	rows, err := db.Query(
+		"SELECT UPPER(name) AS name, qty, " +
+			"CASE WHEN qty >= 5 THEN 'stocked' ELSE 'low' END AS status " +
+			"FROM fruit ORDER BY name",
+	)
 	if err != nil {
 		log.Fatal(err)
 	}

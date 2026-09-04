@@ -6,6 +6,40 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- Refreshed project, format, security, benchmark, support, enterprise, and
+  adoption documentation to match the 1.7 engine and published artifacts.
+- Modernized every maintained starter and binding example with current schema,
+  prepared-statement, lifecycle, and query patterns; upgraded the browser
+  starter to Vite 8 and refreshed Python packaging metadata and build tools.
+- Updated the direct Rust error dependency and pinned GitHub Actions to current
+  immutable revisions backed by the Node 24 action runtime.
+
+### Fixed
+
+- Corrected durability and persisted-index claims, removed misleading drop-in
+  compatibility wording, and documented the Go `database/sql` driver's required
+  single-connection pool.
+- Added the Go starter's `go.sum` so a fresh `go run .` verifies and resolves its
+  exact public module without an extra setup command.
+- Corrected the macOS Python wheel build to merge and verify arm64 and x86-64
+  native libraries before applying its `universal2` platform tag.
+
+### Security
+
+- Registry policy now checks npm SHA-512 lock integrity, Rust/Python version
+  parity, Go module checksums, and byte-for-byte C header parity.
+- CI and release verification now reject broken or warning-producing Rust API
+  documentation as well as failing doctests.
+- Native Go binding CI now covers both supported Go lines (1.26 and 1.27), and
+  the clean-room release gate uses Go 1.27 instead of the retired 1.22 line.
+- Node and browser starters now require Node 22.12 or newer instead of the
+  end-of-life Node 20 line.
+- npm publishing now uses only its configured OIDC trusted publisher; GitHub
+  private vulnerability reporting is enabled and is the documented confidential
+  reporting channel.
+
 ## [1.7.0] - 2026-09-04
 
 ### Added
@@ -368,8 +402,8 @@ A migrator for bringing data in from SQLite and SQLite-style SQL dumps.
 
 ## [0.8.0] - 2026-06-23
 
-Drop-in adapters, so code written for other embedded SQL databases can use
-PicoVolt with little change.
+Familiar interface adapters for code using other embedded SQL APIs, while
+retaining PicoVolt's focused SQL surface.
 
 ### Added
 - **better-sqlite3-style JavaScript API** ([`bindings/js/sqlite.js`](bindings/js/sqlite.js),

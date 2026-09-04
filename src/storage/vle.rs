@@ -185,7 +185,7 @@ impl DevStore {
 
     /// Write `pages` at consecutive ids starting from `start_id`, opening each
     /// chunk file **once** and issuing one bulk write per chunk. Dramatically
-    /// faster than per-page [`write_page`] calls.
+    /// faster than per-page [`Self::write_page`] calls.
     pub fn write_pages_from(&self, start_id: u64, pages: &[&PageBuf]) -> Result<()> {
         let end = start_id + pages.len() as u64;
         let mut id = start_id;

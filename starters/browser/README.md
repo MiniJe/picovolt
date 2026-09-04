@@ -5,6 +5,8 @@ pages unique origins and block their ES-module imports; OPFS also requires a
 secure HTTP origin. The included Vite configuration also handles wasm-pack's
 WebAssembly module import.
 
+Use Node.js 22.12 or newer; older Node lines are no longer supported here.
+
 ```sh
 npm ci
 npm run dev

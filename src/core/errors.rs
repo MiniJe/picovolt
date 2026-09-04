@@ -1,12 +1,11 @@
 //! Error taxonomy for the PicoVolt engine.
 //!
 //! [`PvError`] is the single crate-wide error type. Variants are grouped by the
-//! layer that raises them: storage/page faults, on-disk signature & corruption
-//! checks, content-addressable storage misses, the WASM runtime, and the
-//! licensing compliance hook. [`ComplianceError`] is kept as its own type so the
-//! compliance module (Phase 4) can expose the exact `Result<(), ComplianceError>`
-//! surface described in the specification while still composing into [`PvError`]
-//! via `?`.
+//! layer that raises them: storage/page faults, on-disk signature and corruption
+//! checks, content-addressable storage misses, the WASM runtime, and the optional
+//! host usage-policy hook. [`ComplianceError`] remains a distinct type so callers
+//! can handle policy rejection separately while still composing it into
+//! [`PvError`] via `?`.
 
 use thiserror::Error;
 
@@ -112,7 +111,7 @@ pub enum PvError {
     #[error("manifest error: {0}")]
     Manifest(#[from] serde_json::Error),
 
-    /// The dual-license compliance hook rejected the current runtime metrics.
+    /// The optional host usage-policy hook rejected the supplied runtime metrics.
     #[error(transparent)]
     Compliance(#[from] ComplianceError),
 }

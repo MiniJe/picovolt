@@ -1,9 +1,9 @@
 //! # PicoVolt (PVDB)
 //!
-//! A polymorphic embedded data engine. PicoVolt decouples logic from storage
-//! representation through a Virtualization Layer Engine (VLE), shifting between a
-//! directory of mutable append-only files (Development Mode) and an immutable,
-//! memory-mappable single-file binary (`.pvdb`, Production Mode).
+//! A compact embedded SQL database with page-backed storage and MVCC history.
+//! PicoVolt's Virtualization Layer Engine (VLE) shifts between a directory of
+//! mutable append-only files (development mode) and an immutable,
+//! memory-mappable single-file binary (`.pvdb`, production mode).
 //!
 //! ## Layout
 //!
@@ -11,7 +11,7 @@
 //! |-------|---------|----------------|
 //! | core | [`core::types`], [`core::errors`], [`core::value`] | byte layouts, errors, value model |
 //! | storage | [`storage::page`], [`storage::cas`], [`storage::compress`], [`storage::record`], [`storage::vle`] | pages, dedup, compression, serialization, file router |
-//! | engine | [`engine::mvcc`], [`engine::wasm`], [`engine::query`], [`engine::compliance`] | snapshots, sandbox, SQL, licensing |
+//! | engine | [`engine::mvcc`], [`engine::wasm`], [`engine::query`], [`engine::compliance`] | snapshots, sandbox, SQL, optional host usage policies |
 //! | surface | [`Database`] | dev/prod lifecycle, `query`, `bake` |
 //!
 //! ## Quick start

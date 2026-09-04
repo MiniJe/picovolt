@@ -34,15 +34,21 @@ Object.defineProperty(globalThis, "navigator", {
 const { PersistentDb } = await import("picovolt/browser");
 
 const first = await PersistentDb.open("registry-smoke.pvdb");
-first.query("CREATE TABLE visits (id PRIMARY KEY, path NOT NULL)");
-first.query("INSERT INTO visits VALUES (1, '/from-public-npm')");
+first.query(`CREATE TABLE visits (
+  id INTEGER PRIMARY KEY,
+  path TEXT NOT NULL,
+  source TEXT DEFAULT 'browser' CHECK (source IN ('browser', 'worker'))
+)`);
+const insert = first.prepare("INSERT INTO visits (id, path) VALUES (?, ?)");
+insert.query([1, "/from-public-npm"]);
+insert.close();
 await first.close();
 
 assert.ok(files.get("registry-smoke.pvdb")?.byteLength > 0);
 const reopened = await PersistentDb.open("registry-smoke.pvdb");
 assert.deepEqual(reopened.query("SELECT * FROM visits"), {
-  columns: ["id", "path"],
-  rows: [[1, "/from-public-npm"]],
+  columns: ["id", "path", "source"],
+  rows: [[1, "/from-public-npm", "browser"]],
 });
 await reopened.close();
 console.log("browser package persisted and reopened successfully");

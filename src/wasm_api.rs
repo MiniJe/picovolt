@@ -2,7 +2,8 @@
 //!
 //! Exposes an **in-memory** PicoVolt database to JavaScript via `wasm-bindgen`.
 //! The filesystem/mmap backends don't work in a browser, so the wasm build uses
-//! [`Database::open_memory`]; export with [`Db::export`] to get a `.pvdb` image.
+//! [`Database::open_memory`]; export with [`crate::wasm_api::Db::export`] to get
+//! a `.pvdb` image.
 //!
 //! Build the npm package with:
 //! `wasm-pack build --target web --release -- --features wasm`

@@ -67,11 +67,14 @@ $env:PATH = "$PICOVOLT_NATIVE_DIR;$env:PATH"
 go test ./...
 ```
 
-Once the module is tagged, a clean application install is:
+Install the latest Go wrapper from the public module proxy:
 
 ```sh
-go get github.com/MiniJe/picovolt/bindings/go@vX.Y.Z
+go get github.com/MiniJe/picovolt/bindings/go@latest
 ```
+
+For reproducible builds, replace `latest` with an explicit `vX.Y.Z` tag. Always
+use the native C ABI bundle from that same release.
 
 The native library remains a separate, checksummed and provenance-attested
 release artifact; `go get` supplies the wrapper and its matching header. For
@@ -123,3 +126,17 @@ decode it with `encoding/json`. Other entry points: `OpenDev`, `OpenProd`,
 `Import`, `Export`, `Begin`, `Commit`, `Rollback`, `InTransaction`, `CurrentTx`,
 and `Version`. The `pvsql` subpackage provides a `database/sql` driver.
 Its reusable `sql.Stmt` now reports exact placeholder arity to `database/sql`.
+
+Configure `database/sql` to retain exactly one PicoVolt connection. Each driver
+connection owns a separate engine handle; a larger pool would create independent
+in-memory databases and can violate a development workspace's single-writer
+contract.
+
+```go
+sqlDB, err := sql.Open("picovolt", "dev:./app.pv")
+if err != nil {
+    log.Fatal(err)
+}
+sqlDB.SetMaxOpenConns(1)
+sqlDB.SetMaxIdleConns(1)
+```

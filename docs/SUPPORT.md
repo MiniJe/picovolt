@@ -6,15 +6,15 @@ it is not a promise that every downstream environment is identical.
 
 | Distribution | Supported runtime / platform | Release artifact |
 |---|---|---|
-| Rust crate and `pv` CLI | Rust 1.86+, Linux x86-64, macOS arm64, Windows x86-64 | crates.io plus native GitHub downloads |
-| JavaScript | Node.js 20+, modern evergreen browsers with WebAssembly | npm `picovolt` |
-| Python | CPython 3.9+, Linux x86-64 (manylinux), macOS, Windows | platform wheels on PyPI |
-| Go | Current two stable Go releases with cgo and a locally built PicoVolt C ABI | source binding |
-| C ABI | Platforms supported by the Rust toolchain | header plus locally built shared library |
+| Rust crate and `pv` CLI | Rust 1.86+; release binaries for Linux x86-64, macOS arm64, and Windows x86-64 | crates.io plus native GitHub downloads |
+| JavaScript | Node.js 22.12+ on a maintained release line; modern evergreen browsers with WebAssembly | npm `picovolt` |
+| Python | CPython 3.9+ compatibility floor (use a Python-supported release in production); Linux x86-64 (manylinux 2.28), macOS universal2, and Windows x86-64 | platform wheels on PyPI |
+| Go | Go 1.26 and 1.27 with cgo; the clean-room native gate runs on Linux x86-64 | versioned Go module plus the matching C ABI library |
+| C ABI | Release bundles for Linux x86-64, macOS arm64, and Windows x86-64; other Rust-supported targets can build locally | header and shared library in GitHub release bundles |
 
 Browser persistence uses OPFS and therefore needs a secure `http://localhost` or
 `https://` origin. Opening the starter through `file://` is unsupported because
-browsers isolate local-file origins; run `npm install && npm run dev` in
+browsers isolate local-file origins; run `npm ci && npm run dev` in
 `starters/browser` instead.
 
 ## File compatibility

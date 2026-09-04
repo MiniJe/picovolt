@@ -3,15 +3,18 @@ name = "picovolt"
 version = "1.7.0"
 edition = "2021"
 rust-version = "1.86"
-description = "PicoVolt (PVDB): a polymorphic embedded database engine in Rust."
+description = "Embedded SQL database with MVCC history and single-file deployment"
 license = "Apache-2.0"
 repository = "https://github.com/MiniJe/picovolt"
+homepage = "https://github.com/MiniJe/picovolt"
+documentation = "https://docs.rs/picovolt"
 readme = "README.md"
 keywords = ["database", "embedded", "storage-engine", "mvcc", "columnar"]
 categories = ["database-implementations"]
-# Keep the published Rust package lean; these are repo-only tooling and the
-# out-of-tree language bindings (Go/Python), which live in /bindings.
-exclude = ["/fuzz", "/.github", "/bindings"]
+# Keep the published Rust package lean. CI/release tooling, copyable starters,
+# fuzzing state, and out-of-tree language bindings belong in the repository but
+# are not needed by consumers of the Rust crate.
+exclude = ["/.github", "/bindings", "/fuzz", "/scripts", "/starters"]
 
 # `cdylib` is needed for the wasm/npm build (wasm-pack); `rlib` for normal use.
 [lib]
@@ -41,7 +44,7 @@ enterprise = []
 server = ["dep:tiny_http"]
 
 [dependencies]
-thiserror = "1.0"
+thiserror = "2.0"
 blake3 = "1"
 memmap2 = "0.9.11"
 serde = { version = "1", features = ["derive"] }

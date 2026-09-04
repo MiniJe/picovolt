@@ -1,24 +1,40 @@
-# PicoVolt drop-in adapter for JavaScript
+# PicoVolt JavaScript adapters
 
-A [better-sqlite3](https://github.com/WiseLibs/better-sqlite3)-style synchronous
-API over the PicoVolt npm package, so code written for better-sqlite3 can use
-PicoVolt with minimal change.
+The PicoVolt npm package includes a synchronous,
+[better-sqlite3](https://github.com/WiseLibs/better-sqlite3)-inspired adapter,
+the raw WebAssembly API, durable browser storage, and a module-worker endpoint.
+It deliberately implements PicoVolt's focused SQL subset rather than claiming
+full SQLite compatibility.
+
+```sh
+npm install picovolt
+```
 
 ```js
 import Database from "picovolt/sqlite";
 
 const db = new Database();
-db.exec("CREATE TABLE users (id, name)");
+db.exec(`CREATE TABLE users (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  role TEXT DEFAULT 'member'
+)`);
 
-const insert = db.prepare("INSERT INTO users VALUES (?, ?)");
+const insert = db.prepare("INSERT INTO users (id, name) VALUES (?, ?)");
 insert.run(1, "alice");
 insert.run(2, "bob");
+insert.close();
 
-const user = db.prepare("SELECT * FROM users WHERE id = ?").get(1);
-// { id: 1, name: "alice" }
+const findUser = db.prepare("SELECT * FROM users WHERE id = ?");
+const user = findUser.get(1);
+// { id: 1, name: "alice", role: "member" }
+findUser.close();
 
-const all = db.prepare("SELECT * FROM users").all();
-// [ { id: 1, name: "alice" }, { id: 2, name: "bob" } ]
+const listUsers = db.prepare("SELECT * FROM users");
+const all = listUsers.all();
+// [ { id: 1, name: "alice", role: "member" }, ... ]
+listUsers.close();
+db.close();
 ```
 
 `prepare(sql)` returns a statement with `run(...params)`, `get(...params)`,

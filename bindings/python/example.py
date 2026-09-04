@@ -1,4 +1,4 @@
-"""A runnable PicoVolt demo from Python: CRUD, an aggregate, and time-travel.
+"""A runnable PicoVolt demo: prepared writes, constraints, and time-travel.
 
 From the repository root::
 
@@ -19,16 +19,28 @@ def main() -> None:
     print("PicoVolt", version())
 
     with Database.open_memory() as db:
-        db.query("CREATE TABLE fruit (name, qty)")
-        db.query("INSERT INTO fruit VALUES ('apple', 3)")
-        db.query("INSERT INTO fruit VALUES ('pear', 5)")
+        db.query(
+            "CREATE TABLE fruit ("
+            "name TEXT PRIMARY KEY, "
+            "qty INTEGER DEFAULT 0 CHECK (qty >= 0))"
+        )
+        with db.prepare("INSERT INTO fruit (name, qty) VALUES (?, ?)") as insert:
+            insert.execute(("apple", 3))
+            insert.execute(("pear", 5))
 
         # `BEFORE n` reads the table as of transaction n (inclusive); the last
         # insert is the newest tx, so this snapshot predates the delete below.
         after_inserts = db.current_tx()
         db.query("DELETE FROM fruit WHERE name = 'pear'")
 
-        print("now:           ", db.query("SELECT * FROM fruit"))
+        print(
+            "now:           ",
+            db.query(
+                "SELECT UPPER(name) AS name, qty, "
+                "CASE WHEN qty >= 5 THEN 'stocked' ELSE 'low' END AS status "
+                "FROM fruit ORDER BY name"
+            ),
+        )
         print(
             "before delete: ",
             db.query(f"SELECT * FROM fruit BEFORE {after_inserts}"),

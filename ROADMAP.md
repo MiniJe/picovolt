@@ -34,7 +34,8 @@ interrupted commit is either fully visible or not visible at all.
 Delivered scope:
 
 - explicit `BEGIN`, `COMMIT`, and `ROLLBACK` for filesystem workspaces;
-- a write-ahead or copy-on-write commit protocol with deterministic recovery;
+- a synced rollback-image and recovery-marker protocol with deterministic
+  recovery;
 - transaction parity across persistent Rust, JavaScript, Python, Go, and C
   handles; sessionless CLI and HTTP calls intentionally remain atomic
   single-statement operations;

@@ -75,8 +75,9 @@ fn insert_modes() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    // Autocommit is now durable-per-insert *and* linear: 4x the rows should take
-    // ~4x the time (it used to be ~16x, quadratic).
+    // Autocommit in the default Fast mode flushes each insert to the OS cache and
+    // remains linear: 4x the rows should take ~4x the time (it used to be ~16x,
+    // quadratic). This benchmark does not measure the fsync-backed Sync mode.
     let mut prev: Option<(usize, f64)> = None;
     for n in [2_000usize, 8_000] {
         let tmp = tempfile::tempdir()?;
@@ -95,7 +96,7 @@ fn insert_modes() -> Result<(), Box<dyn Error>> {
                 n as f64 / pn as f64
             )
         });
-        rate_row("autocommit (durable per insert)", n, secs, note);
+        rate_row("autocommit (Fast durability)", n, secs, note);
         prev = Some((n, secs));
     }
     Ok(())

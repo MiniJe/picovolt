@@ -105,13 +105,18 @@ fn print_table(columns: &[String], rows: &[Vec<Value>]) {
 }
 
 fn print_help() {
-    println!("Supported SQL:");
-    println!("  CREATE TABLE t (c1, c2, ...)");
-    println!("  CREATE INDEX ON t (col)");
-    println!("  INSERT INTO t VALUES (v1, v2, ...)");
-    println!("  SELECT * FROM t [WHERE col = val] [BEFORE tx] [LIMIT n]");
-    println!("  UPDATE t SET col = val WHERE col2 = val2");
-    println!("  DELETE FROM t WHERE col = val");
-    println!("  DROP TABLE t");
+    println!("Supported SQL (one statement per line):");
+    println!("  CREATE TABLE [IF NOT EXISTS] t (column [type] [constraints], ...)");
+    println!("  CREATE [UNIQUE] INDEX ON t (column)");
+    println!("  INSERT INTO t [(columns)] VALUES (...), (...) | DEFAULT VALUES");
+    println!("  SELECT [DISTINCT] projection FROM t [alias] [JOIN ...]");
+    println!("    [WHERE predicate] [GROUP BY ...] [HAVING predicate] [BEFORE tx]");
+    println!("    [ORDER BY ...] [LIMIT n] [OFFSET n]");
+    println!("  UPDATE t SET column = value | DEFAULT WHERE predicate");
+    println!("  DELETE FROM t WHERE predicate");
+    println!("  DROP TABLE [IF EXISTS] t");
+    println!("  BEGIN | COMMIT | ROLLBACK");
+    println!("Predicates: comparisons, [NOT] IN/BETWEEN/LIKE, IS [NOT] NULL, AND/OR");
+    println!("Projection: columns, COUNT/SUM/MIN/MAX/AVG, CASE, scalar functions");
     println!("Commands: .tables  .help  .exit");
 }

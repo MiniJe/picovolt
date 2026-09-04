@@ -6,12 +6,16 @@
 //		_ "github.com/MiniJe/picovolt/bindings/go/pvsql"
 //	)
 //
-//	db, _ := sql.Open("picovolt", "memory")        // or "dev:./app.pv", "prod:app.pvdb"
+//	db, _ := sql.Open("picovolt", "memory") // or "dev:./app.pv", "prod:app.pvdb"
+//	db.SetMaxOpenConns(1)
+//	db.SetMaxIdleConns(1)
 //	db.Exec("CREATE TABLE t (id, name)")
 //	rows, _ := db.Query("SELECT * FROM t")
 //
 // Query parameters are supported through `?` placeholders, each substituted as a
 // safely-escaped SQL literal. Transactions use the engine's explicit lifecycle.
+// Keep the pool at one connection: every driver connection owns a separate
+// PicoVolt handle, and development workspaces have a single-writer contract.
 package pvsql
 
 import (

@@ -107,12 +107,51 @@ def _npm_policy(root: Path, name: str, version: str) -> None:
                 locked_source.startswith("https://registry.npmjs.org/"),
                 f"{name}: lockfile package {package_name} is not from registry.npmjs.org",
             )
+            integrity = locked.get("integrity")
+            _require(
+                isinstance(integrity, str) and integrity.startswith("sha512-"),
+                f"{name}: lockfile package {package_name} has no SHA-512 integrity pin",
+            )
 
 
 def check_policy(root: Path = ROOT, version: Optional[str] = None) -> None:
     """Raise ``PolicyError`` unless every starter is registry-only and pinned."""
 
     version = version or project_version(root)
+
+    python_project = (root / "bindings/python/pyproject.toml").read_text(
+        encoding="utf-8"
+    )
+    python_project_version = re.search(
+        r'(?m)^version\s*=\s*"([^"]+)"\s*$', python_project
+    )
+    _require(
+        bool(python_project_version),
+        "python: bindings/python/pyproject.toml has no project version",
+    )
+    _require(
+        python_project_version.group(1) == version,
+        f"python: distribution version must be {version}",
+    )
+
+    python_module = (root / "bindings/python/picovolt/__init__.py").read_text(
+        encoding="utf-8"
+    )
+    python_module_version = re.search(
+        r'(?m)^__version__\s*=\s*"([^"]+)"\s*$', python_module
+    )
+    _require(bool(python_module_version), "python: __version__ is missing")
+    _require(
+        python_module_version.group(1) == version,
+        f"python: module version must be {version}",
+    )
+
+    canonical_header = (root / "include/picovolt.h").read_bytes()
+    go_header = (root / "bindings/go/include/picovolt.h").read_bytes()
+    _require(
+        go_header == canonical_header,
+        "go: copied C header differs from include/picovolt.h",
+    )
 
     cargo = (root / "starters/rust-cli/Cargo.toml").read_text(encoding="utf-8")
     match = re.search(r'(?m)^picovolt\s*=\s*"([^"]+)"\s*$', cargo)
@@ -139,6 +178,20 @@ def check_policy(root: Path = ROOT, version: Optional[str] = None) -> None:
     _require(bool(go_requirement), "go: public PicoVolt module requirement is missing")
     _require(go_requirement.group(1) == f"v{version}", f"go: module must be pinned to v{version}")
     _require(not re.search(r"(?m)^\s*replace\b", go_mod), "go: replace directives are forbidden")
+
+    go_sum_path = root / "starters/go/go.sum"
+    _require(go_sum_path.is_file(), "go: go.sum is required")
+    go_sum = go_sum_path.read_text(encoding="utf-8").splitlines()
+    module_prefix = f"{GO_MODULE} v{version}"
+    _require(
+        any(line.startswith(f"{module_prefix} h1:") for line in go_sum),
+        f"go: go.sum has no checksum for {module_prefix}",
+    )
+    _require(
+        any(line.startswith(f"{module_prefix}/go.mod h1:") for line in go_sum),
+        f"go: go.sum has no go.mod checksum for {module_prefix}",
+    )
+
 
 def _run(
     command: Sequence[str],

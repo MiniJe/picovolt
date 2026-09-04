@@ -1,6 +1,6 @@
 //! The outer developer surface: [`Database`] plus the dev/prod lifecycle.
 //!
-//! This is the integration layer. As of the page-backed engine it composes:
+//! This integration layer composes:
 //!
 //! * a **buffer pool** ([`crate::storage::cache::PageCache`]) so reads stream
 //!   through a bounded set of resident pages, datasets need not fit in RAM;
@@ -2360,7 +2360,7 @@ impl Database {
         self.enterprise.set_sink(sink);
     }
 
-    /// Run the licensing compliance hook against the supplied metrics.
+    /// Run the optional host usage-policy hook against the supplied metrics.
     pub fn assert_compliance(&self, metrics: &RuntimeMetrics) -> Result<()> {
         self.compliance
             .assert_compliance(metrics)

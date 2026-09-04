@@ -90,7 +90,7 @@ Charge for the assurance and labor, not for a different database format.
 
 ## Pricing hypotheses
 
-Comparable products show several viable anchors as of 2026-09-03:
+Comparable products show several viable anchors as verified on 2026-09-04:
 
 - [Turso](https://turso.tech/pricing) ranges from a free plan through low-cost
   developer tiers to usage and enterprise plans, charging around storage, reads,

@@ -1,8 +1,8 @@
 # PicoVolt for Python
 
 Python bindings for the [PicoVolt](https://github.com/MiniJe/picovolt) embedded
-database engine, via its C ABI and `ctypes`. Pure Python: no compiler is needed
-on the Python side, only the prebuilt shared library.
+database engine, via its C ABI and `ctypes`. Released platform wheels bundle the
+native library, so installing from PyPI does not require a Rust or C compiler.
 
 Like the engine itself, this is for embedded use (single writer, SQL with MVCC
 time-travel, compile-to-`.pvdb`), not a drop-in for a concurrent server's
@@ -11,7 +11,8 @@ primary database.
 ## Install
 
 Platform wheels bundle the native library, so released builds install without a
-Rust compiler:
+Rust compiler. The compatibility floor is Python 3.9, but production deployments
+should use a Python release that still receives upstream security fixes:
 
 ```sh
 python -m pip install picovolt
@@ -73,5 +74,6 @@ Run the demo:
 python example.py
 ```
 
-Release wheels are built for Linux, macOS, and Windows by GitHub Actions. Source
-checkouts can instead use `PICOVOLT_LIB` to select a locally built library.
+Release wheels are built for Linux x86-64, macOS universal2, and Windows x86-64
+by GitHub Actions. Source checkouts and other architectures can instead use
+`PICOVOLT_LIB` to select a locally built library.

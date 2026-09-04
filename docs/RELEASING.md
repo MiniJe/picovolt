@@ -7,9 +7,11 @@ with patch releases as soon as a security or data-integrity fix is ready.
 
 1. Triage open regressions and update `CHANGELOG.md`.
 2. Run the complete Rust, WASM, Go, Python, npm, CLI, and benchmark smoke matrix.
-3. Confirm the package version is identical in Cargo, Python, and npm outputs.
+3. Confirm the package version is identical in Cargo, Python, npm, the Go module
+   tag, and native version output.
 4. Tag an annotated `vX.Y.Z` release.
-5. Verify crates.io, npm, PyPI, native binaries, SBOMs, and attestations.
+5. Verify crates.io, npm, PyPI, `proxy.golang.org`, native binaries, C ABI
+   bundles, SBOMs, checksums, and attestations.
 6. Run clean-install starter tests and record download totals after 24 hours.
 
 Release candidates may be published one week earlier for format or API changes.
@@ -20,7 +22,9 @@ Published `.pvdb` format compatibility is covered by the golden fixture suite.
 Every pull request checks that the Rust, Node, browser, Python, and Go starters
 pin the same version as `Cargo.toml` and contain no Cargo path dependency, npm
 `file:`/`link:` dependency, editable Python requirement, or Go `replace`
-directive:
+directive. The policy also requires registry-backed SHA-512 npm lock entries,
+Go module checksums, Cargo/Python/module version parity, and a byte-identical Go
+copy of the public C header:
 
 ```sh
 python scripts/check_registry_starters.py policy

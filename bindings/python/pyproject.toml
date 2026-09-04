@@ -1,18 +1,32 @@
 [build-system]
-requires = ["setuptools==80.9.0", "wheel==0.45.1"]
+requires = ["setuptools==80.10.2", "wheel==0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "picovolt"
 version = "1.7.0"
-description = "Python bindings (ctypes) for the PicoVolt embedded database engine"
+description = "Embedded SQL database with MVCC history and single-file deployment"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "Apache-2.0"
-keywords = ["database", "embedded", "storage-engine", "mvcc", "ffi"]
+keywords = ["database", "embedded", "sql", "storage-engine", "mvcc", "time-travel"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Database :: Database Engines/Servers",
+]
 
 [project.urls]
+Homepage = "https://github.com/MiniJe/picovolt"
 Repository = "https://github.com/MiniJe/picovolt"
+Documentation = "https://github.com/MiniJe/picovolt/tree/main/bindings/python"
+Changelog = "https://github.com/MiniJe/picovolt/blob/main/CHANGELOG.md"
+Issues = "https://github.com/MiniJe/picovolt/issues"
 
 [tool.setuptools]
 packages = ["picovolt"]

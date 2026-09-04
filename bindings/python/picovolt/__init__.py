@@ -1,7 +1,8 @@
 """Python bindings for the PicoVolt embedded database engine, via its C ABI.
 
-These use ``ctypes`` and load the prebuilt shared library, so there is no build
-step on the Python side. Build the library from the repository root first::
+These use ``ctypes`` and load the prebuilt shared library. Released platform
+wheels bundle that library. When working from a source checkout, build it from
+the repository root::
 
     cargo build --release --features capi
 
@@ -125,7 +126,7 @@ _lib.pv_close.argtypes = [c_void_p]
 
 
 def version() -> str:
-    """Return the PicoVolt library version, e.g. ``"1.7.0"``."""
+    """Return the semantic version of the loaded PicoVolt native library."""
     return _lib.pv_version().decode("utf-8")
 
 

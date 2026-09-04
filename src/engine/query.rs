@@ -284,7 +284,7 @@ pub enum ScalarExpr {
     },
 }
 
-/// Scalar functions intentionally supported by the 1.7 compatibility surface.
+/// Scalar functions intentionally supported by PicoVolt's focused SQL surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarFunc {
     /// Unicode lowercase text conversion.
@@ -315,7 +315,7 @@ pub enum AggFunc {
     /// Maximum value (any comparable type).
     Max,
     /// Average of numeric values, returned as an exact fixed-point
-    /// [`Value::Decimal`](crate::core::value::Value::Decimal).
+    /// [`Value::Decimal`].
     Avg,
 }
 

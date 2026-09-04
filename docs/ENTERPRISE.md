@@ -9,10 +9,10 @@ Enable it with:
 
 ```toml
 [dependencies]
-picovolt = { version = "1.7", features = ["enterprise"] }
+picovolt = { version = "1", features = ["enterprise"] }
 ```
 
-## What 1.6 provides
+## What the current feature provides
 
 - `EnterpriseConfig` assigns a host-controlled database identifier and
   environment label.
@@ -52,9 +52,9 @@ let status_json = serde_json::to_string(&db.enterprise_status())?;
 Creating a status record performs no I/O. The host may persist or transport
 `status_json`, but PicoVolt never sends it on its own.
 
-Delivery is synchronous and best-effort in 1.6. A deployment that needs
-acknowledged audit durability should make its sink append to a host-owned durable
-queue before returning.
+Delivery through the current sink API is synchronous and best-effort. A
+deployment that needs acknowledged audit durability should make its sink append
+to a host-owned durable queue before returning.
 
 ## Explicitly not implemented yet
 

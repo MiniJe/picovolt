@@ -1,7 +1,7 @@
 name: Release
 
-# Fires only on an annotated version tag (e.g. v0.1.0). A normal push to main
-# never publishes. The tag must match the version in Cargo.toml.
+# Fires only on an annotated semantic-version tag. A normal push to main never
+# publishes. The tag must match the version in Cargo.toml.
 on:
   push:
     tags:
@@ -23,18 +23,22 @@ jobs:
     name: verify
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: clippy, rustfmt
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
           tool: cargo-audit
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.9"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.x"
+          cache: false
 
       - name: Tag matches Cargo.toml version
         run: |
@@ -56,12 +60,26 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Test
         run: cargo test --all-targets --all-features
+      - name: Build native C ABI for Go
+        run: cargo build --features capi
+      - name: Test and vet the Go binding
+        working-directory: bindings/go
+        env:
+          CGO_LDFLAGS: -L${{ github.workspace }}/target/debug
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
+        run: |
+          go test ./...
+          go vet ./...
       - name: Extended crash/recovery soak
         env:
           PICOVOLT_CRASH_CYCLES: "1000"
         run: cargo test --test crash_recovery randomized_cross_process_crashes_are_atomic
       - name: Doc tests
         run: cargo test --doc
+      - name: API documentation
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --all-features --no-deps
       - name: Build wasm32
         run: cargo build --lib --target wasm32-unknown-unknown --release --features wasm
       - name: Audit
@@ -74,9 +92,8 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - name: cargo publish
         env:
           TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -99,8 +116,8 @@ jobs:
           # No --locked: Cargo.lock is intentionally not committed (library).
           cargo publish --token "$TOKEN"
 
-  # 3. Build the wasm package and publish to npm. Configure this workflow as the
-  # package's trusted publisher; NPM_TOKEN remains a temporary fallback.
+  # 3. Build the wasm package and publish to npm through the package's trusted
+  # publisher. OIDC avoids storing a long-lived npm credential in GitHub.
   publish-npm:
     name: publish (npm)
     needs: verify
@@ -109,31 +126,29 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
           tool: wasm-pack
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
       - name: Build npm package
         run: wasm-pack build --target bundler --release --out-dir pkg -- --features wasm
-      - name: Add the better-sqlite3-style adapter to the package
+      - name: Add the better-sqlite3-inspired adapter to the package
         run: |
           cp bindings/js/sqlite.js pkg/sqlite.js
           cp bindings/js/browser.js pkg/browser.js
           cp bindings/js/worker.js pkg/worker.js
-          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('pkg/package.json'));p.files=Array.from(new Set([...(p.files||[]),'sqlite.js','browser.js','worker.js']));p.exports={'.':'./'+(p.module||'picovolt.js'),'./sqlite':'./sqlite.js','./browser':'./browser.js','./worker':'./worker.js'};fs.writeFileSync('pkg/package.json',JSON.stringify(p,null,2));"
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('pkg/package.json'));p.files=Array.from(new Set([...(p.files||[]),'sqlite.js','browser.js','worker.js']));p.exports={'.':'./'+(p.module||'picovolt.js'),'./sqlite':'./sqlite.js','./browser':'./browser.js','./worker':'./worker.js'};p.repository={type:'git',url:'git+https://github.com/MiniJe/picovolt.git'};fs.writeFileSync('pkg/package.json',JSON.stringify(p,null,2));"
       - name: Publish to npm with provenance
         working-directory: pkg
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
@@ -156,14 +171,14 @@ jobs:
     needs: [publish-crate, publish-npm]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.9"
       - name: Copy, install, and run the published starters
@@ -244,10 +259,10 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
           tool: cargo-cyclonedx
       - name: Build CLI, server, and C ABI library
@@ -295,10 +310,10 @@ jobs:
           cargo cyclonedx --format json --override-filename "picovolt-${{ matrix.label }}.cdx"
           test -f "picovolt-${{ matrix.label }}.cdx.json"
           mv "picovolt-${{ matrix.label }}.cdx.json" dist/
-      - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/*
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: binaries-${{ matrix.label }}
           path: dist/*
@@ -312,8 +327,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: binaries-*
           path: dist

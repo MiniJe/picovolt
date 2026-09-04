@@ -61,8 +61,8 @@ CAS pool, and the manifest are arranged on disk.
 |   Page-data block |  page_count * PAGE_SIZE
 +-------------------+  offset = cas_offset
 |   CAS blob pool   |  cas_pool length
-+-------------------+  offset = cas_offset + cas_pool length   (v2 only)
-|   Index region    |  manifest.index_region length            (v2 only)
++-------------------+  offset = cas_offset + cas_pool length   (v2+ when present)
+|   Index region    |  manifest.index_region length            (v2+ when present)
 +-------------------+  offset = manifest_offset
 |   Manifest (JSON) |  to EOF
 +-------------------+
@@ -70,8 +70,9 @@ CAS pool, and the manifest are arranged on disk.
 
 `cas_offset` and `manifest_offset` are recorded in the file header, so
 `page_count = (cas_offset - FILE_HEADER_SIZE) / PAGE_SIZE`. The optional **index
-region** (version 2, §6.1) sits between the CAS pool and the manifest; its exact
-`(absolute offset, length)` is recorded in the manifest's `index_region` field, so
+region** (introduced in version 2, §6.1) sits between the CAS pool and the
+manifest; its exact `(absolute offset, length)` is recorded in the manifest's
+`index_region` field, so
 the CAS pool occupies `[cas_offset, index_region.offset)` and the region occupies
 `[index_region.offset, manifest_offset)`. A version-1 file has no region and the
 CAS pool runs straight up to `manifest_offset`. On open, all offsets are
@@ -196,7 +197,8 @@ Large record payloads are content-addressed: each distinct blob is hashed with
 the blobs are packed contiguously in the CAS pool (between `cas_offset` and
 `manifest_offset`); the manifest's `cas_dir` gives each blob's `(offset, len)`
 within the pool and `cas_hashes` gives its hex digest. On open, every blob extent
-is bounds-checked and (in dev mode) re-hashed against its recorded digest.
+is bounds-checked and its contents are re-hashed against the recorded digest in
+development, mapped-production, byte-import, and streamed modes.
 
 ## 6. Manifest (JSON)
 
@@ -231,7 +233,7 @@ is `pv_manifest.json`. Schema:
       "indexes": [              // dev workspaces / v1: JSON (key, addresses) pairs
         { "column": "city", "pairs": [ [<value>, [<addr>, ...]], ... ] }
       ],
-      "binary_indexes": [       // v2 monolith: descriptors into the index region
+      "binary_indexes": [       // v2+ monolith: descriptors into the index region
         { "column": "city", "offset": 0, "len": 1234 }
       ]
     }
@@ -253,7 +255,8 @@ an ordered map from a column value to the record addresses carrying it. It is
 persisted so that opening a database does not have to rebuild it by scanning every
 page. There are three forms, tried in this precedence on open:
 
-1. **Binary region** (version-2 monolith). The manifest's `binary_indexes`
+1. **Binary region** (version-2-or-newer monolith). The manifest's
+   `binary_indexes`
    descriptors each give a `column` and a `(offset, len)` slice — relative to the
    region start (`index_region[0]`) — holding that column's index blob. The blob:
 

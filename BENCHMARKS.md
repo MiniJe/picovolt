@@ -6,11 +6,11 @@ Produced by [`examples/bench.rs`](examples/bench.rs). Reproduce with:
 cargo run --release --example bench
 ```
 
-> Caveats: these are wall-clock numbers from a single Windows host (release
-> build). They are ballpark figures rather than laboratory-grade, so focus on
-> relative behavior. The persistence rows are sensitive to filesystem and
-> antivirus behavior. Cross-platform correctness is covered by CI on Linux and
-> Windows.
+> Caveats: these are wall-clock numbers from a single Windows host on 2026-09-04
+> (release build). They are ballpark figures rather than laboratory-grade, so
+> focus on relative behavior. The persistence rows are sensitive to filesystem
+> and antivirus behavior. Cross-platform correctness is covered by CI on Linux
+> and Windows.
 
 ## Three weaknesses, fixed
 
@@ -21,9 +21,9 @@ three.
 
 | Weakness | Before | After |
 |---|---|---|
-| Autocommit was O(n^2) | 59.8 s for 1k inserts (quadratic), about 107 rows/s | About 33,000 rows/s, linear (3.3x the time for 4x the rows) |
+| Autocommit was O(n^2) | 59.8 s for 1k inserts (quadratic), about 107 rows/s | About 33,000 rows/s in default `Fast` durability, linear (3.3x the time for 4x the rows) |
 | Whole dataset lived in RAM | every open loaded all rows | A 667-page (2.6 MiB) dataset served from a 16-page (64 KiB) buffer pool |
-| Every read was a full scan | `WHERE col = v` scanned all rows | A secondary index makes point lookups about 11,000 times faster |
+| Every read was a full scan | `WHERE col = v` scanned all rows | A secondary index made point lookups about 6,100 times faster in this run |
 
 Inserts append to a table's tail page and write only that page plus a small
 manifest. The page chain is a linked list in the page headers, so the manifest is
@@ -36,24 +36,24 @@ by `WHERE col = value` and range predicates such as `col > v`.
 
 | Scenario | Result |
 |---|---|
-| In-memory append (no flush) | about 1.9M rows/s |
-| Batched durable write (insert plus one flush) | about 1.4M rows/s (a 20k-row flush is about 2 ms) |
-| Autocommit (durable per insert) | about 33k rows/s, linear |
+| In-memory append (no flush) | about 1.5M rows/s |
+| Batched filesystem write (insert plus one `Fast`-mode flush) | about 1.3M rows/s (a 20k-row flush is about 3 ms) |
+| Filesystem autocommit (`Fast` durability) | about 33k rows/s, linear |
 | Full scan (in-memory) | about 3.5M rows/s |
-| Time-travel scan (`BEFORE tx`) | about 5.7M rows/s |
-| Indexed `WHERE col = value` | about 11,000 times faster than a scan |
-| Larger-than-RAM scan (16-page pool, 667-page dataset) | 50k rows in about 24 ms, at most 16 pages resident |
+| Time-travel scan (`BEFORE tx`) | about 6.0M rows/s |
+| Indexed `WHERE col = value` | about 6,100 times faster than a scan |
+| Larger-than-RAM scan (16-page pool, 667-page dataset) | 50k rows in about 26 ms, at most 16 pages resident |
 | CAS dedup (5k rows, 10 distinct bodies) | 12x smaller on disk |
 | Columnar transposition and compression | 10x smaller |
-| Bake (compile a 20k-row monolith) | about 15 ms |
-| Open production file (mmap and decode) | about 5 ms |
+| Bake (compile a 20k-row monolith) | about 12 ms |
+| Open production file (mmap and decode) | about 4 ms |
 
 ## Trade-offs and limits
 
 Becoming a real storage engine cost some peak in-memory speed, which is a fair
 trade:
 
-- **In-memory throughput dropped** (append from about 7.8M to 1.9M rows/s, scan
+- **In-memory throughput dropped** (append from about 7.8M to 1.5M rows/s, scan
   from about 5.7M to 3.5M rows/s): inserts now serialize into real pages and scans
   decode records from the buffer pool, rather than pushing to and cloning from an
   in-RAM `Vec`.
@@ -61,10 +61,13 @@ trade:
   power-loss crash can lose recent writes. `Durability::Sync` calls `fsync` on the
   data and commits the manifest atomically per flush (crash-safe, much slower). A
   full write-ahead log is future work.
-- **Indexes are ordered but in-memory,** rebuilt by a streaming scan on open. They
-  serve both point (`col = v`) and range (`col > v`) predicates. Persisting them
-  as on-disk B-trees is future work. The 11,000-times figure above is for the
-  point lookup; range scans were not separately benchmarked.
+- **Indexes use an ordered in-memory query structure.** Development workspaces
+  persist its key/address pairs in the manifest, and baked monoliths store a
+  compact binary index region, so current files reopen without a table scan.
+  Pre-1.2 files without either representation are rebuilt by streaming once.
+  The structure is still decoded into memory rather than queried as an on-disk
+  B-tree. The 6,100-times figure above is for a point lookup; range scans were
+  not separately benchmarked.
 - **`SELECT *` still materializes the full result set,** by definition. The
   larger-than-RAM benefit is that the engine stays bounded; filtered or indexed
   queries return small results without holding the dataset resident.
@@ -72,11 +75,11 @@ trade:
 
 ## Summary
 
-PicoVolt is a small but genuine page-backed engine: O(1) durable appends,
+PicoVolt is a small but genuine page-backed engine: O(1) filesystem appends,
 larger-than-RAM reads through a buffer pool, indexed lookups, MVCC time-travel,
 and a fast compile-and-publish path (CAS dedup, columnar compression, single-file
-mmap artifacts). Indexes are in-memory (rebuilt on open) and there is no
-concurrency. The benchmarks show where those lines are.
+mmap artifacts). Persisted indexes are decoded into an in-memory query structure,
+and the engine remains single-writer. The benchmarks show where those lines are.
 
 ## Try it
 

@@ -1,7 +1,7 @@
 # Contributing to PicoVolt
 
-PicoVolt is an experimental embedded database engine. Contributions, bug reports,
-and questions are all welcome.
+PicoVolt is a young embedded database engine with a stable 1.x API and file-format
+contract. Contributions, bug reports, and questions are all welcome.
 
 ## Development
 

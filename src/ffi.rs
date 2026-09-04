@@ -13,10 +13,10 @@
 //!
 //! ## Contract
 //!
-//! - A [`PvDb`] handle is created by `pv_open_*` and must be released with
-//!   `pv_close`. A [`PvStmt`] comes from `pv_prepare` and must be released with
-//!   `pv_stmt_close`. Handles are **not** thread-safe: do not use one handle
-//!   from multiple threads without external synchronization.
+//! - A [`crate::ffi::PvDb`] handle is created by `pv_open_*` and must be released
+//!   with `pv_close`. A [`crate::ffi::PvStmt`] comes from `pv_prepare` and must be
+//!   released with `pv_stmt_close`. Handles are **not** thread-safe: do not use
+//!   one handle from multiple threads without external synchronization.
 //! - `pv_query` returns a newly allocated, NUL-terminated JSON string the caller
 //!   frees with `pv_string_free`; `pv_export` returns a byte buffer freed with
 //!   `pv_bytes_free`. Mixing up the free functions is undefined behavior.
@@ -100,8 +100,8 @@ fn string_to_c(s: String) -> *mut c_char {
     }
 }
 
-/// The PicoVolt library version, e.g. `"1.7.0"`, as a static NUL-terminated
-/// string. Never NULL; do not free.
+/// The PicoVolt semantic version as a static NUL-terminated string. Never NULL;
+/// do not free.
 #[no_mangle]
 pub extern "C" fn pv_version() -> *const c_char {
     concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const c_char

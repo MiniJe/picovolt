@@ -2,10 +2,11 @@
 
 ## Status
 
-PicoVolt is experimental software. The untrusted-input parsing paths have been
-hardened, reviewed, and fuzzed (see below), but the fuzzing has not run for long
-soak times and the code has not been independently audited or certified. Do not
-store data you cannot lose.
+PicoVolt is young software with a stable 1.x API and file-format contract. The
+untrusted-input parsing paths have been hardened, reviewed, and fuzzed (see
+below), but the fuzzing has not run for long soak times and the code has not been
+independently audited or certified. Keep tested backups for data you cannot
+regenerate.
 
 ## Hardening done
 
@@ -22,6 +23,21 @@ regression test:
   `next_page` link returns an error instead of looping forever.
 - **Page slot and record reads are bounds-checked,** so a crafted page returns an
   error rather than reading out of bounds.
+- **Header, manifest, and feature versions must agree exactly.** An image is
+  rejected if either version understates its index or schema metadata, or if its
+  table identities, head/tail page ids, schema references, row arity, or record
+  constraints are inconsistent.
+- **SQL and persisted predicate trees have explicit complexity limits.** Parser
+  depth, node counts, statement boundaries, defaults, and `CHECK` expressions
+  are validated before execution so hostile input cannot grow the process stack
+  or smuggle an unparsed suffix into a supported statement.
+- **Query budgets cover internal work as well as returned rows.** Uniqueness
+  scans, existing-row checks, and equality-index candidate sets are charged
+  before large allocations; bounded range predicates use a streaming path.
+- **Compound mutations are statement-atomic.** Multi-row inserts, deletes, and
+  updates validate record shape and constraints before mutation, then roll back
+  on a mutation-phase I/O failure. Without savepoints, that kind of failure
+  aborts an enclosing explicit transaction rather than leaving it committable.
 - **The `pv-wasm` decoder caps** declared memory pages and all LEB128 vector
   counts, preventing out-of-memory from a crafted module.
 - **Both WASM runtimes meter instructions** and cap guest memory and returned
@@ -66,9 +82,9 @@ not for long soak times.
 For anything sensitive, report privately before public disclosure. Please do not
 open a public issue for an exploitable bug. Use GitHub's
 [private vulnerability reporting](https://github.com/MiniJe/picovolt/security/advisories/new)
-(the repository's Security tab, "Report a vulnerability"), or email
-`security@picovolt.dev`.
+(the repository's Security tab, "Report a vulnerability"). This is the project's
+only documented private security-reporting channel.
 
 For non-sensitive hardening suggestions, a regular GitHub issue is fine. As this
-is an experimental project there is no formal response-time commitment, but
+is a small independent project there is no formal response-time commitment, but
 reports are appreciated and addressed on a best-effort basis.

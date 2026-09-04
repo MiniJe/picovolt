@@ -272,7 +272,7 @@ impl ColumnarPage {
         Ok(out)
     }
 
-    /// Inverse of [`from_rows`]: recover the header and row set.
+    /// Inverse of [`Self::from_rows`]: recover the header and row set.
     pub fn to_rows(bytes: &[u8]) -> Result<(ColumnarPageHeader, Vec<Row>)> {
         let header = ColumnarPageHeader::decode(bytes)?;
         let mut pos = PAGE_HEADER_SIZE;

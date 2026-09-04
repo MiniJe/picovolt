@@ -95,9 +95,9 @@ pub(crate) struct PendingAuditEvent {
 
 /// Destination implemented by the embedding application.
 ///
-/// Delivery is synchronous and best-effort in 1.6. A sink must not panic. A
-/// compliance archive that requires acknowledged, durable delivery should record
-/// these events into its own write-ahead queue.
+/// Delivery is synchronous and best-effort. A sink must not panic. An audit
+/// archive that requires acknowledged, durable delivery should record these
+/// events into its own write-ahead queue.
 pub trait AuditSink: Send + Sync {
     /// Observe one event.
     fn record(&self, event: &AuditEvent);

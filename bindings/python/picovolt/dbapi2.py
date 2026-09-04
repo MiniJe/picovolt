@@ -1,7 +1,7 @@
 """A PEP 249 (DB-API 2.0) interface over PicoVolt.
 
-Code written against the standard database API (as for ``sqlite3``) can use
-PicoVolt with minimal change::
+The adapter follows the standard database API shape (as used by ``sqlite3``)
+while retaining PicoVolt's focused SQL surface::
 
     import picovolt.dbapi2 as sqlite
 

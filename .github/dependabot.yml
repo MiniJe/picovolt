@@ -15,6 +15,27 @@ updates:
       interval: weekly
     open-pull-requests-limit: 3
 
+  - package-ecosystem: npm
+    directory: "/starters/browser"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    ignore:
+      # This exact version is advanced with the rest of the release manifests.
+      - dependency-name: picovolt
+    groups:
+      browser-tooling:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: "/bindings/python"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      python-build-tooling:
+        patterns: ["*"]
+
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

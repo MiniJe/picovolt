@@ -37,7 +37,7 @@ impl RuntimeMetrics {
 /// The configurable thresholds and the audit entry point.
 #[derive(Debug, Clone, Copy)]
 pub struct ComplianceMonitor {
-    /// MAU above which a commercial license is required.
+    /// MAU above which the host's policy requires an authorizing key.
     pub mau_threshold: u64,
     /// Monthly USD revenue above which the policy trips.
     pub revenue_threshold_usd: f64,

@@ -133,7 +133,7 @@ impl SecondaryIndex {
         out
     }
 
-    /// Reconstruct an index from the bytes written by [`encode_binary`]. The
+    /// Reconstruct an index from the bytes written by [`Self::encode_binary`]. The
     /// input is untrusted (it comes straight off disk / the network), so every
     /// length and extent is bounds-checked and a malformed blob yields an error,
     /// never a panic.

@@ -1,8 +1,8 @@
 //! `pvnote`, a tiny notes store built on PicoVolt.
 //!
-//! Demonstrates idiomatic usage end to end: schema + inserts, CAS dedup of long
-//! bodies, MVCC edit history with time-travel, and "publishing" (baking) to a
-//! single read-only file that is reopened via mmap.
+//! Demonstrates idiomatic usage end to end: constraints, prepared writes, SQL
+//! filtering, CAS dedup of long bodies, MVCC edit history with time-travel, and
+//! "publishing" (baking) to a single read-only file that is reopened via mmap.
 //!
 //! Run with: `cargo run --release --example notes`
 
@@ -18,33 +18,62 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // 1. Open (create) a development workspace and define a schema.
     let mut db = Database::open_dev(&workspace)?;
-    db.query("CREATE TABLE notes (id, title, body, tag)")?;
+    db.query(
+        "CREATE TABLE notes (\
+         id INTEGER PRIMARY KEY, \
+         title TEXT NOT NULL, \
+         body TEXT NOT NULL, \
+         tag TEXT DEFAULT 'info' CHECK (tag IN ('info', 'todo', 'legal')))",
+    )?;
     println!("created workspace at {}", workspace.display());
 
     // 2. Add notes. Bodies longer than 16 bytes are auto-interned into CAS, so
     //    the two identical "Terms" bodies are stored exactly once.
     let terms = "By using pvnote you agree to nothing in particular. ".repeat(3);
-    add_note(&mut db, 1, "Welcome", "Thanks for trying PicoVolt!", "info")?;
-    add_note(&mut db, 2, "Shopping", "eggs, milk, coffee", "todo")?;
-    add_note(&mut db, 3, "Terms", &terms, "legal")?;
-    add_note(&mut db, 4, "Terms (copy)", &terms, "legal")?;
+    let insert = db.prepare("INSERT INTO notes VALUES (?, ?, ?, ?)")?;
+    insert.execute(
+        &mut db,
+        &[
+            Value::Int(1),
+            Value::from("Welcome"),
+            Value::from("Thanks for trying PicoVolt!"),
+            Value::from("info"),
+        ],
+    )?;
+    for (id, title, body, tag) in [
+        (2, "Shopping", "eggs, milk, coffee", "todo"),
+        (3, "Terms", terms.as_str(), "legal"),
+        (4, "Terms (copy)", terms.as_str(), "legal"),
+    ] {
+        insert.execute(
+            &mut db,
+            &[
+                Value::Int(id),
+                Value::from(title),
+                Value::from(body),
+                Value::from(tag),
+            ],
+        )?;
+    }
     println!("added 4 notes (notes 3 & 4 share a body -> stored once via CAS)\n");
 
-    // 3. List notes for a tag (filtering happens in app code over a scan).
-    list_tag(&db, "legal")?;
+    // 3. List notes for a tag with a bound SQL value.
+    list_tag(&mut db, "legal")?;
 
-    // 4. Edit note 2. Updates are append-only: tombstone the old version under a
-    //    new transaction, then insert the new one.
+    // 4. Edit note 2. The engine preserves its previous MVCC row version.
     let before_edit = db.current_tx();
-    db.delete("notes", "id", &Value::Int(2))?;
-    add_note(&mut db, 2, "Shopping", "eggs, milk, coffee, bread", "todo")?;
+    let update = db.prepare("UPDATE notes SET body = ? WHERE id = ?")?;
+    update.execute(
+        &mut db,
+        &[Value::from("eggs, milk, coffee, bread"), Value::Int(2)],
+    )?;
     println!("edited note 2 (snapshot before edit = tx {before_edit})\n");
 
     // 5. Time-travel: compare the note now vs. before the edit.
-    println!("note 2 body now:    {}", body_of(&db, 2, None)?);
+    println!("note 2 body now:    {}", body_of(&mut db, 2, None)?);
     println!(
         "note 2 body before: {}",
-        body_of(&db, 2, Some(before_edit))?
+        body_of(&mut db, 2, Some(before_edit))?
     );
     println!();
 
@@ -65,41 +94,30 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn add_note(
-    db: &mut Database,
-    id: i64,
-    title: &str,
-    body: &str,
-    tag: &str,
-) -> Result<(), Box<dyn Error>> {
-    db.insert(
-        "notes",
-        vec![
-            Value::Int(id),
-            Value::from(title),
-            Value::from(body),
-            Value::from(tag),
-        ],
+fn list_tag(db: &mut Database, tag: &str) -> Result<(), Box<dyn Error>> {
+    let result = db.query_with(
+        "SELECT id, title FROM notes WHERE tag = ? ORDER BY id",
+        &[Value::from(tag)],
     )?;
-    Ok(())
-}
-
-fn list_tag(db: &Database, tag: &str) -> Result<(), Box<dyn Error>> {
-    let (_cols, rows) = db.select("notes", None)?;
+    let rows = result.rows().unwrap_or_default();
     println!("notes tagged '{tag}':");
-    for row in rows.iter().filter(|r| r[3] == Value::from(tag)) {
+    for row in rows {
         println!("  #{} {}", row[0], row[1]);
     }
     println!();
     Ok(())
 }
 
-fn body_of(db: &Database, id: i64, before: Option<u64>) -> Result<String, Box<dyn Error>> {
-    let (_cols, rows) = db.select("notes", before)?;
+fn body_of(db: &mut Database, id: i64, before: Option<u64>) -> Result<String, Box<dyn Error>> {
+    let sql = match before {
+        Some(tx) => format!("SELECT body FROM notes WHERE id = ? BEFORE {tx}"),
+        None => "SELECT body FROM notes WHERE id = ?".to_string(),
+    };
+    let result = db.query_with(&sql, &[Value::Int(id)])?;
+    let rows = result.rows().unwrap_or_default();
     Ok(rows
-        .iter()
-        .find(|r| r[0] == Value::Int(id))
-        .map(|r| r[2].to_string())
+        .first()
+        .map(|r| r[0].to_string())
         .unwrap_or_else(|| "<absent>".to_string()))
 }
 

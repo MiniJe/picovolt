@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the report. PicoVolt is experimental, and concrete reproductions help a lot.
+        Thanks for the report. PicoVolt is young software, and concrete reproductions help a lot.
   - type: textarea
     id: what-happened
     attributes:
@@ -40,14 +40,14 @@ body:
     attributes:
       label: PicoVolt version
       description: Crate version, npm version, or git commit.
-      placeholder: "0.1.0"
+      placeholder: "Release version or git commit SHA"
     validations:
       required: true
   - type: input
     id: platform
     attributes:
       label: Platform
-      placeholder: "Windows 11 / Rust 1.79 (or browser/Node version for wasm)"
+      placeholder: "Windows 11 / rustc --version output (or browser/Node version)"
     validations:
       required: true
   - type: textarea

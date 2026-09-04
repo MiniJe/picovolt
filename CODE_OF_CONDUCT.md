@@ -22,7 +22,8 @@ project in public spaces.
 Maintainers are responsible for clarifying and enforcing these standards and may
 remove, edit, or reject contributions or comments that do not align with them.
 
-Report unacceptable behavior privately to the maintainers at
-`conduct@picovolt.dev`. Reports are handled confidentially. The full text of the
-Contributor Covenant, including the enforcement guidelines maintainers follow,
-is linked above.
+Report unacceptable behavior privately through the repository's
+[private reporting form](https://github.com/MiniJe/picovolt/security/advisories/new)
+and prefix the summary with `[Conduct]`. Do not include sensitive personal
+information in a public issue. The full text of the Contributor Covenant,
+including the enforcement guidelines maintainers follow, is linked above.

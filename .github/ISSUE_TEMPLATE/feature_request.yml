@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Lead with the **problem**, not just the feature. Concrete use cases are
-        what move items up the [roadmap](../blob/main/ROADMAP.md).
+        what move items up the [roadmap](https://github.com/MiniJe/picovolt/blob/main/ROADMAP.md).
   - type: textarea
     id: problem
     attributes:

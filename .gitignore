@@ -9,6 +9,7 @@ Cargo.lock
 
 # PicoVolt runtime artifacts
 .pv/
+*.pv/
 *.pvdb
 # ...except the committed golden fixtures, which are the format-stability corpus.
 !tests/fixtures/*.pvdb

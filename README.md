@@ -1,15 +1,15 @@
 # PicoVolt (PVDB)
 
 [![CI](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml/badge.svg)](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.7.0-blue.svg)](CHANGELOG.md)
+[![crates.io](https://img.shields.io/crates/v/picovolt.svg)](https://crates.io/crates/picovolt)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-![Status: 1.0 stable](https://img.shields.io/badge/status-1.0%20stable-brightgreen.svg)
+![Status: stable 1.x](https://img.shields.io/badge/status-stable%201.x-brightgreen.svg)
 [![GitHub stars](https://img.shields.io/github/stars/MiniJe/picovolt?style=social)](https://github.com/MiniJe/picovolt)
 
-PicoVolt is an embedded database engine written from scratch in Rust. As of 1.0
-its public API and on-disk format are stable under Semantic Versioning. It is
-young software and has not had an external security audit, so review it and keep
-backups before trusting it with data you cannot regenerate.
+PicoVolt is an embedded database engine written in Rust. Its 1.x public API and
+on-disk format are stable under Semantic Versioning. It is young software and
+has not had an external security audit, so review it and keep backups before
+trusting it with data you cannot regenerate.
 
 If PicoVolt is useful to you, consider starring the repository on GitHub. It is
 the simplest way to help others discover the project.
@@ -18,26 +18,20 @@ The engine decouples query logic from storage representation through a
 Virtualization Layer Engine (VLE) that shifts between two on-disk shapes:
 
 - **Development mode:** a `.pv/` workspace of mutable, append-only chunk files
-  plus a content-addressed blob store, friendly to git and code review.
+  plus a content-addressed blob store and inspectable manifest.
 - **Production mode:** a single contiguous, memory-mappable `.pvdb` file produced
   by `pv_bake()`.
 
-Pages are chameleon. Hot data lands in a slotted row layout for O(1) appends, and
-idle pages can be transposed into a packed columnar layout for compression and
-cache efficiency.
+New records use a slotted row layout for O(1) appends. Idle pages can be
+transposed into a packed columnar layout for compression and cache efficiency.
 
 ## Status
 
-The engine is built out across four phases, all implemented, with over 180 unit and
-integration tests plus doctests passing and a clean `cargo clippy -D warnings` on
-Linux and Windows. Changes are tracked in [CHANGELOG.md](CHANGELOG.md).
-
-| Phase | Scope | Status |
-|-------|-------|--------|
-| 1 | Core memory layouts and error taxonomy | Done |
-| 2 | Page engine, CAS dedup, compression, VLE router | Done |
-| 3 | MVCC and snapshot isolation, WASM runtime | Done |
-| 4 | Public surface (`pv_open_dev` / `pv_open_prod` / `query` / `pv_bake`) | Done |
+The current stable release is exercised by a 240+ test Rust suite plus doctests
+and maintained-binding integration tests. CI also enforces formatting and
+warning-free Clippy builds on Linux and Windows. Shipped changes are tracked in
+[CHANGELOG.md](CHANGELOG.md), and the remaining work toward 2.0 is tracked in
+[ROADMAP.md](ROADMAP.md).
 
 ### Module map
 
@@ -50,7 +44,7 @@ Linux and Windows. Changes are tracked in [CHANGELOG.md](CHANGELOG.md).
 | [`storage/cache.rs`](src/storage/cache.rs) | bounded LRU buffer pool (enables larger-than-RAM reads) |
 | [`storage/cas.rs`](src/storage/cas.rs) | BLAKE3 content-addressable dedup (memory, dev-files, mmap) |
 | [`storage/compress.rs`](src/storage/compress.rs) | Delta-Z, LEB128 varints, dictionary bit-packing |
-| [`storage/index.rs`](src/storage/index.rs) | in-memory ordered secondary index (value to record addresses; point and range) |
+| [`storage/index.rs`](src/storage/index.rs) | ordered secondary-index query structure and its persisted value/address encoding (point and range) |
 | [`storage/record.rs`](src/storage/record.rs) | row and record-body serialization with CAS interception |
 | [`storage/vle.rs`](src/storage/vle.rs) | dev directory store, owned prod snapshot, streamed reads, `bake` |
 | [`engine/mvcc.rs`](src/engine/mvcc.rs) | transaction clock and snapshot visibility |
@@ -123,12 +117,13 @@ Rust, Python, Go, Node, and browser projects are in [`starters/`](starters/READM
 are catalogued in [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
 
 SQL supports the normal PicoVolt CRUD and schema statements plus projection,
-filters, aggregates, grouping, time travel, ordering, and pagination. The 1.7
-query surface adds `AS`/bare table aliases, N-table equality `INNER`/`LEFT`
-joins, searched `CASE WHEN`, and the focused `LOWER`, `UPPER`, `TRIM`, `LENGTH`,
-`ABS`, `COALESCE`, and `NULLIF` scalar functions. Schema-light types, literal
-defaults, named inserts, and persisted `CHECK` constraints cover common adapter
-DDL. See the precise syntax, examples, type behavior, and deliberate limits in
+filters, aggregates, grouping, time travel, ordering, and pagination. The
+current query surface includes `AS`/bare table aliases, N-table equality
+`INNER`/`LEFT` joins, searched `CASE WHEN`, and the focused `LOWER`, `UPPER`,
+`TRIM`, `LENGTH`, `ABS`, `COALESCE`, and `NULLIF` scalar functions. Schema-light
+types, literal defaults, named inserts, and persisted `CHECK` constraints cover
+common adapter DDL. See the precise syntax, examples, type behavior, and
+deliberate limits in
 [`docs/SQL.md`](docs/SQL.md). Rust callers can cache `Database::prepare(...)`
 templates; C, WebAssembly, JavaScript, Python, and Go expose the same reusable
 prepared-statement lifecycle. Callers can use explicit transactions or atomic
@@ -138,10 +133,10 @@ Durability is selectable via `Database::set_durability` (`Fast` OS-cache default
 or crash-safe `Sync` with fsync and an atomic manifest).
 
 Measured results and the methodology are in [BENCHMARKS.md](BENCHMARKS.md). In
-short, PicoVolt is a page-backed engine with O(1) durable appends (autocommit
+short, PicoVolt is a page-backed engine with O(1) filesystem appends (autocommit
 around 33k rows/s, linear), larger-than-RAM reads through a bounded buffer pool (a
 667-page dataset serves from a 16-page pool), ordered secondary indexes (point
-lookups roughly 11,000 times faster than a scan, plus range predicates), MVCC
+lookups roughly 6,100 times faster than a scan, plus range predicates), MVCC
 time-travel, opt-in crash-safe durability (`Durability::Sync`), and a fast
 compile-and-publish path (CAS dedup, columnar compression, memory-mappable
 single-file artifacts). Current limits include full-workspace transaction
@@ -155,7 +150,8 @@ general SQL planner, and no concurrent writers.
 | **Rust** (crates.io) | `cargo add picovolt` |
 | **JavaScript / npm** (WebAssembly, browser and Node) | `npm install picovolt` |
 | **Python** (native wheels) | `python -m pip install picovolt` |
-| **C / Go** (native, via the C ABI) | `cargo build --release --features capi`, then see [`bindings/`](bindings) |
+| **Go** (`database/sql` and direct API) | `go get github.com/MiniJe/picovolt/bindings/go@latest`, then provide the matching native C ABI library described in [`bindings/go/`](bindings/go) |
+| **C** | Download the matching `picovolt-capi-*` bundle from the [latest release](https://github.com/MiniJe/picovolt/releases/latest), or run `cargo build --release --features capi` |
 | **In-memory** (native, no filesystem) | `Database::open_memory()`, export with `bake_to_bytes()` |
 
 PicoVolt runs in the browser through its in-memory backend plus an OPFS persistence
@@ -172,13 +168,14 @@ binding. The bindings suit embedded use, not a concurrent server's primary store
 
 All bindings accept positional `?` parameters
 (`db.query("... WHERE id = ?", [1])`), bound as safely-escaped SQL literals. For
-a familiar surface, drop-in adapters are provided: a `better-sqlite3`-style
-JavaScript API (`import Database from "picovolt/sqlite"`), a Python DB-API 2.0
-module (`import picovolt.dbapi2 as sqlite`), and the Go `database/sql` driver
-([`bindings/go/pvsql`](bindings/go/pvsql)). Shared limits include positional `?`
-only and the intentionally compact SQL grammar; JavaScript and in-memory Rust
-also expose rollback-capable transaction wrappers. Native bindings expose the
-same transaction lifecycle through the C ABI.
+a familiar surface, PicoVolt provides a `better-sqlite3`-inspired JavaScript API
+(`import Database from "picovolt/sqlite"`), a Python DB-API 2.0 module
+(`import picovolt.dbapi2 as sqlite`), and a Go `database/sql` driver
+([`bindings/go/pvsql`](bindings/go/pvsql)). These are interface adapters, not
+drop-in compatibility layers: shared limits include positional `?` only and the
+intentionally compact SQL grammar. JavaScript and in-memory Rust also expose
+rollback-capable transaction wrappers. Native bindings expose the same
+transaction lifecycle through the C ABI.
 
 ## Server mode
 

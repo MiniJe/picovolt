@@ -1,5 +1,6 @@
-// A better-sqlite3-style synchronous API over PicoVolt's WebAssembly engine, so
-// code written for better-sqlite3 can use PicoVolt with minimal change:
+// A better-sqlite3-inspired synchronous API over PicoVolt's WebAssembly engine.
+// It follows the familiar prepare/run/get/all shape while retaining PicoVolt's
+// focused SQL surface:
 //
 //   import Database from "picovolt/sqlite";
 //   const db = new Database();

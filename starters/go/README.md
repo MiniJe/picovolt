@@ -14,3 +14,7 @@ python scripts/check_registry_starters.py run --starter go
 
 Applications may instead ship the native library beside their executable or
 install it in a platform library directory.
+
+Run the starter with `go run .`. It is safe to run repeatedly: each execution
+adds one row to `starter.pv` through a native prepared statement, then reads the
+latest visits through Go's standard `database/sql` API.

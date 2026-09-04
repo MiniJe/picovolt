@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import shutil
@@ -24,6 +25,22 @@ class StarterPolicyTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="picovolt-starter-policy-")
         self.root = Path(self.temp.name)
         shutil.copy2(ROOT / "Cargo.toml", self.root / "Cargo.toml")
+        (self.root / "bindings/python/picovolt").mkdir(parents=True)
+        shutil.copy2(
+            ROOT / "bindings/python/pyproject.toml",
+            self.root / "bindings/python/pyproject.toml",
+        )
+        shutil.copy2(
+            ROOT / "bindings/python/picovolt/__init__.py",
+            self.root / "bindings/python/picovolt/__init__.py",
+        )
+        (self.root / "include").mkdir()
+        shutil.copy2(ROOT / "include/picovolt.h", self.root / "include/picovolt.h")
+        (self.root / "bindings/go/include").mkdir(parents=True)
+        shutil.copy2(
+            ROOT / "bindings/go/include/picovolt.h",
+            self.root / "bindings/go/include/picovolt.h",
+        )
         shutil.copytree(
             ROOT / "starters",
             self.root / "starters",
@@ -62,9 +79,9 @@ class StarterPolicyTests(unittest.TestCase):
 
     def test_npm_file_dev_dependency_is_rejected(self):
         manifest = self.root / "starters/browser/package.json"
-        manifest.write_text(
-            manifest.read_text().replace('"vite": "^7.3.6"', '"vite": "file:../../vite"')
-        )
+        package = json.loads(manifest.read_text())
+        package["devDependencies"]["vite"] = "file:../../vite"
+        manifest.write_text(json.dumps(package))
         self.assert_rejected("browser")
 
     def test_npm_non_registry_lock_resolution_is_rejected(self):
@@ -75,6 +92,13 @@ class StarterPolicyTests(unittest.TestCase):
             )
         )
         self.assert_rejected("lockfile")
+
+    def test_npm_lock_entry_without_integrity_is_rejected(self):
+        lockfile = self.root / "starters/node/package-lock.json"
+        lock = json.loads(lockfile.read_text())
+        del lock["packages"]["node_modules/picovolt"]["integrity"]
+        lockfile.write_text(json.dumps(lock))
+        self.assert_rejected("integrity")
 
     def test_python_editable_dependency_is_rejected(self):
         requirements = self.root / "starters/python/requirements.txt"
@@ -87,9 +111,46 @@ class StarterPolicyTests(unittest.TestCase):
             handle.write("\nreplace github.com/MiniJe/picovolt/bindings/go => ../../bindings/go\n")
         self.assert_rejected("go")
 
+    def test_go_sum_is_required(self):
+        (self.root / "starters/go/go.sum").unlink()
+        self.assert_rejected("go.sum is required")
+
+    def test_go_sum_must_pin_the_release(self):
+        go_sum = self.root / "starters/go/go.sum"
+        version = project_version(self.root)
+        go_sum.write_text(
+            go_sum.read_text().replace(f" v{version} ", " v9.9.9 ")
+        )
+        self.assert_rejected("no checksum")
+
     def test_version_mismatch_is_rejected(self):
         with self.assertRaises(PolicyError):
             check_policy(self.root, "9.9.9")
+
+    def test_python_distribution_version_mismatch_is_rejected(self):
+        pyproject = self.root / "bindings/python/pyproject.toml"
+        version = project_version(self.root)
+        pyproject.write_text(
+            pyproject.read_text().replace(
+                f'version = "{version}"', 'version = "9.9.9"'
+            )
+        )
+        self.assert_rejected("distribution version")
+
+    def test_python_module_version_mismatch_is_rejected(self):
+        module = self.root / "bindings/python/picovolt/__init__.py"
+        version = project_version(self.root)
+        module.write_text(
+            module.read_text().replace(
+                f'__version__ = "{version}"', '__version__ = "9.9.9"'
+            )
+        )
+        self.assert_rejected("module version")
+
+    def test_go_c_header_mismatch_is_rejected(self):
+        header = self.root / "bindings/go/include/picovolt.h"
+        header.write_bytes(header.read_bytes() + b"\n/* stale copy */\n")
+        self.assert_rejected("copied C header")
 
     def test_registry_environment_drops_manager_overrides_and_credentials(self):
         poisoned = {

@@ -7,18 +7,20 @@ or manufacture traffic.
 
 ## Baseline and definition
 
-Snapshot taken 2026-09-03 from the public registry APIs:
+Snapshot taken 2026-09-04 from the public registry APIs:
 
 | Channel | Lifetime downloads | State |
 |---|---:|---|
-| npm `picovolt` | 2,563 | Published at 1.5.0 |
-| crates.io `picovolt` | 279 | Published at 1.5.0 |
-| PyPI `picovolt` | Not publicly reported | Published at 1.5.0 |
-| **Known registry total** | **At least 2,842** | PyPI and GitHub release assets excluded |
+| npm `picovolt` | 2,563 | Current release: 1.7.0 |
+| crates.io `picovolt` | 315 | Current release: 1.7.0 |
+| PyPI `picovolt` | Not publicly reported | Current release: 1.7.0 |
+| **Known registry total** | **At least 2,878** | PyPI and GitHub release assets excluded |
 
-Sources: [npm download API](https://api.npmjs.org/downloads/point/2026-06-22:2026-09-03/picovolt),
+Sources: [npm download API](https://api.npmjs.org/downloads/point/2026-06-22:2026-09-04/picovolt),
 [crates.io API](https://crates.io/api/v1/crates/picovolt), and
-[GitHub repository API](https://api.github.com/repos/MiniJe/picovolt).
+[GitHub release API](https://api.github.com/repos/MiniJe/picovolt/releases/tags/v1.7.0).
+The v1.7.0 GitHub Release contained 13 downloadable assets and recorded zero
+asset downloads at this snapshot; release-asset counts remain a separate series.
 
 Count registry package downloads and GitHub binary-asset downloads separately,
 then publish both the per-channel values and their sum. Do not count website
@@ -27,7 +29,7 @@ numbers include bots and CI, so dependents and successful onboarding are the
 health metrics that stop the headline number becoming vanity.
 
 At the current confirmed baseline, the remaining measured gap is no more than
-997,158 downloads because PyPI installs are not represented in the total. A
+997,122 downloads because PyPI installs are not represented in the total. A
 two-year path needs roughly 41,550 measured downloads per month on average; a
 three-year path needs roughly 27,700. Because growth starts much lower, the
 end-of-period run rate must be higher than either average.
@@ -45,38 +47,37 @@ downloading the dataset, and installing the same engine in their own language.
 
 ## Priority order
 
-### P0 — Make every promised install work
+### P0 — Make every promised install work (complete for 1.7)
 
 These are release blockers, not optional marketing work.
 
-1. Publish the already-built Python wheels to PyPI using the trusted-publisher
-   workflow. Build portable manylinux and musllinux wheels plus macOS and Windows
-   x86-64/arm64 variants. Keep one PicoVolt version across Cargo, npm, Python, and
-   Git tags.
-2. Attach checksummed `pv` and `picovolt-server` binaries to every GitHub release
-   for Linux, macOS, and Windows. Add signed build provenance and an SBOM.
-3. Turn the REPL example into an installed `pv` CLI with `query`, `inspect`,
-   `import`, `export`, `bake`, and `serve` commands. A useful CLI creates direct
-   downloads and makes every tutorial copy-pasteable.
-4. Add release smoke tests that install from the public registries into clean
-   environments. A workflow that silently skipped a registry must fail visibly.
-5. Publish a support matrix for OS, CPU, runtime, and file-format compatibility.
+Delivered in 1.7.0:
 
-Current status (2026-09-04): version 1.7.0 is the current registry release.
-The trusted-publishing identities are configured, the native SBOM filename issue
-is fixed, and clean-room Cargo, npm, PyPI, and native CLI smoke checks are part of
-the release workflows. The support matrix lives in [`SUPPORT.md`](SUPPORT.md).
+1. One version is published through crates.io, npm, PyPI, the Go module tag, and
+   GitHub Releases; npm and PyPI use trusted publishers.
+2. GitHub Releases contain checksummed `pv` and `picovolt-server` binaries plus C
+   ABI bundles, SBOMs, and build provenance for Linux, macOS, and Windows.
+3. The installed `pv` CLI provides `query`, `inspect`, `history`, `import`,
+   `export`, and `bake`; server mode remains the separate
+   `picovolt-server` executable.
+4. Clean-room release gates install the exact Cargo, npm, PyPI, and Go versions
+   from public registries and fail when a package or matching native library is
+   absent.
+5. [`SUPPORT.md`](SUPPORT.md) records the tested runtime, platform, browser, and
+   file-format combinations.
 
-Exit criterion: one version tag produces installable Cargo, npm, PyPI, and GitHub
-artifacts, and clean-room smoke tests execute a first query through each.
+Exit criterion: **met by v1.7.0**. One version tag produced installable Cargo,
+npm, PyPI, Go, C ABI, and GitHub artifacts, and clean-room smoke tests executed a
+first query through every maintained package surface.
 
 ### P1 — Cut time-to-first-value below five minutes
 
-1. Add import/export commands for CSV, newline-delimited JSON, SQLite dumps, and
-   Parquet. Data movement unlocks real trials faster than more SQL syntax alone.
-2. Ship four maintained starter projects: browser + Vite, Node, Python notebook,
-   and Rust CLI. Each should fetch a real `.pvdb`, execute a query, and demonstrate
-   `BEFORE tx` time travel.
+1. CSV and newline-delimited JSON import/export plus SQLite SQL-dump import are
+   shipped. Parquet and direct binary SQLite movement remain 1.8 work because
+   data movement unlocks real trials faster than more SQL syntax alone.
+2. Five maintained starter projects—browser + Vite, Node, Python, Go, and
+   Rust CLI—now run clean first queries against public packages. Dataset-backed
+   `BEFORE tx` walkthroughs remain an adoption task.
 3. Publish a small, reproducible benchmark suite against SQLite and DuckDB for the
    workloads PicoVolt actually targets. State losing cases as clearly as wins.
 4. Make error messages link to concise troubleshooting pages for unsupported SQL,
@@ -85,16 +86,12 @@ artifacts, and clean-room smoke tests execute a first query through each.
 Exit criterion: a new user can install, load sample data, query it, and export a
 result without reading engine internals.
 
-Current status: browser, Node, Python, Go, and Rust starters are present. CSV,
-JSONL, and SQLite SQL-dump movement is shipped; Parquet and direct binary SQLite
-remain open.
-
 ### P2 — Close adoption-blocking compatibility gaps
 
-Implement in this order:
+Delivered in this order:
 
-1. Explicit `BEGIN`, `COMMIT`, and `ROLLBACK` across every binding. **Shipped on
-   main for 1.6.0.**
+1. Explicit `BEGIN`, `COMMIT`, and `ROLLBACK` across every binding. **Shipped in
+   1.6.0.**
 2. N-table equality `INNER JOIN` and `LEFT JOIN`, aliases, self-joins, and joined
    grouping. **Shipped in 1.7.0; planner/index optimization remains 1.9
    work.**
@@ -111,8 +108,8 @@ behind the items above.
 
 ### P3 — Strengthen the browser/local-first moat
 
-1. Add an OPFS-backed durable browser store and a Web Worker API so queries never
-   freeze the UI.
+1. The OPFS-backed durable browser store and Web Worker API shipped in 1.4.0 and
+   are covered by the registry-only browser starter gate.
 2. Make range-streamed `.pvdb` hosting turnkey: a static-hosting guide, header
    checker, service-worker cache, and sample deployment.
 3. Add incremental history export and a documented synchronization seam. Avoid a
@@ -123,7 +120,8 @@ behind the items above.
 ### P4 — Build ecosystem pull
 
 1. Maintain adapters for popular interfaces rather than one-off language wrappers:
-   Python DB-API, Go `database/sql`, Node/Bun/Deno, and a documented C ABI.
+   Python DB-API, Go `database/sql`, Node, and a documented C ABI are shipped;
+   explicit Bun/Deno compatibility remains open.
 2. Add at least three end-to-end integrations where PicoVolt is the storage layer:
    a static analytics portal, an offline-first desktop app, and a versioned catalog.
 3. Create a “built with PicoVolt” gallery and promote dependent projects. A healthy
@@ -136,9 +134,9 @@ behind the items above.
 | Horizon | Cumulative target | Leading indicators |
 |---|---:|---|
 | 30 days | 10,000 | All release channels green; three external starter completions |
-| 90 days | 50,000 | Four starters; two import formats; 20 public dependents |
-| 6 months | 150,000 | Transaction adoption and richer JOINs; 10,000 weekly downloads |
-| 12 months | 400,000 | OPFS/Worker browser path; 25,000 weekly downloads; 100 dependents |
+| 90 days | 50,000 | Five standalone starter templates; 20 public dependents |
+| 6 months | 150,000 | Three external 1.7 applications; 10,000 weekly downloads |
+| 12 months | 400,000 | 1.8 data tooling in regular use; 25,000 weekly downloads; 100 dependents |
 | 24 months | 1,000,000 | 50,000+ weekly downloads sustained across multiple channels |
 
 Review the targets monthly. If downloads rise but dependents and issue engagement
