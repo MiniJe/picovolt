@@ -25,6 +25,8 @@ All notable changes to PicoVolt are documented here. The format is based on
   exact public module without an extra setup command.
 - Corrected the macOS Python wheel build to merge and verify arm64 and x86-64
   native libraries before applying its `universal2` platform tag.
+- Updated the Python packaging toolchain past the newly disclosed `setuptools`
+  and `wheel` advisories while retaining a Python 3.9 runtime smoke test.
 
 ### Security
 

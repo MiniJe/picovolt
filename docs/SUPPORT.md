@@ -8,7 +8,7 @@ it is not a promise that every downstream environment is identical.
 |---|---|---|
 | Rust crate and `pv` CLI | Rust 1.86+; release binaries for Linux x86-64, macOS arm64, and Windows x86-64 | crates.io plus native GitHub downloads |
 | JavaScript | Node.js 22.12+ on a maintained release line; modern evergreen browsers with WebAssembly | npm `picovolt` |
-| Python | CPython 3.9+ compatibility floor (use a Python-supported release in production); Linux x86-64 (manylinux 2.28), macOS universal2, and Windows x86-64 | platform wheels on PyPI |
+| Python | CPython 3.9+ runtime compatibility floor (use a Python-supported release in production; release tooling builds on 3.10+); Linux x86-64 (manylinux 2.28), macOS universal2, and Windows x86-64 | platform wheels on PyPI |
 | Go | Go 1.26 and 1.27 with cgo; the clean-room native gate runs on Linux x86-64 | versioned Go module plus the matching C ABI library |
 | C ABI | Release bundles for Linux x86-64, macOS arm64, and Windows x86-64; other Rust-supported targets can build locally | header and shared library in GitHub release bundles |
 

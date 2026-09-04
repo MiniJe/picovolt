@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.9"
+          python-version: "3.14"
       - name: Test and enforce the policy
         run: |
           python -m unittest discover -s scripts/tests -v
@@ -46,7 +46,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.9"
+          python-version: "3.14"
 
       - name: Tag matches Python package version
         if: startsWith(github.ref, 'refs/tags/')
@@ -83,8 +83,10 @@ jobs:
           if [ -f ../../target/release/picovolt.dll ]; then cp ../../target/release/picovolt.dll picovolt/; fi
 
       - name: Build the wheel
+        env:
+          PICOVOLT_WHEEL_PLATFORM: ${{ runner.os == 'macOS' && 'macosx_10_9_universal2' || '' }}
         run: |
-          python -m pip install "pip==25.3" "build==1.4.4"
+          python -m pip install "pip==26.2.1" "build==1.6.0"
           python -m build --wheel
 
       - name: Smoke test the wheel
@@ -128,7 +130,7 @@ jobs:
       - name: Tag matches Python package version
         if: startsWith(github.ref, 'refs/tags/')
         run: >-
-          /opt/python/cp39-cp39/bin/python -c "import os,pathlib; actual=next(line.split()[2].strip(chr(34)) for line in pathlib.Path('pyproject.toml').read_text().splitlines() if line.startswith('version = ')); expected=os.environ['GITHUB_REF_NAME'].removeprefix('v'); assert actual == expected, f'Python version {actual} != tag {expected}'"
+          /opt/python/cp310-cp310/bin/python -c "import os,pathlib; actual=next(line.split()[2].strip(chr(34)) for line in pathlib.Path('pyproject.toml').read_text().splitlines() if line.startswith('version = ')); expected=os.environ['GITHUB_REF_NAME'].removeprefix('v'); assert actual == expected, f'Python version {actual} != tag {expected}'"
 
       - name: Build the C ABI shared library
         working-directory: .
@@ -137,9 +139,9 @@ jobs:
       - name: Bundle the library and build a portable wheel
         run: |
           cp ../../target/release/libpicovolt.so picovolt/
-          /opt/python/cp39-cp39/bin/python -m pip install \
-            "pip==25.3" "build==1.4.4"
-          /opt/python/cp39-cp39/bin/python -m build --wheel
+          /opt/python/cp310-cp310/bin/python -m pip install \
+            "pip==26.2.1" "build==1.6.0"
+          /opt/python/cp310-cp310/bin/python -m build --wheel
           auditwheel repair --plat manylinux_2_28_x86_64 \
             --wheel-dir wheelhouse dist/*.whl
 
