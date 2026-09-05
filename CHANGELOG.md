@@ -6,6 +6,14 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-09-05
+
+### Fixed
+
+- Rejected overflowing WebAssembly section, function-body, and export-name
+  lengths in the custom interpreter instead of allowing malformed modules to
+  panic in overflow-check-enabled builds.
+
 ## [1.8.0] - 2026-09-04
 
 ### Added
@@ -638,7 +646,8 @@ runs both natively and in the browser through WebAssembly.
   test plus a `cargo-fuzz` crate), and `cargo audit` blocks vulnerability
   advisories. Both run in CI; non-blocking audit warnings are reviewed separately.
 
-[Unreleased]: https://github.com/MiniJe/picovolt/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/MiniJe/picovolt/compare/v1.8.1...HEAD
+[1.8.1]: https://github.com/MiniJe/picovolt/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/MiniJe/picovolt/compare/v1.7.1...v1.8.0
 [1.7.1]: https://github.com/MiniJe/picovolt/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/MiniJe/picovolt/compare/v1.6.0...v1.7.0
