@@ -236,11 +236,15 @@ impl<'a> Reader<'a> {
     }
 
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
+        let end = self
+            .pos
+            .checked_add(n)
+            .ok_or_else(|| trap("unexpected end of section"))?;
         let slice = self
             .bytes
-            .get(self.pos..self.pos + n)
+            .get(self.pos..end)
             .ok_or_else(|| trap("unexpected end of section"))?;
-        self.pos += n;
+        self.pos = end;
         Ok(slice)
     }
 
@@ -298,7 +302,8 @@ impl<'a> Reader<'a> {
     }
 
     fn name(&mut self) -> Result<String> {
-        let n = self.uleb()? as usize;
+        let n = usize::try_from(self.uleb()?)
+            .map_err(|_| trap("name length does not fit this platform"))?;
         let bytes = self.take(n)?;
         String::from_utf8(bytes.to_vec()).map_err(|_| trap("invalid utf-8 in name"))
     }
@@ -364,7 +369,8 @@ fn decode_module(bytes: &[u8]) -> Result<PvModule> {
 
     while !r.eof() {
         let id = r.byte()?;
-        let size = r.uleb()? as usize;
+        let size = usize::try_from(r.uleb()?)
+            .map_err(|_| trap("section length does not fit this platform"))?;
         let content = r.take(size)?;
         let mut s = Reader::new(content);
         match id {
@@ -471,7 +477,8 @@ fn decode_export_section(s: &mut Reader, exports: &mut Vec<ExportEntry>) -> Resu
 fn decode_code_section(s: &mut Reader, codes: &mut Vec<(Vec<ValType>, Vec<Instr>)>) -> Result<()> {
     let n = s.count()?;
     for _ in 0..n {
-        let body_size = s.uleb()? as usize;
+        let body_size = usize::try_from(s.uleb()?)
+            .map_err(|_| trap("function body length does not fit this platform"))?;
         let body = s.take(body_size)?;
         let mut br = Reader::new(body);
         let locals = decode_locals(&mut br)?;
@@ -1311,6 +1318,28 @@ mod tests {
             .map(|b| Interpreter::new().load(&b))
             .unwrap()
             .is_err());
+    }
+
+    #[test]
+    fn rejects_unrepresentable_wasm_lengths_without_panicking() {
+        const HEADER: &[u8] = b"\0asm\x01\0\0\0";
+        const U64_MAX_ULEB: &[u8] = &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01];
+
+        let malformed = [
+            // A top-level custom section with an impossible payload length.
+            [HEADER, &[0], U64_MAX_ULEB].concat(),
+            // An export section whose first export has an impossible name length.
+            [HEADER, &[7, 11, 1], U64_MAX_ULEB].concat(),
+            // A code section whose first function has an impossible body length.
+            [HEADER, &[10, 11, 1], U64_MAX_ULEB].concat(),
+        ];
+
+        for bytes in malformed {
+            assert!(matches!(
+                Interpreter::new().load(&bytes),
+                Err(PvError::Wasm(_))
+            ));
+        }
     }
 
     #[test]
