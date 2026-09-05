@@ -236,40 +236,41 @@ impl<'a> Reader<'a> {
     }
 
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
+        let end = self
+            .pos
+            .checked_add(n)
+            .ok_or_else(|| trap("unexpected end of section"))?;
         let slice = self
             .bytes
-            .get(self.pos..self.pos + n)
+            .get(self.pos..end)
             .ok_or_else(|| trap("unexpected end of section"))?;
-        self.pos += n;
+        self.pos = end;
         Ok(slice)
     }
 
-    fn uleb(&mut self) -> Result<u64> {
-        let mut result: u64 = 0;
-        let mut shift = 0u32;
-        loop {
-            let b = self.byte()?;
-            if shift >= 64 {
-                return Err(trap("LEB128 overflow"));
-            }
-            result |= u64::from(b & 0x7F) << shift;
-            if b & 0x80 == 0 {
-                break;
-            }
-            shift += 7;
-        }
-        Ok(result)
-    }
-
     fn u32(&mut self) -> Result<u32> {
-        Ok(self.uleb()? as u32)
+        let mut result = 0u32;
+        for byte_index in 0..5 {
+            let b = self.byte()?;
+            // A WebAssembly u32 uses at most five LEB128 bytes. Only four
+            // payload bits are available in the final byte, which must also
+            // terminate the encoding.
+            if byte_index == 4 && b & 0xF0 != 0 {
+                return Err(trap("u32 LEB128 overflow"));
+            }
+            result |= u32::from(b & 0x7F) << (byte_index * 7);
+            if b & 0x80 == 0 {
+                return Ok(result);
+            }
+        }
+        Err(trap("u32 LEB128 overflow"))
     }
 
     /// Read a LEB128 vector length, rejecting values above [`MAX_VEC_LEN`] so a
     /// malicious count cannot drive an unbounded loop or allocation.
     fn count(&mut self) -> Result<usize> {
-        let n = self.uleb()?;
-        if n > MAX_VEC_LEN as u64 {
+        let n = self.u32()?;
+        if n > MAX_VEC_LEN as u32 {
             return Err(trap(format!(
                 "vector length {n} exceeds limit {MAX_VEC_LEN}"
             )));
@@ -277,28 +278,40 @@ impl<'a> Reader<'a> {
         Ok(n as usize)
     }
 
-    fn sleb(&mut self) -> Result<i64> {
-        let mut result: i64 = 0;
+    fn signed(&mut self, bits: u32) -> Result<i64> {
+        let mut result = 0i128;
         let mut shift = 0u32;
-        loop {
+        for _ in 0..bits.div_ceil(7) {
             let b = self.byte()?;
-            result |= i64::from(b & 0x7F) << shift;
+            result |= i128::from(b & 0x7F) << shift;
             shift += 7;
             if b & 0x80 == 0 {
-                if shift < 64 && (b & 0x40) != 0 {
-                    result |= -1i64 << shift;
+                if b & 0x40 != 0 {
+                    result |= -1i128 << shift;
                 }
-                break;
-            }
-            if shift >= 64 {
-                return Err(trap("signed LEB128 overflow"));
+                let min = -(1i128 << (bits - 1));
+                let max = (1i128 << (bits - 1)) - 1;
+                if result < min || result > max {
+                    return Err(trap(format!("signed {bits}-bit LEB128 overflow")));
+                }
+                return i64::try_from(result)
+                    .map_err(|_| trap(format!("signed {bits}-bit LEB128 overflow")));
             }
         }
-        Ok(result)
+        Err(trap(format!("signed {bits}-bit LEB128 overflow")))
+    }
+
+    fn s32(&mut self) -> Result<i32> {
+        i32::try_from(self.signed(32)?).map_err(|_| trap("signed 32-bit LEB128 overflow"))
+    }
+
+    fn s64(&mut self) -> Result<i64> {
+        self.signed(64)
     }
 
     fn name(&mut self) -> Result<String> {
-        let n = self.uleb()? as usize;
+        let n = usize::try_from(self.u32()?)
+            .map_err(|_| trap("name length does not fit this platform"))?;
         let bytes = self.take(n)?;
         String::from_utf8(bytes.to_vec()).map_err(|_| trap("invalid utf-8 in name"))
     }
@@ -364,13 +377,14 @@ fn decode_module(bytes: &[u8]) -> Result<PvModule> {
 
     while !r.eof() {
         let id = r.byte()?;
-        let size = r.uleb()? as usize;
+        let size = usize::try_from(r.u32()?)
+            .map_err(|_| trap("section length does not fit this platform"))?;
         let content = r.take(size)?;
         let mut s = Reader::new(content);
         match id {
             1 => decode_type_section(&mut s, &mut types)?,
             2 => {
-                let import_count = s.uleb()?;
+                let import_count = s.u32()?;
                 if import_count > 0 {
                     return Err(trap("imports are not supported"));
                 }
@@ -471,7 +485,8 @@ fn decode_export_section(s: &mut Reader, exports: &mut Vec<ExportEntry>) -> Resu
 fn decode_code_section(s: &mut Reader, codes: &mut Vec<(Vec<ValType>, Vec<Instr>)>) -> Result<()> {
     let n = s.count()?;
     for _ in 0..n {
-        let body_size = s.uleb()? as usize;
+        let body_size = usize::try_from(s.u32()?)
+            .map_err(|_| trap("function body length does not fit this platform"))?;
         let body = s.take(body_size)?;
         let mut br = Reader::new(body);
         let locals = decode_locals(&mut br)?;
@@ -555,8 +570,8 @@ fn decode_body(r: &mut Reader) -> Result<Vec<Instr>> {
             0x22 => instrs.push(Instr::LocalTee(r.u32()?)),
             0x28..=0x35 => instrs.push(decode_load(op, r)?),
             0x36..=0x3E => instrs.push(decode_store(op, r)?),
-            0x41 => instrs.push(Instr::I32Const(r.sleb()? as i32)),
-            0x42 => instrs.push(Instr::I64Const(r.sleb()?)),
+            0x41 => instrs.push(Instr::I32Const(r.s32()?)),
+            0x42 => instrs.push(Instr::I64Const(r.s64()?)),
             _ => instrs.push(Instr::Num(decode_num(op)?)),
         }
     }
@@ -945,9 +960,13 @@ impl Instance<'_> {
 }
 
 fn do_branch(stack: &mut Vec<Val>, ctrl: &mut Vec<CtrlFrame>, label: u32) -> Result<usize> {
+    let depth = usize::try_from(label)
+        .ok()
+        .and_then(|label| label.checked_add(1))
+        .ok_or_else(|| trap("branch label out of range"))?;
     let idx = ctrl
         .len()
-        .checked_sub(1 + label as usize)
+        .checked_sub(depth)
         .ok_or_else(|| trap("branch label out of range"))?;
     let frame = ctrl[idx];
     let keep_from = stack
@@ -980,13 +999,17 @@ fn pop_i64(stack: &mut Vec<Val>) -> Result<i64> {
 }
 
 fn exec_load(op: LoadOp, offset: u32, stack: &mut Vec<Val>, mem: &[u8]) -> Result<()> {
-    let base = pop_i32(stack)? as u32 as usize;
+    let base = usize::try_from(pop_i32(stack)? as u32)
+        .map_err(|_| trap("address does not fit this platform"))?;
+    let offset = usize::try_from(offset).map_err(|_| trap("address does not fit this platform"))?;
     let addr = base
-        .checked_add(offset as usize)
+        .checked_add(offset)
         .ok_or_else(|| trap("address overflow"))?;
     let read = |n: usize| -> Result<&[u8]> {
-        mem.get(addr..addr + n)
-            .ok_or_else(|| trap("load out of bounds"))
+        let end = addr
+            .checked_add(n)
+            .ok_or_else(|| trap("load address overflow"))?;
+        mem.get(addr..end).ok_or_else(|| trap("load out of bounds"))
     };
     let value = match op {
         LoadOp::I32 => Val::I32(i32::from_le_bytes(read(4)?.try_into().unwrap())),
@@ -1008,12 +1031,17 @@ fn exec_store(op: StoreOp, offset: u32, stack: &mut Vec<Val>, mem: &mut [u8]) ->
         StoreOp::I32_8 => vec![pop_i32(stack)? as u8],
         StoreOp::I32_16 => (pop_i32(stack)? as u16).to_le_bytes().to_vec(),
     };
-    let base = pop_i32(stack)? as u32 as usize;
+    let base = usize::try_from(pop_i32(stack)? as u32)
+        .map_err(|_| trap("address does not fit this platform"))?;
+    let offset = usize::try_from(offset).map_err(|_| trap("address does not fit this platform"))?;
     let addr = base
-        .checked_add(offset as usize)
+        .checked_add(offset)
         .ok_or_else(|| trap("address overflow"))?;
+    let end = addr
+        .checked_add(bytes.len())
+        .ok_or_else(|| trap("store address overflow"))?;
     let dst = mem
-        .get_mut(addr..addr + bytes.len())
+        .get_mut(addr..end)
         .ok_or_else(|| trap("store out of bounds"))?;
     dst.copy_from_slice(&bytes);
     Ok(())
@@ -1311,6 +1339,122 @@ mod tests {
             .map(|b| Interpreter::new().load(&b))
             .unwrap()
             .is_err());
+    }
+
+    #[test]
+    fn rejects_oversized_wasm_lengths_without_panicking() {
+        const HEADER: &[u8] = b"\0asm\x01\0\0\0";
+        const U32_MAX_ULEB: &[u8] = &[0xff, 0xff, 0xff, 0xff, 0x0f];
+        const ORIGINAL_FUZZ_CRASH: &[u8] = &[
+            0, 97, 115, 109, 1, 0, 0, 0, 4, 0, 7, 255, 255, 255, 255, 255, 255, 255, 255, 255, 3,
+            255, 55, 0,
+        ];
+
+        // Keep the shared slice boundary checked even on a 64-bit test host.
+        let mut overflowing_range = Reader {
+            bytes: &[],
+            pos: usize::MAX,
+        };
+        assert!(matches!(overflowing_range.take(1), Err(PvError::Wasm(_))));
+
+        let malformed = [
+            // The exact input retained by the scheduled fuzz shard.
+            ORIGINAL_FUZZ_CRASH.to_vec(),
+            // A top-level custom section with an impossible payload length.
+            [HEADER, &[0], U32_MAX_ULEB].concat(),
+            // An export section whose first export has an impossible name length.
+            [HEADER, &[7, 6, 1], U32_MAX_ULEB].concat(),
+            // A code section whose first function has an impossible body length.
+            [HEADER, &[10, 6, 1], U32_MAX_ULEB].concat(),
+        ];
+
+        for bytes in malformed {
+            assert!(matches!(
+                Interpreter::new().load(&bytes),
+                Err(PvError::Wasm(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_out_of_range_wasm_integers_instead_of_truncating() {
+        const HEADER: &[u8] = b"\0asm\x01\0\0\0";
+
+        fn module_with_const(result_type: u8, opcode: u8, immediate: &[u8]) -> Vec<u8> {
+            let body_size = u8::try_from(immediate.len() + 3).unwrap();
+            let code_size = body_size + 2;
+            [
+                HEADER,
+                &[1, 5, 1, 0x60, 0, 1, result_type],
+                &[3, 2, 1, 0],
+                &[10, code_size, 1, body_size, 0, opcode],
+                immediate,
+                &[0x0b],
+            ]
+            .concat()
+        }
+
+        let malformed = [
+            // A memory minimum of 2^32 + 1 must not wrap to one page.
+            [HEADER, &[5, 7, 1, 0, 0x81, 0x80, 0x80, 0x80, 0x10]].concat(),
+            // Even a zero value cannot use more than five bytes for a u32.
+            [HEADER, &[5, 8, 1, 0, 0x80, 0x80, 0x80, 0x80, 0x80, 0]].concat(),
+            // 2^31 is not a valid signed i32 immediate.
+            module_with_const(0x7f, 0x41, &[0x80, 0x80, 0x80, 0x80, 0x08]),
+            // 2^63 is not a valid signed i64 immediate.
+            module_with_const(
+                0x7e,
+                0x42,
+                &[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01],
+            ),
+        ];
+
+        for bytes in malformed {
+            assert!(matches!(
+                Interpreter::new().load(&bytes),
+                Err(PvError::Wasm(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn accepts_width_bounded_redundant_leb_encodings() {
+        assert_eq!(Reader::new(&[0x80, 0]).u32().unwrap(), 0);
+        assert_eq!(
+            Reader::new(&[0xff, 0xff, 0xff, 0xff, 0x0f]).u32().unwrap(),
+            u32::MAX
+        );
+        assert_eq!(Reader::new(&[0xff, 0x7f]).s32().unwrap(), -1);
+        assert_eq!(
+            Reader::new(&[0x80, 0x80, 0x80, 0x80, 0x78]).s32().unwrap(),
+            i32::MIN
+        );
+    }
+
+    #[test]
+    fn invalid_branch_and_memory_addresses_trap_without_panicking() {
+        const BR_U32_MAX: &[u8] = &[
+            0, 97, 115, 109, 1, 0, 0, 0, // header
+            1, 4, 1, 0x60, 0, 0, // () -> () function type
+            3, 2, 1, 0, // one function of type zero
+            7, 5, 1, 1, b'f', 0, 0, // export function zero as `f`
+            10, 10, 1, 8, 0, 0x0c, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x0b,
+        ];
+
+        let module = Interpreter::new().load(BR_U32_MAX).unwrap();
+        assert!(matches!(module.invoke_i32("f", &[]), Err(PvError::Wasm(_))));
+
+        let mut load_stack = vec![Val::I32(-1)];
+        assert!(matches!(
+            exec_load(LoadOp::I64, 0, &mut load_stack, &[]),
+            Err(PvError::Wasm(_))
+        ));
+
+        let mut store_stack = vec![Val::I32(-1), Val::I64(0)];
+        assert!(matches!(
+            exec_store(StoreOp::I64, 0, &mut store_stack, &mut []),
+            Err(PvError::Wasm(_))
+        ));
     }
 
     #[test]

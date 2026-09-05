@@ -46,6 +46,9 @@ All notable changes to PicoVolt are documented here. The format is based on
 - Tightened binary decoders to reject overflowing or non-canonical varints,
   nonzero bit-pack padding, duplicate index-key blocks, and trailing payload
   bytes instead of accepting ambiguous encodings.
+- Made `pv-wasm` width-check unsigned and signed LEB128 fields and checked every
+  decoder, branch-label, and effective-address range, so malformed modules return
+  `PvError::Wasm` instead of truncating values or panicking on 32-bit targets.
 - Checked-converted persisted offsets before using them as platform-sized slice
   indices, required every decoded column to match its declared row count, and
   charged owned adaptive-join probe keys to bounded-query memory limits.

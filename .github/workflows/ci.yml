@@ -46,6 +46,11 @@ jobs:
           cargo test --locked --all-targets --features enterprise
       - name: Test
         run: cargo test --locked --all-targets
+      - name: Test 32-bit WASM interpreter bounds
+        if: runner.os == 'Windows'
+        run: |
+          rustup target add i686-pc-windows-msvc
+          cargo test --locked --target i686-pc-windows-msvc --lib engine::interp::tests
       - name: Native data tooling
         run: |
           cargo clippy --locked --all-targets --features data-tools -- -D warnings

@@ -46,8 +46,10 @@ regression test:
   updates validate record shape and constraints before mutation, then roll back
   on a mutation-phase I/O failure. Without savepoints, that kind of failure
   aborts an enclosing explicit transaction rather than leaving it committable.
-- **The `pv-wasm` decoder caps** declared memory pages and all LEB128 vector
-  counts, preventing out-of-memory from a crafted module.
+- **The `pv-wasm` decoder validates integer widths and ranges.** Declared memory
+  pages and LEB128 vector counts are capped; u32, s32, and s64 fields reject
+  oversized encodings; and section, branch, and effective-address arithmetic is
+  checked on 32-bit targets as well as native 64-bit builds.
 - **Both WASM runtimes meter instructions** and cap guest memory and returned
   output, so a looping or malicious extension traps instead of monopolizing the
   process or requesting an unbounded allocation.
