@@ -6,6 +6,8 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-09-07
+
 ### Added
 
 - Added adaptive indexed execution for left-deep N-table equality joins, with
@@ -27,6 +29,8 @@ All notable changes to PicoVolt are documented here. The format is based on
   reports real row/cold page counts and compression savings.
 - Baked-image migration and maintenance documentation now defines compatibility,
   verification, disk-space, failure, and rollback behavior explicitly.
+- Replaced the fixed elapsed soak with daily minor and weekly major release
+  windows backed by candidate-scoped qualification evidence.
 
 ### Fixed
 
@@ -695,7 +699,8 @@ runs both natively and in the browser through WebAssembly.
   test plus a `cargo-fuzz` crate), and `cargo audit` blocks vulnerability
   advisories. Both run in CI; non-blocking audit warnings are reviewed separately.
 
-[Unreleased]: https://github.com/MiniJe/picovolt/compare/v1.8.1...HEAD
+[Unreleased]: https://github.com/MiniJe/picovolt/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/MiniJe/picovolt/compare/v1.8.1...v1.9.0
 [1.8.1]: https://github.com/MiniJe/picovolt/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/MiniJe/picovolt/compare/v1.7.1...v1.8.0
 [1.7.1]: https://github.com/MiniJe/picovolt/compare/v1.7.0...v1.7.1

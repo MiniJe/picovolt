@@ -94,7 +94,7 @@ The UCI Iris fixture and mixed-type generated data exercise this gate with a
 two-page cache. See [Data tools](docs/DATA_TOOLS.md) for supported types,
 transaction disk requirements, memory limits, and signing trust boundaries.
 
-## 1.9 — Stabilization (implemented; release-candidate soak in progress)
+## 1.9 — Stabilization (implemented; release preparation in progress)
 
 **Outcome:** 2.0 begins from measured behavior and a proven migration path rather
 than from an API redesign performed in the dark.
@@ -113,12 +113,12 @@ Delivered scope:
 - format-v5 golden images and migration tests over the complete historical
   golden-file corpus.
 
-The automated portion of the release gate is implemented. The stable tag still
-requires no unresolved critical or high-severity findings and a 30-day
-release-candidate soak focused on downstream compatibility; the golden-file
-migration gate runs in CI on every change. Current observations and the final
-release decision are tracked in the
-[1.9.0 soak ledger](docs/RELEASE_1_9_SOAK.md).
+Qualification is candidate-scoped and evidence-based, with no fixed elapsed-time
+minimum. The stable tag requires a green golden-file migration gate, clean
+fuzz/model/recovery evidence, all performance budgets, no unresolved critical or
+high-severity findings, and compatibility evidence. Current observations and
+the final release decision are tracked in the
+[1.9.0 qualification ledger](docs/RELEASE_1_9_SOAK.md).
 
 ## 2.0 — A production concurrency contract
 

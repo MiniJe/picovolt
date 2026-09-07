@@ -2,6 +2,12 @@ name: Benchmarks
 
 on:
   workflow_dispatch:
+    inputs:
+      npm_package:
+        description: Build the exact release npm tarball and report its integrity
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: "17 4 * * 1"
 
@@ -23,3 +29,42 @@ jobs:
         with:
           name: stabilization-bench-${{ github.run_id }}
           path: stabilization-bench.json
+
+  npm-package:
+    name: npm release package
+    if: github.event_name == 'workflow_dispatch' && inputs.npm_package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+        with:
+          tool: wasm-pack@0.15.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Build the exact release package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
+          export RUSTFLAGS="--remap-path-prefix=$GITHUB_WORKSPACE=/src/picovolt --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$rustup_home=/rustup"
+          wasm-pack build --target bundler --release --out-dir pkg -- --locked --features wasm
+          cp bindings/js/sqlite.js pkg/sqlite.js
+          cp bindings/js/browser.js pkg/browser.js
+          cp bindings/js/worker.js pkg/worker.js
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('pkg/package.json'));p.files=Array.from(new Set([...(p.files||[]),'sqlite.js','browser.js','worker.js']));p.exports={'.':'./'+(p.module||'picovolt.js'),'./sqlite':'./sqlite.js','./browser':'./browser.js','./worker':'./worker.js'};p.repository={type:'git',url:'git+https://github.com/MiniJe/picovolt.git'};fs.writeFileSync('pkg/package.json',JSON.stringify(p,null,2));"
+          (cd pkg && npm pack --json . > npm-pack.json)
+          node -e "const p=require('./pkg/npm-pack.json')[0];console.log('npm integrity: '+p.integrity);require('fs').appendFileSync(process.env.GITHUB_STEP_SUMMARY,'## npm release package\n\n`'+p.integrity+'`\n')"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-release-package-${{ github.sha }}
+          path: |
+            pkg/npm-pack.json
+            pkg/picovolt-*.tgz

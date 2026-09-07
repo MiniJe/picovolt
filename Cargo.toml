@@ -1,6 +1,6 @@
 [package]
 name = "picovolt"
-version = "1.8.1"
+version = "1.9.0"
 edition = "2021"
 rust-version = "1.86"
 description = "Embedded SQL database with MVCC history and single-file deployment"
