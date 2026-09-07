@@ -34,6 +34,8 @@ For 1.9, record release-candidate runs across the 30-day soak specified in the
 roadmap. GitHub-hosted jobs
 are bounded shards, not a claim of uninterrupted multi-day execution; longer
 runs require a dedicated runner and should retain their logs and fuzz artifacts.
+The current anchor, reset decisions, evidence, and remaining gates are tracked
+in the [1.9.0 soak ledger](RELEASE_1_9_SOAK.md).
 
 Native release binaries include `data-tools` (Parquet, SQLite, and dataset
 signing). Source installs opt in with `cargo install picovolt --features

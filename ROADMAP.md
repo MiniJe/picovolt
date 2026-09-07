@@ -116,7 +116,9 @@ Delivered scope:
 The automated portion of the release gate is implemented. The stable tag still
 requires no unresolved critical or high-severity findings and a 30-day
 release-candidate soak focused on downstream compatibility; the golden-file
-migration gate runs in CI on every change.
+migration gate runs in CI on every change. Current observations and the final
+release decision are tracked in the
+[1.9.0 soak ledger](docs/RELEASE_1_9_SOAK.md).
 
 ## 2.0 — A production concurrency contract
 
