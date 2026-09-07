@@ -33,6 +33,13 @@ jobs:
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
           tool: cargo-audit
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+        with:
+          tool: wasm-pack@0.15.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
@@ -57,6 +64,27 @@ jobs:
         run: |
           python -m unittest discover -s scripts/tests -v
           python scripts/check_registry_starters.py policy
+      - name: Exact npm package integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/build_npm_package.sh pkg
+          (cd pkg && npm pack --json . > npm-pack.json)
+          node - <<'NODE'
+          const fs = require("fs");
+          const integrity = require("./pkg/npm-pack.json")[0].integrity;
+          for (const path of [
+            "starters/node/package-lock.json",
+            "starters/browser/package-lock.json",
+          ]) {
+            const lock = JSON.parse(fs.readFileSync(path));
+            const pinned = lock.packages["node_modules/picovolt"].integrity;
+            if (pinned !== integrity) {
+              throw new Error(`${path} pins ${pinned}; expected ${integrity}`);
+            }
+          }
+          console.log(`verified npm integrity ${integrity}`);
+          NODE
       - name: Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Test
@@ -144,18 +172,9 @@ jobs:
           package-manager-cache: false
       - name: Build npm package
         shell: bash
-        run: |
-          set -euo pipefail
-          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
-          rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
-          export RUSTFLAGS="--remap-path-prefix=$GITHUB_WORKSPACE=/src/picovolt --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$rustup_home=/rustup"
-          wasm-pack build --target bundler --release --out-dir pkg -- --locked --features wasm
-      - name: Add the better-sqlite3-inspired adapter to the package
-        run: |
-          cp bindings/js/sqlite.js pkg/sqlite.js
-          cp bindings/js/browser.js pkg/browser.js
-          cp bindings/js/worker.js pkg/worker.js
-          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('pkg/package.json'));p.files=Array.from(new Set([...(p.files||[]),'sqlite.js','browser.js','worker.js']));p.exports={'.':'./'+(p.module||'picovolt.js'),'./sqlite':'./sqlite.js','./browser':'./browser.js','./worker':'./worker.js'};p.repository={type:'git',url:'git+https://github.com/MiniJe/picovolt.git'};fs.writeFileSync('pkg/package.json',JSON.stringify(p,null,2));"
+        run: bash scripts/build_npm_package.sh pkg
+      - name: Verify the packaged JS adapters
+        run: node -e "const p=require('./pkg/package.json');for(const f of ['sqlite.js','browser.js','worker.js'])if(!p.files.includes(f))process.exit(1)"
       - name: Publish to npm with provenance
         working-directory: pkg
         shell: bash

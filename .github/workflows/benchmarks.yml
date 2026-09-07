@@ -52,16 +52,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
-          rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
-          export RUSTFLAGS="--remap-path-prefix=$GITHUB_WORKSPACE=/src/picovolt --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$rustup_home=/rustup"
-          wasm-pack build --target bundler --release --out-dir pkg -- --locked --features wasm
-          cp bindings/js/sqlite.js pkg/sqlite.js
-          cp bindings/js/browser.js pkg/browser.js
-          cp bindings/js/worker.js pkg/worker.js
-          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('pkg/package.json'));p.files=Array.from(new Set([...(p.files||[]),'sqlite.js','browser.js','worker.js']));p.exports={'.':'./'+(p.module||'picovolt.js'),'./sqlite':'./sqlite.js','./browser':'./browser.js','./worker':'./worker.js'};p.repository={type:'git',url:'git+https://github.com/MiniJe/picovolt.git'};fs.writeFileSync('pkg/package.json',JSON.stringify(p,null,2));"
+          bash scripts/build_npm_package.sh pkg
           (cd pkg && npm pack --json . > npm-pack.json)
-          node -e "const p=require('./pkg/npm-pack.json')[0];console.log('npm integrity: '+p.integrity);require('fs').appendFileSync(process.env.GITHUB_STEP_SUMMARY,'## npm release package\n\n`'+p.integrity+'`\n')"
+          node - <<'NODE'
+          const fs = require("fs");
+          const integrity = require("./pkg/npm-pack.json")[0].integrity;
+          console.log(`npm integrity: ${integrity}`);
+          fs.appendFileSync(
+            process.env.GITHUB_STEP_SUMMARY,
+            `## npm release package\n\n\`${integrity}\`\n`,
+          );
+          for (const path of [
+            "starters/node/package-lock.json",
+            "starters/browser/package-lock.json",
+          ]) {
+            const lock = JSON.parse(fs.readFileSync(path));
+            const pinned = lock.packages["node_modules/picovolt"].integrity;
+            if (pinned !== integrity) {
+              throw new Error(`${path} pins ${pinned}; expected ${integrity}`);
+            }
+          }
+          NODE
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: npm-release-package-${{ github.sha }}
