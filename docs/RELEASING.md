@@ -1,7 +1,11 @@
 # Release cadence
 
-PicoVolt targets one stable release during the first full week of every month,
-with patch releases as soon as a security or data-integrity fix is ready.
+PicoVolt runs a fast release train: one backward-compatible minor-release window
+each UTC day and one major-release window each ISO week. Patch releases ship as
+soon as a security, data-integrity, or urgent regression fix is ready. These are
+release opportunities, not permission to mint empty versions: Semantic
+Versioning determines the number, and the candidate gates below determine
+whether a release is eligible.
 
 ## Stable release checklist
 
@@ -17,8 +21,9 @@ with patch releases as soon as a security or data-integrity fix is ready.
    bundles, SBOMs, checksums, and attestations.
 6. Run clean-install starter tests and record download totals after 24 hours.
 
-Release candidates may be published one week earlier for format or API changes.
-Published `.pvdb` format compatibility is covered by the golden fixture suite.
+Release candidates may be published before a stable cut when ecosystem testing
+would add useful evidence. Published `.pvdb` format compatibility is covered by
+the golden fixture suite.
 
 The 1.9 stabilization gate additionally requires:
 
@@ -30,12 +35,19 @@ The 1.9 stabilization gate additionally requires:
   top-N, join, bake, and recovery open) below their shared-runner ceilings;
 - no unresolved critical or high-severity security finding.
 
-For 1.9, record release-candidate runs across the 30-day soak specified in the
-roadmap. GitHub-hosted jobs
-are bounded shards, not a claim of uninterrupted multi-day execution; longer
-runs require a dedicated runner and should retain their logs and fuzz artifacts.
-The current anchor, reset decisions, evidence, and remaining gates are tracked
-in the [1.9.0 soak ledger](RELEASE_1_9_SOAK.md).
+For 1.9 and later releases, qualification is evidence-based and scoped to the
+exact candidate; there is no minimum elapsed-time wait. A candidate must have a
+green golden migration corpus, fuzz/model/recovery evidence, all seven
+performance budgets, zero unresolved critical/high findings, and compatibility
+evidence appropriate to the changed surfaces. Before publication, the complete
+first-party cross-language and browser matrix is accepted candidate evidence;
+after publication, exact registry clean installs are mandatory before the
+GitHub Release is created. A candidate change invalidates only the evidence it
+can affect; fix and rerun any failed gate before tagging.
+GitHub-hosted jobs are bounded shards, not a claim of uninterrupted execution;
+longer runs require a dedicated runner and should retain their logs and fuzz
+artifacts. The current candidate, decisions, evidence, and remaining gates are
+tracked in the [1.9.0 qualification ledger](RELEASE_1_9_SOAK.md).
 
 Native release binaries include `data-tools` (Parquet, SQLite, and dataset
 signing). Source installs opt in with `cargo install picovolt --features

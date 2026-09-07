@@ -2,6 +2,12 @@ name: Benchmarks
 
 on:
   workflow_dispatch:
+    inputs:
+      npm_package:
+        description: Build the exact release npm tarball and report its integrity
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: "17 4 * * 1"
 
@@ -23,3 +29,53 @@ jobs:
         with:
           name: stabilization-bench-${{ github.run_id }}
           path: stabilization-bench.json
+
+  npm-package:
+    name: npm release package
+    if: github.event_name == 'workflow_dispatch' && inputs.npm_package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+        with:
+          tool: wasm-pack@0.15.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Build the exact release package
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/build_npm_package.sh pkg
+          (cd pkg && npm pack --json . > npm-pack.json)
+          node - <<'NODE'
+          const fs = require("fs");
+          const integrity = require("./pkg/npm-pack.json")[0].integrity;
+          console.log(`npm integrity: ${integrity}`);
+          fs.appendFileSync(
+            process.env.GITHUB_STEP_SUMMARY,
+            `## npm release package\n\n\`${integrity}\`\n`,
+          );
+          for (const path of [
+            "starters/node/package-lock.json",
+            "starters/browser/package-lock.json",
+          ]) {
+            const lock = JSON.parse(fs.readFileSync(path));
+            const pinned = lock.packages["node_modules/picovolt"].integrity;
+            if (pinned !== integrity) {
+              throw new Error(`${path} pins ${pinned}; expected ${integrity}`);
+            }
+          }
+          NODE
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-release-package-${{ github.sha }}
+          path: |
+            pkg/npm-pack.json
+            pkg/picovolt-*.tgz

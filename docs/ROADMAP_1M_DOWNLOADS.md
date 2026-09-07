@@ -126,8 +126,10 @@ behind the items above.
    a static analytics portal, an offline-first desktop app, and a versioned catalog.
 3. Create a “built with PicoVolt” gallery and promote dependent projects. A healthy
    dependent count is a better predictor of durable downloads than release churn.
-4. Offer a monthly release train with upgrade notes and file-format compatibility
-   tests. Never ship empty versions merely to increase download traffic.
+4. Offer a daily minor-release window and a weekly major-release window, with
+   upgrade notes and file-format compatibility tests. Cadence never weakens
+   Semantic Versioning or candidate gates, and empty versions are not shipped
+   merely to increase download traffic.
 
 ## Milestones
 

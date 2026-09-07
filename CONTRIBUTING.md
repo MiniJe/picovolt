@@ -30,6 +30,9 @@ locally before opening a pull request.
 
 PicoVolt follows [Semantic Versioning](https://semver.org). While the project is
 stable 1.x, breaking public API or file-format changes require a major-version bump.
+The daily minor and weekly major trains are release windows, not automatic
+renumbering: compatible value ships in a minor, breaking changes ship in a major,
+and a window is skipped rather than publishing an empty or unqualified release.
 
 ## License of contributions
 
