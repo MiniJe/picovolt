@@ -9,6 +9,6 @@
     "start": "node --experimental-wasm-modules index.js"
   },
   "dependencies": {
-    "picovolt": "1.8.0"
+    "picovolt": "1.8.1"
   }
 }
