@@ -6,6 +6,20 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- Added the native Rust `SharedDatabase` concurrency preview: a cloneable,
+  bounded FIFO coordinator with explicit snapshot-read and exclusive-write
+  handles, cooperative cancellation/deadlines, typed backpressure and lifecycle
+  errors, and rollback before failed or abandoned writes release queued work.
+
+### Fixed
+
+- Made failed filesystem transaction preparation discard only recovery artifacts
+  created by that attempt, preserving any pre-existing crash-recovery evidence.
+- Reported failed rollback and post-commit-point sync as an unknown transaction
+  outcome instead of allowing callers to continue on potentially partial state.
+
 ## [1.9.0] - 2026-09-07
 
 ### Added

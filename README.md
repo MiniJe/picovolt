@@ -150,6 +150,15 @@ databases.
 Durability is selectable via `Database::set_durability` (`Fast` OS-cache default,
 or crash-safe `Sync` with fsync and an atomic manifest).
 
+Native Rust applications can begin adopting the 2.0 concurrency surface through
+`SharedDatabase`. It is a cloneable, bounded worker-thread coordinator with
+explicit read and write transaction handles, FIFO admission, cooperative
+cancellation, and rollback before failed or abandoned writes release the queue.
+The first slice serializes execution and preserves format v5; use clones of one
+coordinator rather than independently opening the same development workspace.
+See [Shared database concurrency](docs/CONCURRENCY.md) for the contract and
+current limits.
+
 Measured results and the methodology are in [BENCHMARKS.md](BENCHMARKS.md). In
 short, PicoVolt is a page-backed engine with O(1) filesystem appends (autocommit
 around 33k rows/s, linear), larger-than-RAM reads through a bounded buffer pool (a

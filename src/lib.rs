@@ -51,6 +51,9 @@
 //! # Ok::<(), picovolt::PvError>(())
 //! ```
 
+mod cancel;
+#[cfg(not(target_arch = "wasm32"))]
+mod concurrent;
 pub mod core;
 pub mod engine;
 #[cfg(feature = "enterprise")]
@@ -78,6 +81,14 @@ pub mod wasm_api;
 #[cfg(feature = "capi")]
 pub mod ffi;
 
+#[doc(inline)]
+pub use crate::cancel::CancellationToken;
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(inline)]
+pub use crate::concurrent::{
+    ReadTransaction, RequestOptions, SharedDatabase, SharedDatabaseOptions, WriteTransaction,
+    DEFAULT_SHARED_QUEUE_CAPACITY,
+};
 #[doc(inline)]
 pub use crate::core::errors::{ComplianceError, PvError, Result};
 #[doc(inline)]
