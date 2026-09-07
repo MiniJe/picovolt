@@ -9,7 +9,7 @@ model hypothesis lives in [docs/MONETIZATION.md](docs/MONETIZATION.md).
 
 ## Where PicoVolt is now
 
-The **1.9.0 release candidate** adds measured stabilization and a verified
+The **1.9.0 release** adds measured stabilization and a verified
 format-v5 upgrade path. The engine
 includes page-backed storage, MVCC time-travel queries, persisted secondary
 indexes, a stable 1.x file format, Rust/JavaScript/Python/Go/C bindings, a CLI,
@@ -94,7 +94,7 @@ The UCI Iris fixture and mixed-type generated data exercise this gate with a
 two-page cache. See [Data tools](docs/DATA_TOOLS.md) for supported types,
 transaction disk requirements, memory limits, and signing trust boundaries.
 
-## 1.9 — Stabilization (implemented; release preparation in progress)
+## 1.9 — Stabilization (released 2026-09-07)
 
 **Outcome:** 2.0 begins from measured behavior and a proven migration path rather
 than from an API redesign performed in the dark.
@@ -134,6 +134,14 @@ The 2.0 design may break APIs and advance the on-disk format. Its minimum scope 
 - first-party migration tooling from every 1.x format;
 - stable extension points for encryption and replication without making a
   particular cloud service part of the engine.
+
+The first implementation slice is additive and keeps format v5: native Rust now
+has one cloneable, bounded coordinator with explicit read/write transaction
+handles, FIFO admission, cooperative cancellation, and failure-safe rollback.
+It intentionally serializes transactions behind the existing engine. Parallel
+snapshot execution, the incremental commit log/change stream, binding adoption,
+and the eventual format migration remain 2.0 work rather than being implied by
+the initial handle API. See [the concurrency contract](docs/CONCURRENCY.md).
 
 Full distributed consensus, automatic conflict-free multi-device sync, and a
 hosted control plane are **not** required for 2.0. They can build on the ordered

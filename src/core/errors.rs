@@ -103,6 +103,31 @@ pub enum PvError {
     #[error("query resource limit exceeded: {0}")]
     ResourceLimit(String),
 
+    /// A request was rejected because the shared database's bounded command
+    /// queue has no remaining capacity.
+    #[error("database is busy: {0}")]
+    Busy(String),
+
+    /// A queued or running operation observed its cooperative cancellation
+    /// token.
+    #[error("database operation was cancelled")]
+    Cancelled,
+
+    /// The shared database worker has stopped and cannot accept more work.
+    #[error("shared database is closed")]
+    DatabaseClosed,
+
+    /// An explicit shared transaction was already committed, rolled back, or
+    /// aborted and cannot accept another statement.
+    #[error("shared transaction is closed")]
+    TransactionClosed,
+
+    /// Commit or recovery crossed an I/O boundary where the caller cannot
+    /// safely infer whether the new or previous state is durable. A shared
+    /// coordinator closes after returning this error.
+    #[error("transaction outcome is unknown: {0}")]
+    TransactionOutcomeUnknown(String),
+
     /// An explicit transaction could not begin, commit, roll back, or recover.
     #[error("transaction error: {0}")]
     Transaction(String),

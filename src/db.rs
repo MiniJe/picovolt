@@ -55,6 +55,7 @@ use crate::storage::vle::{
     bake_monolith_bytes_with_index, verify_page_checksum, Backend, DevStore, MemStore, Monolith,
     RangeReader, RemoteStore,
 };
+use crate::CancellationToken;
 
 /// Manifest file name within a development workspace.
 pub const MANIFEST_FILE: &str = "pv_manifest.json";
@@ -456,18 +457,23 @@ struct QueryBudget {
     limits: QueryLimits,
     rows_scanned: usize,
     materialized_bytes: usize,
+    cancellation: Option<CancellationToken>,
 }
 
 impl QueryBudget {
-    fn new(limits: QueryLimits) -> Self {
+    fn new_cancellable(limits: QueryLimits, cancellation: Option<CancellationToken>) -> Self {
         Self {
             limits,
             rows_scanned: 0,
             materialized_bytes: 0,
+            cancellation,
         }
     }
 
     fn checkpoint(&self) -> Result<()> {
+        if let Some(cancellation) = &self.cancellation {
+            cancellation.check()?;
+        }
         if self
             .limits
             .deadline
@@ -1151,8 +1157,17 @@ impl Database {
                 match self.commit_transaction() {
                     Ok(()) => Ok(value),
                     Err(commit_error) => {
-                        let _ = self.rollback_transaction();
-                        Err(commit_error)
+                        if !self.in_transaction() {
+                            return Err(commit_error);
+                        }
+                        match self.rollback_transaction() {
+                            Ok(()) => Err(commit_error),
+                            Err(rollback_error) => Err(PvError::TransactionOutcomeUnknown(
+                                format!(
+                                    "commit failed ({commit_error}); rollback also failed ({rollback_error})"
+                                ),
+                            )),
+                        }
                     }
                 }
             }
@@ -1162,7 +1177,7 @@ impl Database {
                 // this outer boundary owns the rollback.
                 if self.in_transaction() {
                     self.rollback_transaction().map_err(|rollback_error| {
-                        PvError::Transaction(format!(
+                        PvError::TransactionOutcomeUnknown(format!(
                             "operation failed ({error}); rollback also failed ({rollback_error})"
                         ))
                     })?;
@@ -1194,7 +1209,22 @@ impl Database {
                 return Err(error);
             }
             self.durability = previous_durability;
-            prepare_workspace_transaction(&root)?;
+            let marker_preexisted = root.join(TRANSACTION_MARKER_FILE).exists();
+            if let Err(prepare_error) = prepare_workspace_transaction(&root) {
+                if marker_preexisted {
+                    // The failed begin did not create this recovery state. It
+                    // may belong to a crashed or independently managed writer,
+                    // so never discard it from this error path.
+                    return Err(prepare_error);
+                }
+                let cleanup = abort_workspace_transaction_preparation(&root);
+                return match cleanup {
+                    Ok(()) => Err(prepare_error),
+                    Err(cleanup_error) => Err(PvError::TransactionOutcomeUnknown(format!(
+                        "transaction preparation failed ({prepare_error}); recovery-artifact cleanup also failed ({cleanup_error})"
+                    ))),
+                };
+            }
             (TransactionRollback::Filesystem(root), Some(lock))
         } else {
             (TransactionRollback::Memory(self.bake_to_bytes()?), None)
@@ -1219,7 +1249,9 @@ impl Database {
     ///
     /// Filesystem data and the manifest are synced before the recovery marker is
     /// removed. Removing that marker is the commit point: before it, reopening
-    /// rolls back; after it, reopening keeps the new state.
+    /// rolls back; after it, reopening keeps the new state. An I/O failure while
+    /// syncing the removed marker returns [`PvError::TransactionOutcomeUnknown`]
+    /// and consumes the transaction so an impossible rollback cannot be retried.
     pub fn commit_transaction(&mut self) -> Result<()> {
         let (filesystem_root, previous_durability) = match self.active_transaction.as_ref() {
             Some(state) => (
@@ -1240,9 +1272,15 @@ impl Database {
             return Err(error);
         }
 
-        if let Some(root) = &filesystem_root {
-            commit_workspace_transaction(root)?;
-        }
+        let commit_point_error = if let Some(root) = &filesystem_root {
+            match commit_workspace_transaction(root) {
+                Ok(()) => None,
+                Err(error @ PvError::TransactionOutcomeUnknown(_)) => Some(error),
+                Err(error) => return Err(error),
+            }
+        } else {
+            None
+        };
 
         let state = self
             .active_transaction
@@ -1250,6 +1288,13 @@ impl Database {
             .expect("transaction state checked above");
         self.autocommit = state.previous_autocommit;
         self.durability = state.previous_durability;
+        if let Some(error) = commit_point_error {
+            // The marker removal crossed the commit point, but its directory
+            // sync failed. Consume the live transaction state so callers
+            // cannot attempt an impossible rollback. Preserve the backup in
+            // case the marker deletion is lost across a crash.
+            return Err(error);
+        }
         if let TransactionRollback::Filesystem(root) = state.rollback {
             // The marker is already gone, so cleanup failure cannot make the
             // committed data ambiguous. A later open also removes an orphan.
@@ -1263,56 +1308,69 @@ impl Database {
         Ok(())
     }
 
-    /// Restore the state captured by begin_transaction.
+    /// Restore the state captured by begin_transaction. A restore failure after
+    /// consuming that state returns [`PvError::TransactionOutcomeUnknown`].
     pub fn rollback_transaction(&mut self) -> Result<()> {
         let Some(mut state) = self.active_transaction.take() else {
             return Err(PvError::Transaction("no transaction is active".into()));
         };
 
-        #[cfg(feature = "enterprise")]
-        let enterprise = self.enterprise.clone();
-        match state.rollback {
-            TransactionRollback::Memory(snapshot) => {
-                let mut restored = Database::import_bytes(&snapshot)?;
-                restored.autocommit = state.previous_autocommit;
-                restored.durability = state.previous_durability;
-                #[cfg(feature = "enterprise")]
-                {
-                    restored.enterprise = enterprise;
-                    restored
-                        .enterprise
-                        .emit(crate::enterprise::AuditEvent::pending(
-                            crate::enterprise::AuditEventKind::TransactionRolledBack,
-                            restored.current_tx(),
-                        ));
+        let rollback = (|| -> Result<()> {
+            #[cfg(feature = "enterprise")]
+            let enterprise = self.enterprise.clone();
+            match state.rollback {
+                TransactionRollback::Memory(snapshot) => {
+                    let mut restored = Database::import_bytes(&snapshot)?;
+                    restored.autocommit = state.previous_autocommit;
+                    restored.durability = state.previous_durability;
+                    #[cfg(feature = "enterprise")]
+                    {
+                        restored.enterprise = enterprise;
+                        restored
+                            .enterprise
+                            .emit(crate::enterprise::AuditEvent::pending(
+                                crate::enterprise::AuditEventKind::TransactionRolledBack,
+                                restored.current_tx(),
+                            ));
+                    }
+                    *self = restored;
                 }
-                *self = restored;
-            }
-            TransactionRollback::Filesystem(root) => {
-                // Drop all cached filesystem handles before replacing live files.
-                *self = Database::open_memory();
-                restore_workspace_transaction(&root)?;
-                // Recovery is complete and its marker is gone. Release the
-                // transaction lock before the normal open path acquires it for
-                // its own recovery check.
-                drop(state._filesystem_lock.take());
-                let mut restored = Database::open_dev(&root)?;
-                restored.autocommit = state.previous_autocommit;
-                restored.durability = state.previous_durability;
-                #[cfg(feature = "enterprise")]
-                {
-                    restored.enterprise = enterprise;
-                    restored
-                        .enterprise
-                        .emit(crate::enterprise::AuditEvent::pending(
-                            crate::enterprise::AuditEventKind::TransactionRolledBack,
-                            restored.current_tx(),
-                        ));
+                TransactionRollback::Filesystem(root) => {
+                    // Drop all cached filesystem handles before replacing live files.
+                    *self = Database::open_memory();
+                    restore_workspace_transaction(&root)?;
+                    // Recovery is complete and its marker is gone. Release the
+                    // transaction lock before the normal open path acquires it for
+                    // its own recovery check.
+                    drop(state._filesystem_lock.take());
+                    let mut restored = Database::open_dev(&root)?;
+                    restored.autocommit = state.previous_autocommit;
+                    restored.durability = state.previous_durability;
+                    #[cfg(feature = "enterprise")]
+                    {
+                        restored.enterprise = enterprise;
+                        restored
+                            .enterprise
+                            .emit(crate::enterprise::AuditEvent::pending(
+                                crate::enterprise::AuditEventKind::TransactionRolledBack,
+                                restored.current_tx(),
+                            ));
+                    }
+                    *self = restored;
                 }
-                *self = restored;
             }
-        }
-        Ok(())
+            Ok(())
+        })();
+
+        rollback.map_err(|error| {
+            if matches!(&error, PvError::TransactionOutcomeUnknown(_)) {
+                error
+            } else {
+                PvError::TransactionOutcomeUnknown(format!(
+                    "transaction rollback failed after consuming its recovery state ({error})"
+                ))
+            }
+        })
     }
 
     /// Whether this handle currently owns an explicit transaction.
@@ -1340,7 +1398,7 @@ impl Database {
             Ok(value) => Ok(value),
             Err(error) => {
                 self.rollback_transaction().map_err(|rollback_error| {
-                    PvError::Transaction(format!(
+                    PvError::TransactionOutcomeUnknown(format!(
                         "statement failed ({error}); transaction rollback also failed ({rollback_error})"
                     ))
                 })?;
@@ -1358,8 +1416,18 @@ impl Database {
         params: &[Value],
         limits: QueryLimits,
     ) -> Result<QueryResult> {
+        self.query_with_limits_cancellable(sql, params, limits, None)
+    }
+
+    pub(crate) fn query_with_limits_cancellable(
+        &mut self,
+        sql: &str,
+        params: &[Value],
+        limits: QueryLimits,
+        cancellation: Option<CancellationToken>,
+    ) -> Result<QueryResult> {
         let bound = crate::engine::query::bind_params(sql, params)?;
-        let mut budget = QueryBudget::new(limits);
+        let mut budget = QueryBudget::new_cancellable(limits, cancellation);
         budget.checkpoint()?;
         let result = self.execute_statement(parse(&bound)?, Some(&mut budget))?;
         budget.check_result(&result)?;
@@ -3408,6 +3476,29 @@ fn prepare_workspace_transaction(root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Discard recovery artifacts left by a failed transaction preparation. The
+/// preparation path only copies the committed workspace and publishes a marker;
+/// it does not mutate live data, so removing those artifacts restores the
+/// pre-begin state without replacing files beneath the open page cache.
+fn abort_workspace_transaction_preparation(root: &Path) -> Result<()> {
+    for path in [
+        root.join(TRANSACTION_MARKER_FILE),
+        root.join(".pv_transaction_active.tmp"),
+    ] {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    match fs::remove_dir_all(root.join(TRANSACTION_BACKUP_DIR)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    sync_directory(root)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn acquire_transaction_lock(root: &Path) -> Result<File> {
     let lock = OpenOptions::new()
@@ -3444,7 +3535,11 @@ fn commit_workspace_transaction(root: &Path) -> Result<()> {
         ));
     }
     fs::remove_file(marker)?;
-    sync_directory(root)
+    sync_directory(root).map_err(|error| {
+        PvError::TransactionOutcomeUnknown(format!(
+            "transaction marker was removed, but syncing the commit point failed ({error})"
+        ))
+    })
 }
 
 fn recover_workspace_transaction(root: &Path) -> Result<()> {
@@ -6524,6 +6619,50 @@ mod tests {
                 .unwrap(),
             &[vec![Value::Int(1), Value::Int(100)]]
         );
+    }
+
+    #[test]
+    fn failed_rollback_and_ambiguous_commit_report_unknown_outcome() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let rollback_ws = tmp.path().join("rollback-failure");
+        let mut rollback_db = Database::open_dev(&rollback_ws).unwrap();
+        rollback_db.query("CREATE TABLE t (id)").unwrap();
+        let rollback_result = rollback_db.transaction(|_| {
+            fs::remove_dir_all(rollback_ws.join(TRANSACTION_BACKUP_DIR)).unwrap();
+            Err::<(), _>(PvError::Query("forced operation failure".into()))
+        });
+        assert!(matches!(
+            rollback_result,
+            Err(PvError::TransactionOutcomeUnknown(_))
+        ));
+        assert!(!rollback_db.in_transaction());
+
+        let mutation_ws = tmp.path().join("mutation-rollback-failure");
+        let mut mutation_db = Database::open_dev(&mutation_ws).unwrap();
+        mutation_db.query("CREATE TABLE t (id)").unwrap();
+        mutation_db.begin_transaction().unwrap();
+        fs::remove_dir_all(mutation_ws.join(TRANSACTION_BACKUP_DIR)).unwrap();
+        let mutation_result = mutation_db
+            .atomic_mutation(|_| Err::<(), _>(PvError::Query("forced statement failure".into())));
+        assert!(matches!(
+            mutation_result,
+            Err(PvError::TransactionOutcomeUnknown(_))
+        ));
+        assert!(!mutation_db.in_transaction());
+
+        let commit_ws = tmp.path().join("commit-failure");
+        let mut commit_db = Database::open_dev(&commit_ws).unwrap();
+        commit_db.query("CREATE TABLE t (id)").unwrap();
+        let commit_result = commit_db.transaction(|_| {
+            fs::remove_file(commit_ws.join(TRANSACTION_MARKER_FILE)).unwrap();
+            Ok(())
+        });
+        assert!(matches!(
+            commit_result,
+            Err(PvError::TransactionOutcomeUnknown(_))
+        ));
+        assert!(!commit_db.in_transaction());
     }
 
     #[test]
