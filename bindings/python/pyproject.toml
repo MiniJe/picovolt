@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "picovolt"
-version = "1.8.0"
+version = "1.8.1"
 description = "Embedded SQL database with MVCC history and single-file deployment"
 readme = "README.md"
 requires-python = ">=3.9"
