@@ -159,12 +159,19 @@ account requirement or network dependency is added.
 
 Run `cargo run --release --example concurrency_envelope`: 2000 CAS-backed rows,
 four readers, 160 count queries and 40 durable inserts. The
-[recorded Windows run](../benchmarks/concurrency-v2-windows.json) measured reader
+[historical RC.1 Windows run](../benchmarks/concurrency-v2-windows.json) measured reader
 p50/p95 of 0.067/0.088 ms, writer p50/p95 of 82.9/94.8 ms, and 474 ms total to
 open four snapshots. The final insert journaled one page of a 24-page database.
 These are local observations, not service-level guarantees. Snapshot creation
 and retained-log accounting remain optimization targets. Size limits using
 representative data and the intended filesystem.
+
+The [RC.2 rerun](../benchmarks/concurrency-v2-rc2-windows.json) measured reader
+p95 0.190 ms, writer p95 75.3 ms and 438 ms for four snapshot admissions, with
+one final changed page. This is a single local run, not a repeated latency
+guarantee; its higher reader p95 is retained alongside the write improvement.
+See [the repeated competitor report](../benchmarks/COMPETITORS_2_0_RC2.md) for
+separate Python API measurements, CPU, memory and remaining regressions.
 
 `SharedDatabase::compact_step` queues journaled page maintenance with the same
 writer ordering. Existing read snapshots remain stable through compaction.

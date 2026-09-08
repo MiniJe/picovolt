@@ -1,0 +1,10 @@
+{
+  "reason": "Mixed DuckDB installation: 1.4.4 native runtime coexisted with 1.5.5 distribution metadata. Reports must use loaded runtime version.",
+  "complete_old_runtime_runs": [
+    "competitors-v2-rc2-final-1000.json",
+    "competitors-v2-rc2-final-10000.json"
+  ],
+  "aborted": "50,000-row old-runtime series stopped before completion; no final timings claimed.",
+  "correction": "New isolated benchmark-duckdb-155 directory, SELECT version() checked against Python module and required 1.5.5 before measurements.",
+  "replacement_pattern": "competitors-v2-rc2-current-{1000,10000,50000}.json"
+}

@@ -79,8 +79,10 @@ warning-free Clippy builds on Linux and Windows. Shipped changes are tracked in
   and are rejected rather than mis-run.
 - **Page-backed engine.** Tables are append-only chains of hot row pages and
   optional packed cold pages, each header linking to the next. Inserts append to
-  a row tail and write only that page plus an O(tables) manifest, so autocommit
-  is O(1) per insert rather than a whole-table rewrite. Reads stream through a
+  a row tail. Commit cost also includes catalog/index maintenance, retained-log
+  accounting and the selected durability protocol; it is not uniformly O(1).
+  Logged 2.0 workspaces persist index definitions to reduce catalog rewrites.
+  Reads stream through a
   bounded buffer pool ([`storage/cache.rs`](src/storage/cache.rs)), so datasets
   need not fit in RAM, and opt-in ordered indexes
   ([`storage/index.rs`](src/storage/index.rs)) turn `WHERE col = value` into a

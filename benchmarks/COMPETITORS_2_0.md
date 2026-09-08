@@ -1,17 +1,25 @@
 # PicoVolt 2.0 competitor comparison
 
+This is the preserved **rc.1 baseline**. See the
+[rc.2 performance report](COMPETITORS_2_0_RC2.md) for the optimized candidate,
+current competitor versions, CPU/memory measurements and bulk-loading results.
+
 Measured on 2026-09-08. **PicoVolt 2.0.0-rc.1 is not yet competitive with
 SQLite for this durable embedded SQL workload.** Its indexed point lookups
 are faster than DuckDB through these Python APIs, but DuckDB is substantially
 faster on the aggregate and top-N queries. The results identify engineering
 work; they do not justify an overall “faster database” claim.
 
+Version correction (rc.2 review): the raw results and loaded runtime report
+DuckDB 1.4.4. An earlier report label said 1.5.5 because newer metadata coexisted
+with the old native module. Timings are unchanged; the label is corrected.
+
 ## Environment and method
 
 - Windows 11 build 26200, NTFS on D:, Intel Xeon W-2125 at 4.00 GHz,
   4 physical / 8 logical cores, 34,072,264,704 bytes installed usable RAM.
 - PicoVolt release build at source commit `878ea6548d5cd0bbd628e1d9b5479f1c28f0303c`;
-  SQLite **3.49.1** from Python's standard library; DuckDB **1.5.5**.
+  SQLite **3.49.1** from Python's standard library; DuckDB **1.4.4**.
 - Compiler: Rust **1.95.0**, `x86_64-pc-windows-gnu`, LLVM 22.1.2.
   Measured `picovolt.dll` SHA-256:
   `b74824c55173d051b64f4317b5568e009dd073397e94f4a94e34cc4c9e2e41a6`.
@@ -159,7 +167,7 @@ The helper expects `pv` alongside the release `examples` directory.
 
 ```powershell
 cargo build --locked --release --features capi --example benchmark_workspace --bin pv --lib
-python -m pip install --target target/benchmark-python duckdb==1.5.5
+python -m pip install --target target/benchmark-python duckdb==1.4.4
 $env:PICOVOLT_LIB = "$PWD\target\release\picovolt.dll"
 $env:PYTHONPATH = "$PWD\bindings\python;$PWD\target\benchmark-python"
 python scripts/benchmark_competitors.py --initializer target/release/examples/benchmark_workspace.exe --rows 10000 --trials 5 --output benchmarks/competitors-v2-windows.json

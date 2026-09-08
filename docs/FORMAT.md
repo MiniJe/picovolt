@@ -432,6 +432,9 @@ length, raw blob bytes)` entries. Counts and lengths are checked against the
 remaining payload before allocation; trailing bytes are rejected. The existing
 32-byte checksum prefix wraps this entire payload. The magic distinguishes
 binary payloads from legacy JSON; it does not change the publication boundary.
+RC.1 binaries cannot decode the new binary change records. Use matching rc.2
+binaries for recovery/change consumption; legacy JSON readability is an upgrade
+path, not a promise that earlier candidate binaries can consume newer logs.
 
 Logged workspace manifests in rc.2 retain `indexed_columns` and omit serialized
 index entries. Open rebuilds all these indexes in one scan per table, including
