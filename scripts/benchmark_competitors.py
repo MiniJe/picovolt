@@ -243,6 +243,7 @@ def main():
     parser.add_argument("--trial", type=int, default=0)
     parser.add_argument("--run-dir")
     parser.add_argument("--bulk-api", action="store_true", help="also measure native batch APIs and DuckDB COPY on a separate database")
+    parser.add_argument("--picovolt-source-commit", help="source revision of the supplied PicoVolt binaries, if different from the harness")
     args = parser.parse_args()
     if args.rows <= 100 or args.trials < 1:
         parser.error("rows must exceed 100 and trials must be positive")
@@ -285,6 +286,7 @@ def main():
                 "median_of_trial_p95_ms": statistics.median(r["metrics"][metric]["p95_ms"] for r in trials)}
     result = {"schema_version": 1, "date_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
               "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
+              "picovolt_source_commit": args.picovolt_source_commit or subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
               "platform": platform.platform(), "python": sys.version, "processor": platform.processor(),
               "logical_cpus": os.cpu_count(), "rows_initial": args.rows, "trials": args.trials,
               "client": "Python public APIs; PicoVolt ctypes/JSON, SQLite stdlib, DuckDB native extension",
