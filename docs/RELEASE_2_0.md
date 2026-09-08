@@ -1,6 +1,6 @@
 # PicoVolt 2.0 release ledger
 
-Current candidate: **2.0.0-rc.3**, unpublished. Stable release remains gated.
+Current candidate: **2.0.0-rc.3**, engine `adf527af35ca7fec6c300bdf24bda9810f0bf7f4`, unpublished. Stable release remains gated.
 The [RC2 ledger](RELEASE_2_0_RC2.md) preserves the previous candidate's evidence.
 
 ## Independent review and corrections
@@ -24,11 +24,36 @@ dumps, mixed numeric duplicates, nullable UNIQUE values and reopen behavior.
 
 ## Validation and performance
 
-RC3 validation and benchmark results are recorded below once runs complete.
-Benchmarks preserve the RC2 binaries and independent evidence. Keyed bulk loads
-use each engine's bulk API, enforce identical primary keys, verify all rows after
-reopen and report CPU, memory and storage. Ordinary query benchmarks retain the
-existing common SQL harness and durability/retention settings.
+| Check | RC3 result |
+| --- | --- |
+| Rust, all targets/features | 339 passed |
+| Clippy and doctests | Passed; 2 doctests |
+| Script policy/runner regressions | 24 passed |
+| Published 1.9.0 registry starters | Rust, Node, browser, Python and Linux Go passed |
+| Python | 8 tests passed against both native GNU build and isolated installed Windows wheel |
+| JavaScript/WASM | 5 tests passed against both built and installed npm packages |
+| Go | Uncached tests and vet passed locally; hosted Go 1.26/1.27 passed |
+| C, CLI and HTTP | Quickstart, batch atomicity/rollback, parameters and reopen passed |
+| Candidate hosted CI | All jobs passed on the frozen engine |
+| Windows, macOS and Linux wheels | Built and installation-smoke-tested; publication skipped |
+| Competitor benchmarks | 85 complete fresh-process comparison runs |
+| Retention | 200 additional unpruned commits; 10,200 rows verified on reopen |
+
+[Engine CI](https://github.com/MiniJe/picovolt/actions/runs/34265047478) and
+[wheel build](https://github.com/MiniJe/picovolt/actions/runs/34265044654) apply to
+the exact engine revision above. Existing CI checks do not constitute completion
+of the deferred independent security review.
+
+The [RC3 benchmark report](../benchmarks/COMPETITORS_2_0_RC3.md) preserves raw
+measurements, artifact hashes, timing ranges, resource costs and competitor
+losses. Default keyed bulk loading improved about **91x at 10,000 rows**, with
+about **99% less measured CPU**, while whole-process peak memory rose about 5%.
+SQLite and DuckDB still load that workload faster. Smaller ordinary-workload
+improvements may include host variation; no universal superiority is claimed.
+
+The [fresh independent follow-up prompt](INDEPENDENT_RC3_FOLLOWUP_PROMPT.md)
+pins RC3 and keeps the deferred review gates explicit. That follow-up has not
+been performed by the implementation agent.
 
 ## Remaining stable-release gates
 

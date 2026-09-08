@@ -1,0 +1,15 @@
+{
+  "arch": "x86_64",
+  "final_insert_changed_pages": 1,
+  "initial_changed_pages": 24,
+  "platform": "windows",
+  "read_operations": 160,
+  "read_p50_ms": 0.060000000000000005,
+  "read_p95_ms": 0.1403,
+  "readers": 4,
+  "rows": 2000,
+  "snapshot_total_ms": 584.7580999999999,
+  "write_operations": 40,
+  "write_p50_ms": 86.4576,
+  "write_p95_ms": 104.7347
+}
