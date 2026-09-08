@@ -55,7 +55,7 @@ Same maintained common-SQL harness as RC2, including result checks, rollback and
 | Rollback one delete | 53.2234 | 46.8755 | 0.1170 | 0.7861 |
 | Warm OS-cache reopen | 35.0048 | 31.5413 | 1.1066 | 20.0679 |
 
-Every RC3 ordinary-workload median was lower in these runs, by roughly 2–22%, but several trial ranges overlap. SQLite remains faster in every listed RC3 workload. PicoVolt beats DuckDB on point/range/join queries, common per-row SQL loading and 100-row commits; DuckDB wins bulk loading, aggregation, top-N, single commits, sustained writes, rollback and reopen.
+Every RC3 ordinary-workload median was lower in these runs, by roughly 2–18%, but several trial ranges overlap. SQLite remains faster in every listed RC3 workload. PicoVolt beats DuckDB on point/range/join queries, common per-row SQL loading and 100-row commits; DuckDB wins bulk loading, aggregation, top-N, single commits, sustained writes, rollback and reopen.
 
 CLI pruning before writes and every ten commits remains inside sustained-write timing. The log is not silently disabled or its retention budget enlarged. Storage measurements include retained history; SQLite and DuckDB have different checkpoint/retention behavior, so file sizes do not represent identical historical capabilities.
 

@@ -170,7 +170,7 @@ The [RC.2 rerun](../benchmarks/concurrency-v2-rc2-windows.json) measured reader
 p95 0.190 ms, writer p95 75.3 ms and 438 ms for four snapshot admissions, with
 one final changed page. This is a single local run, not a repeated latency
 guarantee; its higher reader p95 is retained alongside the write improvement.
-See [the repeated competitor report](../benchmarks/COMPETITORS_2_0_RC2.md) for
+See [the repeated competitor report](../benchmarks/COMPETITORS_2_0_RC3.md) for
 separate Python API measurements, CPU, memory and remaining regressions.
 
 `SharedDatabase::compact_step` queues journaled page maintenance with the same

@@ -198,7 +198,7 @@ image's verification hash and the correct following sequence. Do not delete
 | Snapshot admission rejected | Close completed readers; review snapshot count/image limits |
 | Unexpected scan | Use `pv explain` / `EXPLAIN SELECT ...`; index selective filter columns |
 | Read-only error | Open a writable workspace or writable memory copy |
-| Missing native library/symbol | Install/build the matching rc.2 wheel/library; do not mix candidate versions |
+| Missing native library/symbol | Install/build the matching rc.3 wheel/library; do not mix candidate versions |
 | Transaction outcome unknown | Close and reopen to recover/inspect; reconcile before retrying the mutation |
 
 See [the independent review prompt](INDEPENDENT_REVIEW_PROMPT.md) and
