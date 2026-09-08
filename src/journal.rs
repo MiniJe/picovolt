@@ -127,6 +127,7 @@ impl Journal {
         if log.join("active").exists() {
             return Err(PvError::Transaction("commit log needs recovery".into()));
         }
+        cleanup_inactive(&log)?;
         let commits = sequences(&log)?;
         if commits.len() >= options.max_retained_commits {
             return Err(PvError::ResourceLimit(
@@ -322,7 +323,7 @@ pub(crate) fn recover(root: &Path) -> Result<()> {
     safe_directory(&log)?;
     let active = log.join("active");
     if !active.exists() {
-        return Ok(());
+        return cleanup_inactive(&log);
     }
     safe_directory(&active)?;
     let header: Header = serde_json::from_slice(&read_checked(&active.join("header"))?)?;
@@ -390,6 +391,21 @@ pub(crate) fn recover(root: &Path) -> Result<()> {
     fs::rename(active, &discarded)?;
     sync_dir(&log)?;
     fs::remove_dir_all(discarded)?;
+    cleanup_inactive(&log)?;
+    Ok(())
+}
+
+// These names can never contain a committed record or the active undo image.
+// Clear interrupted preparation/cleanup before charging retained history.
+fn cleanup_inactive(log: &Path) -> Result<()> {
+    for name in ["preparing", "discarded"] {
+        let path = log.join(name);
+        if path.exists() {
+            // Validate the entire bounded tree before recursively removing it.
+            tree_size(&path)?;
+            fs::remove_dir_all(path)?;
+        }
+    }
     Ok(())
 }
 
@@ -734,5 +750,37 @@ mod tests {
         assert!(Database::open_dev(temp.path()).is_err());
         assert!(active.exists());
         assert_eq!(fs::read(temp.path().join(MANIFEST_FILE)).unwrap(), original);
+    }
+
+    #[test]
+    fn interrupted_cleanup_does_not_consume_retention_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut db = Database::open_dev(temp.path()).unwrap();
+        let options = CommitLogOptions {
+            max_transaction_bytes: 64 * 1024,
+            max_retained_bytes: 64 * 1024,
+            max_retained_commits: 8,
+        };
+        db.enable_commit_log(options).unwrap();
+        db.query("CREATE TABLE t (id)").unwrap();
+        let log = temp.path().join(COMMIT_LOG_DIR);
+        for name in ["preparing", "discarded"] {
+            fs::create_dir(log.join(name)).unwrap();
+            fs::write(log.join(name).join("partial"), vec![0; 64 * 1024]).unwrap();
+        }
+        // Same-process retry must not charge abandoned bytes to the next write.
+        db.query("INSERT INTO t VALUES (1)").unwrap();
+        assert!(!log.join("preparing").exists());
+        assert!(!log.join("discarded").exists());
+        drop(db);
+        fs::create_dir(log.join("discarded")).unwrap();
+        fs::write(log.join("discarded/partial"), b"interrupted deletion").unwrap();
+        let mut reopened = Database::open_dev(temp.path()).unwrap();
+        assert!(!log.join("discarded").exists());
+        assert_eq!(
+            reopened.query("SELECT id FROM t").unwrap().rows().unwrap(),
+            &[vec![Value::Int(1)]]
+        );
+        assert_eq!(reopened.changes_since(0, 10).unwrap().len(), 2);
     }
 }
