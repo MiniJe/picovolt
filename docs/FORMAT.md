@@ -1,4 +1,4 @@
-# PicoVolt on-disk format (`FORMAT_VERSION = 6`)
+# PicoVolt on-disk format (`FORMAT_VERSION = 7`)
 
 This document specifies the byte-level layout of PicoVolt's persisted data. It is
 the reference for the **0.11.0 format freeze**: from this version on, a change to
@@ -402,7 +402,7 @@ Format 6 retains the v5 page, CAS and binary-index layouts. Its version marker
 prevents a 1.x binary from opening a workspace without processing `.pv-log`
 recovery. Enabling the log raises the workspace format before preparing a
 transaction. Baked format-6 images contain committed data and no live log.
-All formats 1–5 remain readable; `pv migrate` upgrades verified images to 6.
+All formats 1–5 remain readable; `pv migrate` upgrades verified images to 7.
 
 The log lives outside the baked image under `.pv-log/`:
 
@@ -454,3 +454,31 @@ Unix synchronizes directories. Windows synchronizes file contents and relies on
 rename for the process-crash commit boundary; portable Rust lacks the same
 portable directory-fsync power-loss guarantee. Tests exercise abrupt process
 death, not hardware power cuts. See [CONCURRENCY.md](CONCURRENCY.md).
+
+## Format 7: acknowledged commit sequence anchor
+
+Logged rc.3 workspace manifests contain `commit_sequence`, an unsigned 64-bit
+commit cursor. A transaction publishes its new anchor with the manifest before
+renaming the active journal. Until that rename, the checked `active/before`
+manifest supplies the committed anchor. Recovery restores the before-image and
+its anchor together. Earlier candidate binaries reject the format-7 marker.
+
+Open, transaction preparation, log status, change reads and pruning validate
+that every sequence after the checked pruning floor through the anchor exists.
+Losing the tail, a middle directory, the checkpoint or the whole log cannot
+silently lower the head. Expired directories left by interrupted pruning do not
+create gaps. A future change cursor is an error. Restore verified history when
+validation fails; deleting more log files cannot repair an acknowledged cursor.
+
+For an unanchored legacy log, upgrade requires a complete retained sequence
+chain whose final checked change contains the exact live manifest. Empty or
+fully pruned format-6 legacy histories have no verifiable anchor and are refused;
+use a verified backup/base image. This cannot certify data lost before the legacy
+snapshot itself was produced. Unlogged older workspaces remain supported.
+
+Baked images omit the workspace anchor and log: they are independent committed
+images. A host applying physical changes into a writable replica must persist
+the matching cursor/history as part of its own atomic publication. When upstream
+history is not retained, the checked `.pv-log/checkpoint` must equal the applied
+manifest anchor before opening the replica. The offline reconstruction test
+illustrates the representation, not a production replication protocol.

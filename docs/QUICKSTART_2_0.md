@@ -1,6 +1,6 @@
 # PicoVolt 2.0: faster writes and simpler operation
 
-This guide describes **2.0.0-rc.2**, an unpublished candidate. Use the matching
+This guide describes **2.0.0-rc.3**, an unpublished candidate. Use the matching
 candidate library/wheel or build this checkout. Existing registry-only starters
 remain on the published stable release until candidate publication completes.
 
@@ -203,3 +203,20 @@ image's verification hash and the correct following sequence. Do not delete
 
 See [the independent review prompt](INDEPENDENT_REVIEW_PROMPT.md) and
 [the release ledger](RELEASE_2_0.md) for what remains before stable publication.
+
+## Primary keys and imports
+
+PRIMARY KEY and UNIQUE columns receive indexes automatically. Existing writable
+workspaces rebuild missing constraint indexes on open. No extra CREATE INDEX is
+needed for the key; large batches should still use the bulk helpers above.
+
+SQL dump import skips entire unsupported trigger definitions and reports them.
+Comments do not hide subsequent statements. An incomplete quote, block comment
+or trigger rejects the dump before any statement runs. Other SQL execution
+errors retain the documented best-effort import behavior; inspect the report.
+
+A missing-history error means the database can no longer prove its change cursor.
+Restore a verified backup with its history. Do not delete logs to clear the error.
+An intact RC2 log upgrades on the next write; a fully pruned RC2 log cannot prove
+its original cursor and requires a verified base image. Keep the original backup
+before moving an unpublished candidate workspace to RC3.

@@ -105,10 +105,9 @@ pub struct CommitLogStatus {
 
 pub(crate) fn status(root: &Path, options: CommitLogOptions) -> Result<CommitLogStatus> {
     let log = root.join(COMMIT_LOG_DIR);
-    let commits = sequences(&log)?;
-    let pruned_through = checkpoint(&log)?;
+    let (head_sequence, pruned_through, commits) = inventory(root)?;
     Ok(CommitLogStatus {
-        head_sequence: commits.last().copied().unwrap_or(0).max(pruned_through),
+        head_sequence,
         pruned_through,
         retained_commits: commits.len(),
         retained_bytes: if log.exists() { tree_size(&log)? } else { 0 },
@@ -117,12 +116,83 @@ pub(crate) fn status(root: &Path, options: CommitLogOptions) -> Result<CommitLog
 }
 
 pub(crate) fn head(root: &Path) -> Result<u64> {
+    Ok(inventory(root)?.0)
+}
+
+// The manifest is published before the journal rename. While undo is active,
+// its checked before-image is the last committed manifest instead.
+fn inventory(root: &Path) -> Result<(u64, u64, Vec<u64>)> {
     let log = root.join(COMMIT_LOG_DIR);
-    Ok(sequences(&log)?
-        .last()
-        .copied()
-        .unwrap_or(0)
-        .max(checkpoint(&log)?))
+    let commits = sequences(&log)?;
+    let floor = checkpoint(&log)?;
+    let before = log.join("active").join("before");
+    let bytes = if before.exists() {
+        read_checked(&before)?
+    } else if root.join(MANIFEST_FILE).exists() {
+        read_bounded(&root.join(MANIFEST_FILE), HARD_MAX_RECORD)?
+    } else {
+        Vec::new()
+    };
+    let manifest: Option<ManifestMeta> = if bytes.is_empty() {
+        None
+    } else {
+        Some(serde_json::from_slice(&bytes)?)
+    };
+    if let Some(manifest) = manifest
+        .as_ref()
+        .filter(|m| m.format_version > crate::FORMAT_VERSION)
+    {
+        return Err(PvError::Corruption(format!(
+            "unsupported workspace format version {} (maximum {})",
+            manifest.format_version,
+            crate::FORMAT_VERSION
+        )));
+    }
+    let surviving_head = commits.last().copied().unwrap_or(0).max(floor);
+    let head = match manifest.as_ref().and_then(|m| m.commit_sequence) {
+        Some(anchor) => anchor,
+        None => {
+            // Upgrade intact legacy logs only when the latest record proves
+            // that it describes the live database. An empty legacy log cannot
+            // distinguish fully pruned history from lost acknowledged writes.
+            if let Some(sequence) = commits.last().filter(|seq| **seq > floor) {
+                let change = decode_change(&read_checked(
+                    &log.join(format!("{sequence:020}")).join("change"),
+                )?)?;
+                if change.sequence != *sequence || change.manifest != bytes {
+                    return Err(PvError::Corruption("legacy commit history does not match the database; restore a verified backup".into()));
+                }
+            } else if floor > 0
+                || manifest
+                    .as_ref()
+                    .is_some_and(|m| m.format_version >= crate::FORMAT_VERSION_COMMIT_LOG)
+            {
+                return Err(PvError::Corruption("legacy commit history has no verifiable sequence anchor; restore a verified backup".into()));
+            }
+            surviving_head
+        }
+    };
+    if floor > head || surviving_head > head {
+        return Err(PvError::Corruption(
+            "commit history exceeds the manifest sequence anchor".into(),
+        ));
+    }
+    let mut expected = floor;
+    for sequence in commits.iter().copied().filter(|seq| *seq > floor) {
+        if expected.checked_add(1) != Some(sequence) {
+            return Err(PvError::Corruption(
+                "commit history is missing an unpruned sequence".into(),
+            ));
+        }
+        safe_file(&log.join(format!("{sequence:020}")).join("change"))?;
+        expected = sequence;
+    }
+    if expected != head {
+        return Err(PvError::Corruption(
+            "commit history is missing its acknowledged tail; restore a verified backup".into(),
+        ));
+    }
+    Ok((head, floor, commits))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -136,6 +206,10 @@ struct Header {
 // building a generic JSON tree for them on every commit wastes CPU and memory.
 #[derive(Deserialize)]
 struct ManifestMeta {
+    #[serde(default)]
+    format_version: u16,
+    #[serde(default)]
+    commit_sequence: Option<u64>,
     clock: u64,
     page_count: u64,
     cas_hashes: Vec<String>,
@@ -152,8 +226,13 @@ pub(crate) struct Journal {
 }
 
 impl Journal {
+    pub(crate) fn sequence(&self) -> u64 {
+        self.header.sequence
+    }
+
     pub(crate) fn begin(root: &Path, options: CommitLogOptions) -> Result<Self> {
         let options = options.validate()?;
+        let (head, _, commits) = inventory(root)?;
         let log = root.join(COMMIT_LOG_DIR);
         fs::create_dir_all(&log)?;
         safe_directory(&log)?;
@@ -161,7 +240,6 @@ impl Journal {
             return Err(PvError::Transaction("commit log needs recovery".into()));
         }
         cleanup_inactive(&log)?;
-        let commits = sequences(&log)?;
         if commits.len() >= options.max_retained_commits {
             return Err(PvError::ResourceLimit(
                 "commit log is full; prune acknowledged commits".into(),
@@ -171,11 +249,7 @@ impl Journal {
         let before = read_bounded(&root.join(MANIFEST_FILE), options.max_transaction_bytes)?;
         let manifest: ManifestMeta = serde_json::from_slice(&before)?;
         let header = Header {
-            sequence: commits
-                .last()
-                .copied()
-                .unwrap_or(0)
-                .max(checkpoint(&log)?)
+            sequence: head
                 .checked_add(1)
                 .ok_or_else(|| PvError::ResourceLimit("commit sequence exhausted".into()))?,
             before_tx: manifest.clock,
@@ -253,6 +327,11 @@ impl Journal {
             self.options.max_transaction_bytes,
         )?;
         let after: ManifestMeta = serde_json::from_slice(&manifest)?;
+        if after.commit_sequence != Some(self.header.sequence) {
+            return Err(PvError::Corruption(
+                "commit manifest sequence anchor mismatch".into(),
+            ));
+        }
         let mut change = ChangeCommit {
             schema_version: 1,
             sequence: self.header.sequence,
@@ -349,11 +428,13 @@ impl Write for LimitedBytes {
 pub(crate) fn recover(root: &Path) -> Result<()> {
     let log = root.join(COMMIT_LOG_DIR);
     if !log.exists() {
+        head(root)?;
         return Ok(());
     }
     safe_directory(&log)?;
     let active = log.join("active");
     if !active.exists() {
+        head(root)?;
         return cleanup_inactive(&log);
     }
     safe_directory(&active)?;
@@ -363,6 +444,11 @@ pub(crate) fn recover(root: &Path) -> Result<()> {
     if manifest.clock != header.before_tx || manifest.page_count != header.page_count {
         return Err(PvError::Corruption(
             "journal header/manifest mismatch".into(),
+        ));
+    }
+    if head(root)?.checked_add(1) != Some(header.sequence) {
+        return Err(PvError::Corruption(
+            "active journal sequence mismatch".into(),
         ));
     }
     let undo = active.join("undo");
@@ -439,6 +525,12 @@ fn cleanup_inactive(log: &Path) -> Result<()> {
 }
 
 pub(crate) fn changes(root: &Path, after: u64, limit: usize) -> Result<Vec<ChangeCommit>> {
+    let (head, floor, commits) = inventory(root)?;
+    if after > head {
+        return Err(PvError::Transaction(
+            "change cursor is beyond the committed head".into(),
+        ));
+    }
     if limit == 0 {
         return Ok(Vec::new());
     }
@@ -448,7 +540,6 @@ pub(crate) fn changes(root: &Path, after: u64, limit: usize) -> Result<Vec<Chang
         ));
     }
     let log = root.join(COMMIT_LOG_DIR);
-    let floor = checkpoint(&log)?;
     if after < floor {
         return Err(PvError::Transaction(format!(
             "change cursor {after} was pruned through {floor}; obtain a new base image"
@@ -456,11 +547,7 @@ pub(crate) fn changes(root: &Path, after: u64, limit: usize) -> Result<Vec<Chang
     }
     let mut out = Vec::new();
     let mut total = 0u64;
-    for sequence in sequences(&log)?
-        .into_iter()
-        .filter(|seq| *seq > after)
-        .take(limit)
-    {
+    for sequence in commits.into_iter().filter(|seq| *seq > after).take(limit) {
         let path = log.join(format!("{sequence:020}")).join("change");
         total = total.saturating_add(fs::metadata(&path)?.len());
         if total > HARD_MAX_RECORD {
@@ -484,12 +571,11 @@ pub(crate) fn changes(root: &Path, after: u64, limit: usize) -> Result<Vec<Chang
 
 pub(crate) fn prune(root: &Path, through: u64) -> Result<()> {
     let log = root.join(COMMIT_LOG_DIR);
-    let commits = sequences(&log)?;
-    let old = checkpoint(&log)?;
+    let (head, old, commits) = inventory(root)?;
     if through < old {
         return Ok(());
     }
-    if through > commits.last().copied().unwrap_or(old) {
+    if through > head {
         return Err(PvError::Transaction("cannot prune a future commit".into()));
     }
     let mut tmp = tempfile::NamedTempFile::new_in(&log)?;
@@ -902,6 +988,67 @@ mod tests {
         assert!(Database::open_dev(temp.path()).is_err());
         assert!(active.exists());
         assert_eq!(fs::read(temp.path().join(MANIFEST_FILE)).unwrap(), original);
+    }
+
+    #[test]
+    fn intact_legacy_history_upgrades_but_missing_tail_is_rejected() {
+        for missing_tail in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut db = Database::open_dev(temp.path()).unwrap();
+            db.enable_commit_log(CommitLogOptions::default()).unwrap();
+            db.query("CREATE TABLE t(id)").unwrap();
+            db.query("INSERT INTO t VALUES(1)").unwrap();
+            drop(db);
+            let log = temp.path().join(COMMIT_LOG_DIR);
+            let mut final_manifest = Vec::new();
+            for sequence in 1..=2 {
+                let path = log.join(format!("{sequence:020}")).join("change");
+                let mut change = decode_change(&read_checked(&path).unwrap()).unwrap();
+                let mut manifest: serde_json::Value =
+                    serde_json::from_slice(&change.manifest).unwrap();
+                manifest.as_object_mut().unwrap().remove("commit_sequence");
+                manifest["format_version"] = 6.into();
+                change.manifest = serde_json::to_vec(&manifest).unwrap();
+                final_manifest = change.manifest.clone();
+                let mut encoded = Vec::new();
+                encode_change(&mut encoded, &change).unwrap();
+                fs::rename(&path, path.with_extension("preserved-rc3")).unwrap();
+                write_checked(&path, &encoded).unwrap();
+            }
+            fs::write(temp.path().join(MANIFEST_FILE), final_manifest).unwrap();
+            if missing_tail {
+                fs::rename(
+                    log.join(format!("{:020}", 2)),
+                    temp.path().join("preserved-tail"),
+                )
+                .unwrap();
+                assert!(Database::open_dev(temp.path()).is_err());
+            } else {
+                let mut db = Database::open_dev(temp.path()).unwrap();
+                db.query("INSERT INTO t VALUES(2)").unwrap();
+                assert_eq!(db.changes_since(2, 10).unwrap()[0].sequence, 3);
+                drop(db);
+                assert_eq!(head(temp.path()).unwrap(), 3);
+            }
+        }
+    }
+
+    #[test]
+    fn interrupted_prune_keeps_anchor_and_ignores_expired_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut db = Database::open_dev(temp.path()).unwrap();
+        db.enable_commit_log(CommitLogOptions::default()).unwrap();
+        db.query("CREATE TABLE t(id)").unwrap();
+        db.query("INSERT INTO t VALUES(1)").unwrap();
+        drop(db);
+        let log = temp.path().join(COMMIT_LOG_DIR);
+        write_checked(&log.join("checkpoint"), &2u64.to_le_bytes()).unwrap();
+        let mut db = Database::open_dev(temp.path()).unwrap();
+        db.query("INSERT INTO t VALUES(2)").unwrap();
+        assert_eq!(db.changes_since(2, 10).unwrap()[0].sequence, 3);
+        db.prune_changes(3).unwrap();
+        drop(db);
+        assert_eq!(head(temp.path()).unwrap(), 3);
     }
 
     #[test]

@@ -10,9 +10,11 @@ fn migrator_quoted_identifier_cannot_inject_a_statement() {
     // become statement syntax while the dump is split or rewritten.
     let dump = r#"INSERT INTO t VALUES ('a'); DROP TABLE "secret'); "#;
     let report = db.import_sql(dump);
-    assert_eq!(report.executed, 1, "{report:?}");
+    // Lexically incomplete dumps are now rejected before any statement runs.
+    assert_eq!(report.executed, 0, "{report:?}");
     assert_eq!(report.errors.len(), 1, "{report:?}");
     assert!(db.query("SELECT COUNT(*) FROM secret").is_ok());
+    assert_eq!(db.row_count("t", None).unwrap(), 0);
 }
 
 #[test]

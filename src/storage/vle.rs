@@ -164,6 +164,13 @@ impl DevStore {
         Ok(())
     }
 
+    pub(crate) fn journal_sequence(&self) -> Option<u64> {
+        self.journal
+            .borrow()
+            .as_ref()
+            .map(crate::journal::Journal::sequence)
+    }
+
     /// Overwrite the page count (used when the workspace is rewritten wholesale
     /// during a flush). Pages beyond `n` in the chunk files become unreachable.
     pub fn set_page_count(&mut self, n: u64) {

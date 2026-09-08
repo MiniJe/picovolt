@@ -6,6 +6,31 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## 2.0.0-rc.3 - 2026-09-08
+
+### Fixed
+
+- Persist a format-7 commit sequence anchor in the manifest. Missing unpruned
+  history now rejects open, writes and change consumption instead of reusing an
+  acknowledged sequence. Pruning and crash rollback preserve the anchor.
+- Skip complete SQLite trigger bodies, including TEMP/TEMPORARY triggers and
+  nested CASE expressions. Handle SQL comments without discarding following
+  statements. Reject incomplete quotes, comments or triggers before importing.
+- Repair the registry starter runner's out-of-scope argument reference and test
+  all five dispatch paths plus explicit release-version policy.
+
+### Changed
+
+- Automatically index PRIMARY KEY and UNIQUE columns, including rebuilding
+  missing constraint indexes in writable legacy workspaces. Batch uniqueness
+  uses numeric-aware sets instead of repeatedly scanning previous input rows.
+- Intact legacy logs upgrade when their final change matches the database.
+  Ambiguous empty/pruned legacy logs require a verified backup; their lost
+  cursor cannot be reconstructed safely. Baked formats 1-6 remain readable.
+
+This is an unpublished candidate. Independent RC2 findings and deferred external
+and security gates remain recorded in the [release ledger](docs/RELEASE_2_0.md).
+
 ## 2.0.0-rc.2 - 2026-09-08
 
 ### Added

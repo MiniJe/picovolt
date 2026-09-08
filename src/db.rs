@@ -109,6 +109,8 @@ struct Manifest {
     #[serde(default)]
     format_version: u16,
     clock: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    commit_sequence: Option<u64>,
     page_count: u64,
     tables: Vec<TableMeta>,
     cas_hashes: Vec<String>,
@@ -154,6 +156,9 @@ fn check_header_manifest_version(header_version: u16, manifest: &Manifest) -> Re
 
 fn required_manifest_version(manifest: &Manifest) -> u16 {
     let mut required = FORMAT_VERSION_BASE;
+    if manifest.commit_sequence.is_some() {
+        required = crate::FORMAT_VERSION_COMMIT_ANCHOR;
+    }
     if manifest.index_region.is_some()
         || manifest
             .tables
@@ -648,7 +653,7 @@ impl Database {
         self.synced.set(false);
         self.format_version_floor = self
             .format_version_floor
-            .max(crate::FORMAT_VERSION_COMMIT_LOG);
+            .max(crate::FORMAT_VERSION_COMMIT_ANCHOR);
         Ok(())
     }
 
@@ -749,6 +754,11 @@ impl Database {
         if manifest_path.exists() {
             let manifest: Manifest = serde_json::from_slice(&fs::read(&manifest_path)?)?;
             check_manifest_version(&manifest)?;
+            let commit_log = commit_log.or_else(|| {
+                manifest
+                    .commit_sequence
+                    .map(|_| crate::CommitLogOptions::default())
+            });
             let dev = DevStore::open(&root, manifest.page_count)?;
             let mut cache = PageCache::new(Backend::Dev(dev), DEFAULT_CACHE_PAGES);
             let cas = CasStore::load_dev(&root, &manifest.cas_hashes)?;
@@ -763,7 +773,13 @@ impl Database {
                 root: Some(root),
                 autocommit: true,
                 durability: Durability::Fast,
-                format_version_floor: manifest.format_version,
+                format_version_floor: if commit_log.is_some() {
+                    manifest
+                        .format_version
+                        .max(crate::FORMAT_VERSION_COMMIT_ANCHOR)
+                } else {
+                    manifest.format_version
+                },
                 manifest_file: RefCell::new(None),
                 active_transaction: None,
                 commit_log,
@@ -1767,20 +1783,24 @@ impl Database {
                     budget.checkpoint()?;
                 }
                 self.ensure_writable()?;
-                self.validate_insert_values(&table, &values, &[], budget.as_deref_mut())?;
+                self.validate_insert_values(&table, &values, None, budget.as_deref_mut())?;
                 self.insert_validated(&table, values)?;
                 Ok(QueryResult::Mutated(1))
             }
             Statement::InsertMany { table, rows } => {
                 self.ensure_writable()?;
                 let count = rows.len();
-                let mut pending = Vec::with_capacity(count);
+                let mut pending = BTreeMap::new();
                 for values in &rows {
                     if let Some(budget) = budget.as_deref_mut() {
                         budget.materialize(values)?;
                     }
-                    self.validate_insert_values(&table, values, &pending, budget.as_deref_mut())?;
-                    pending.push(values.clone());
+                    self.validate_insert_values(
+                        &table,
+                        values,
+                        Some(&mut pending),
+                        budget.as_deref_mut(),
+                    )?;
                 }
                 if let Some(budget) = budget.as_deref_mut() {
                     budget.checkpoint()?;
@@ -1807,6 +1827,7 @@ impl Database {
                 self.ensure_writable()?;
                 let count = rows.len();
                 let mut normalized = Vec::with_capacity(count);
+                let mut pending = BTreeMap::new();
                 for row in rows {
                     let values =
                         self.normalize_insert_values(&table, target_columns.as_deref(), row)?;
@@ -1816,7 +1837,7 @@ impl Database {
                     self.validate_insert_values(
                         &table,
                         &values,
-                        &normalized,
+                        Some(&mut pending),
                         budget.as_deref_mut(),
                     )?;
                     normalized.push(values);
@@ -2085,6 +2106,10 @@ impl Database {
             name.to_string(),
             Table {
                 columns,
+                indexes: unique_columns
+                    .iter()
+                    .map(|column| (column.clone(), SecondaryIndex::new()))
+                    .collect(),
                 unique_columns: unique_columns.into_iter().collect(),
                 not_null_columns: not_null_columns.into_iter().collect(),
                 defaults,
@@ -2096,7 +2121,6 @@ impl Database {
                 cold_pages: 0,
                 compaction_cursor: None,
                 page_ids: RefCell::new(None),
-                indexes: BTreeMap::new(),
             },
         );
         self.maybe_flush()
@@ -2171,7 +2195,7 @@ impl Database {
     /// Insert one row (a new MVCC version under a fresh transaction id).
     pub fn insert(&mut self, table_name: &str, values: Vec<Value>) -> Result<()> {
         self.ensure_writable()?;
-        self.validate_insert_values(table_name, &values, &[], None)?;
+        self.validate_insert_values(table_name, &values, None, None)?;
         self.insert_validated(table_name, values)
     }
 
@@ -2238,7 +2262,7 @@ impl Database {
         &self,
         table_name: &str,
         values: &[Value],
-        pending: &[Vec<Value>],
+        mut pending: Option<&mut BTreeMap<String, BTreeSet<Value>>>,
         mut budget: Option<&mut QueryBudget>,
     ) -> Result<()> {
         self.validate_row_constraints(table_name, values)?;
@@ -2250,20 +2274,19 @@ impl Database {
         for column in &unique_columns {
             let ix = col_pos(&columns, column)?;
             if values[ix] != Value::Null {
-                let mut duplicate_pending = false;
-                for row in pending {
+                if let Some(pending) = pending.as_deref_mut() {
                     if let Some(budget) = budget.as_deref_mut() {
                         budget.scan_row()?;
                     }
-                    if values_equal(&row[ix], &values[ix]) {
-                        duplicate_pending = true;
-                        break;
+                    if !pending
+                        .entry(column.clone())
+                        .or_default()
+                        .insert(join_key(&values[ix]))
+                    {
+                        return Err(PvError::Schema(format!(
+                            "duplicate value for unique column `{column}`"
+                        )));
                     }
-                }
-                if duplicate_pending {
-                    return Err(PvError::Schema(format!(
-                        "duplicate value for unique column `{column}`"
-                    )));
                 }
                 let predicate = Predicate::eq(column, values[ix].clone());
                 let duplicate_existing = !self
@@ -3652,6 +3675,19 @@ impl Database {
         Ok(Manifest {
             format_version,
             clock: self.txm.current(),
+            commit_sequence: if matches!(plan, IndexPlan::Definitions) {
+                match self.cache.borrow().backend() {
+                    Backend::Dev(dev) => Some(match dev.journal_sequence() {
+                        Some(sequence) => sequence,
+                        None => crate::journal::head(
+                            self.root.as_ref().expect("development workspace"),
+                        )?,
+                    }),
+                    _ => None,
+                }
+            } else {
+                None
+            },
             page_count,
             tables,
             cas_hashes,
@@ -6048,10 +6084,18 @@ fn build_tables(
                     SecondaryIndex::from_pairs(pi.pairs.clone()),
                 );
             }
-        } else {
+        }
+        {
             let table = tables.get(&meta.name).expect("just inserted");
             let mut rebuilt = Vec::new();
-            for column in &meta.indexed_columns {
+            let mut desired: BTreeSet<_> = meta.indexed_columns.iter().collect();
+            if writable {
+                desired.extend(meta.unique_columns.iter());
+            }
+            for column in desired {
+                if table.indexes.contains_key(column) {
+                    continue;
+                }
                 rebuilt.push((
                     column.clone(),
                     column_index(table, column)?,
@@ -7461,9 +7505,8 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, PvError::ResourceLimit(_)));
 
-        // The indexed predicate finds only one UPDATE target. The uniqueness
-        // validation still has to inspect the table, and must share the same
-        // scan budget instead of performing an unmetered second scan.
+        // Automatic constraint indexes keep uniqueness validation inside a
+        // small shared budget, even when the table exceeds that budget.
         let mut unique = Database::open_memory();
         unique
             .query("CREATE TABLE guarded (id PRIMARY KEY, marker)")
@@ -7474,14 +7517,13 @@ mod tests {
                 .unwrap();
         }
         unique.query("CREATE INDEX ON guarded (marker)").unwrap();
-        let error = unique
+        unique
             .query_with_limits(
                 "UPDATE guarded SET id = 100 WHERE marker = 0",
                 &[],
                 QueryLimits::new(3, usize::MAX, usize::MAX, None),
             )
-            .unwrap_err();
-        assert!(matches!(error, PvError::ResourceLimit(_)));
+            .unwrap();
         assert_eq!(unique.row_count("guarded", None).unwrap(), 10);
         assert_eq!(
             unique
@@ -7489,7 +7531,7 @@ mod tests {
                 .unwrap()
                 .rows()
                 .unwrap(),
-            &[vec![Value::Int(0)]]
+            &[vec![Value::Int(100)]]
         );
     }
 }

@@ -1,8 +1,8 @@
-//! Produce the v6 fixture without regenerating historical golden files.
+//! Produce the v7 fixture without regenerating historical golden files.
 use picovolt::{CommitLogOptions, Database, Value};
 
 fn main() -> picovolt::Result<()> {
-    let output = std::path::Path::new("tests/fixtures/golden_v2_0_0.pvdb");
+    let output = std::path::Path::new("tests/fixtures/golden_v2_0_0_rc3.pvdb");
     if output.exists() {
         return Err(picovolt::PvError::Transaction(
             "v2 golden already exists".into(),

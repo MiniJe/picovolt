@@ -204,7 +204,7 @@ fn log_format_prevents_legacy_recovery_bypass_and_sql_reopen_preserves_stream() 
             .unwrap();
     assert_eq!(
         manifest["format_version"],
-        picovolt::FORMAT_VERSION_COMMIT_LOG
+        picovolt::FORMAT_VERSION_COMMIT_ANCHOR
     );
     // The worker is idle; the public contract prohibits using these two live
     // handles concurrently. The reopened sequential API detects the log.
@@ -246,6 +246,15 @@ fn physical_change_stream_reconstructs_a_verified_database() {
                 std::fs::write(parent.join(&blob.hash), &blob.bytes)?;
             }
             std::fs::write(self.0.join(picovolt::MANIFEST_FILE), &commit.manifest)?;
+            // This offline test sink does not retain upstream log records.
+            // Persist its applied cursor as the retention floor before open.
+            // A production sink must publish these files atomically/durably.
+            let log = self.0.join(picovolt::COMMIT_LOG_DIR);
+            std::fs::create_dir_all(&log)?;
+            let cursor = commit.sequence.to_le_bytes();
+            let mut checkpoint = blake3::hash(&cursor).as_bytes().to_vec();
+            checkpoint.extend_from_slice(&cursor);
+            std::fs::write(log.join("checkpoint"), checkpoint)?;
             Ok(())
         }
     }

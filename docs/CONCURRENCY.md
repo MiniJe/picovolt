@@ -175,3 +175,10 @@ separate Python API measurements, CPU, memory and remaining regressions.
 
 `SharedDatabase::compact_step` queues journaled page maintenance with the same
 writer ordering. Existing read snapshots remain stable through compaction.
+
+### RC3 sequence continuity
+
+Format 7 anchors the committed cursor in the manifest and validates unpruned
+history on open and before further writes. A missing-history error requires a
+verified backup/history, not resetting the cursor. See [format 7](FORMAT.md#format-7-acknowledged-commit-sequence-anchor)
+for legacy log upgrade and host-owned replica publication requirements.

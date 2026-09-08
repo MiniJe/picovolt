@@ -349,7 +349,9 @@ def _run_rust(temp: Path, version: str) -> None:
     package = next((item for item in packages if item["name"] == "picovolt"), None)
     _require(package is not None, "rust: cargo metadata omitted picovolt")
     _require_crates_io_package(package, version)
-    _run(["cargo", "run", "--quiet", "--locked"], cwd=starter, env=env)
+    # A clean registry-only build also compiles dependencies on slower Windows
+    # hosts; keep a finite cold-build budget separate from ordinary commands.
+    _run(["cargo", "run", "--quiet", "--locked"], cwd=starter, env=env, timeout=900)
 
 
 def _run_npm(temp: Path, name: str, version: str) -> None:
@@ -586,8 +588,8 @@ print(actual)
     _run(["go", "run", "."], cwd=starter, env=env)
 
 
-def run_starters(starters: Iterable[str], version: str) -> None:
-    check_policy(ROOT, args.version)
+def run_starters(starters: Iterable[str], version: str, *, policy_version: Optional[str] = None) -> None:
+    check_policy(ROOT, policy_version)
     with tempfile.TemporaryDirectory(prefix="picovolt-registry-starters-") as directory:
         temp = Path(directory)
         for starter in starters:
@@ -623,7 +625,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         check_policy(ROOT, args.version)
         print(f"starter policy passed for PicoVolt {version}")
         if args.mode == "run":
-            run_starters(args.starters or STARTER_NAMES, version)
+            run_starters(args.starters or STARTER_NAMES, version, policy_version=args.version)
     except (PolicyError, OSError, subprocess.SubprocessError) as error:
         print(f"starter gate failed: {error}", file=sys.stderr)
         return 1

@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from unittest import mock
+from scripts import check_registry_starters as runner
 
 from scripts.check_registry_starters import (
     CRATES_IO_SOURCE,
@@ -23,6 +24,20 @@ from scripts.check_registry_starters import (
 
 
 class StarterPolicyTests(unittest.TestCase):
+    def test_run_routes_all_five_starters_without_cli_global_state(self):
+        with mock.patch.object(runner, "_run_rust") as rust, mock.patch.object(runner, "_run_npm") as npm, mock.patch.object(runner, "_run_python") as python, mock.patch.object(runner, "_run_go") as go:
+            runner.run_starters(runner.STARTER_NAMES, runner.registry_version())
+        self.assertEqual(rust.call_count, 1)
+        self.assertEqual(npm.call_count, 2)
+        self.assertEqual(python.call_count, 1)
+        self.assertEqual(go.call_count, 1)
+
+    def test_main_preserves_explicit_release_policy_version(self):
+        with mock.patch.object(runner, "check_policy") as policy, mock.patch.object(runner, "run_starters") as run:
+            self.assertEqual(runner.main(["run", "--version", "2.0.0", "--starter", "rust"]), 0)
+        policy.assert_called_once_with(runner.ROOT, "2.0.0")
+        run.assert_called_once_with(["rust"], "2.0.0", policy_version="2.0.0")
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="picovolt-starter-policy-")
         self.root = Path(self.temp.name)
