@@ -74,6 +74,16 @@ def worker(args):
     db_path = trial_dir / ("workspace" if args.engine == "picovolt" else "database.db")
     engine = Engine(args.engine, db_path, args.initializer)
     samples = {}
+    prune_cli = Path(args.initializer).resolve().parents[1] / ("pv.exe" if os.name == "nt" else "pv")
+
+    def prune():
+        # Use the shipped CLI because Python does not expose the native Rust
+        # pruning API. Include process startup, open, and pruning in its timing.
+        sequences = [int(p.name) for p in (db_path / ".pv-log").iterdir()
+                     if p.is_dir() and len(p.name) == 20 and p.name.isdigit()]
+        if sequences:
+            subprocess.run([str(prune_cli), "log-prune", str(db_path), str(max(sequences))],
+                           check=True, capture_output=True)
     if args.engine != "picovolt":
         engine.query("CREATE TABLE events (id INTEGER, bucket INTEGER, amount INTEGER, payload TEXT)")
         engine.query("CREATE TABLE categories (bucket INTEGER, label TEXT)")
@@ -130,14 +140,22 @@ def worker(args):
         assert actual == expected, (name, args.engine, actual[:3], expected[:3])
 
     # 60 separately committed rows, followed by 10 transactions of 100 rows.
+    if args.engine == "picovolt":
+        timed(samples, "initial_prune_cli", prune)
+    write_start = time.perf_counter_ns()
     for i in range(args.rows, args.rows + 60):
         values = row(i)
         timed(samples, "single_row_commit", lambda: engine.query("INSERT INTO events VALUES (?, ?, ?, ?)", values))
         data.append(values)
+        if args.engine == "picovolt" and (i - args.rows + 1) % 10 == 0:
+            timed(samples, "prune_10_commits_cli", prune)
     for batch in range(10):
         values = [row(i) for i in range(args.rows + 60 + batch*100, args.rows + 160 + batch*100)]
         timed(samples, "batch_100_commit", lambda: insert_batch(values))
         data.extend(values)
+    if args.engine == "picovolt":
+        timed(samples, "prune_10_commits_cli", prune)
+    samples["sustained_write_phase"] = [(time.perf_counter_ns() - write_start) / 1e6]
     def rollback():
         engine.query("BEGIN")
         engine.query("DELETE FROM events WHERE id = 0")
@@ -209,7 +227,7 @@ def main():
               "platform": platform.platform(), "python": sys.version, "processor": platform.processor(),
               "logical_cpus": os.cpu_count(), "rows_initial": args.rows, "trials": args.trials,
               "client": "Python public APIs; PicoVolt ctypes/JSON, SQLite stdlib, DuckDB native extension",
-              "durability": {"picovolt": "format 6 commit log; Sync transactions; default limits; retain all commits",
+              "durability": {"picovolt": "format 6 commit log; Sync transactions; default limits; explicit CLI pruning before writes and every 10 commits, timed separately and included in sustained_write_phase",
                              "sqlite": "WAL, synchronous=FULL; default automatic checkpoint", "duckdb": "persistent database; default WAL/checkpoint; threads=1"},
               "summary": summary, "runs": results}
     Path(args.output).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
