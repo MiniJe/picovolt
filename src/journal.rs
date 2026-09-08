@@ -1,0 +1,738 @@
+//! Bounded, checksummed page undo journal and ordered physical change stream.
+//!
+//! The active directory is synced before any page can be overwritten. Each
+//! original page is synced once before its first write. Data and the change
+//! record are synced before renaming `active` to its sequence number: that
+//! rename is the commit point. Recovery of `active` is idempotent undo.
+
+use std::collections::BTreeSet;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::storage::vle::PAGES_PER_CHUNK;
+use crate::{PvError, Result, MANIFEST_FILE, PAGE_SIZE};
+
+pub const COMMIT_LOG_DIR: &str = ".pv-log";
+const HARD_MAX_RECORD: u64 = 256 * 1024 * 1024;
+
+/// Limits include retained undo data and serialized change records. Reaching a
+/// limit rejects a write; consumers explicitly prune acknowledged history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitLogOptions {
+    pub max_transaction_bytes: u64,
+    pub max_retained_bytes: u64,
+    pub max_retained_commits: usize,
+}
+
+impl Default for CommitLogOptions {
+    fn default() -> Self {
+        Self {
+            max_transaction_bytes: 64 * 1024 * 1024,
+            max_retained_bytes: 256 * 1024 * 1024,
+            max_retained_commits: 4096,
+        }
+    }
+}
+
+impl CommitLogOptions {
+    pub(crate) fn validate(self) -> Result<Self> {
+        if self.max_transaction_bytes == 0
+            || self.max_transaction_bytes > HARD_MAX_RECORD
+            || self.max_retained_bytes < self.max_transaction_bytes
+            || self.max_retained_commits == 0
+            || self.max_retained_commits > 65536
+        {
+            return Err(PvError::ResourceLimit("invalid commit-log limits".into()));
+        }
+        Ok(self)
+    }
+}
+
+/// One final physical page image, including its native page checksum.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageChange {
+    pub page_id: u64,
+    pub bytes: Vec<u8>,
+}
+
+/// A newly referenced content-addressed blob.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlobChange {
+    pub hash: String,
+    pub bytes: Vec<u8>,
+}
+
+/// A durable commit. Sequence numbers order commits, independently of MVCC ids
+/// (a transaction can contain several mutations or catalog-only changes).
+/// Physical replication requires a matching verified base image and format.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangeCommit {
+    pub schema_version: u32,
+    pub sequence: u64,
+    pub before_tx: u64,
+    pub after_tx: u64,
+    pub manifest: Vec<u8>,
+    pub pages: Vec<PageChange>,
+    pub blobs: Vec<BlobChange>,
+}
+
+/// Host-owned extension point. Encryption, transport, acknowledgements and
+/// idempotent replay belong to the consumer; the engine makes no network calls.
+pub trait ChangeSink {
+    fn accept(&mut self, commit: &ChangeCommit) -> Result<()>;
+}
+
+/// A quiescent image and the exclusive change cursor that follows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotCheckpoint {
+    pub sequence: u64,
+    pub transaction: u64,
+    pub verification_hash: String,
+}
+
+pub(crate) fn head(root: &Path) -> Result<u64> {
+    let log = root.join(COMMIT_LOG_DIR);
+    Ok(sequences(&log)?
+        .last()
+        .copied()
+        .unwrap_or(0)
+        .max(checkpoint(&log)?))
+}
+
+#[derive(Serialize, Deserialize)]
+struct Header {
+    sequence: u64,
+    before_tx: u64,
+    page_count: u64,
+}
+
+pub(crate) struct Journal {
+    root: PathBuf,
+    header: Header,
+    touched: BTreeSet<u64>,
+    options: CommitLogOptions,
+    used: u64,
+    retained: u64,
+}
+
+impl Journal {
+    pub(crate) fn begin(root: &Path, options: CommitLogOptions) -> Result<Self> {
+        let options = options.validate()?;
+        let log = root.join(COMMIT_LOG_DIR);
+        fs::create_dir_all(&log)?;
+        safe_directory(&log)?;
+        if log.join("active").exists() {
+            return Err(PvError::Transaction("commit log needs recovery".into()));
+        }
+        let commits = sequences(&log)?;
+        if commits.len() >= options.max_retained_commits {
+            return Err(PvError::ResourceLimit(
+                "commit log is full; prune acknowledged commits".into(),
+            ));
+        }
+        let retained = tree_size(&log)?;
+        let before = read_bounded(&root.join(MANIFEST_FILE), options.max_transaction_bytes)?;
+        let manifest: serde_json::Value = serde_json::from_slice(&before)?;
+        let header = Header {
+            sequence: commits
+                .last()
+                .copied()
+                .unwrap_or(0)
+                .max(checkpoint(&log)?)
+                .checked_add(1)
+                .ok_or_else(|| PvError::ResourceLimit("commit sequence exhausted".into()))?,
+            before_tx: number(&manifest, "clock")?,
+            page_count: number(&manifest, "page_count")?,
+        };
+        let staging = log.join("preparing");
+        if staging.exists() {
+            safe_directory(&staging)?;
+            fs::remove_dir_all(&staging)?;
+        }
+        fs::create_dir(&staging)?;
+        let mut journal = Self {
+            root: root.to_path_buf(),
+            header,
+            touched: BTreeSet::new(),
+            options,
+            used: 0,
+            retained,
+        };
+        journal.reserve(before.len() as u64 + 1024)?;
+        write_checked(&staging.join("before"), &before)?;
+        write_checked(
+            &staging.join("header"),
+            &serde_json::to_vec(&journal.header)?,
+        )?;
+        fs::create_dir(staging.join("undo"))?;
+        sync_dir(&staging)?;
+        fs::rename(staging, log.join("active"))?;
+        sync_dir(&log)?;
+        sync_dir(root)?;
+        crash_point("prepared");
+        Ok(journal)
+    }
+
+    fn reserve(&mut self, bytes: u64) -> Result<()> {
+        let used = self
+            .used
+            .checked_add(bytes)
+            .ok_or_else(|| PvError::ResourceLimit("journal size overflow".into()))?;
+        if used > self.options.max_transaction_bytes
+            || self.retained.saturating_add(used) > self.options.max_retained_bytes
+        {
+            return Err(PvError::ResourceLimit(
+                "commit log byte limit reached; reduce transaction or prune history".into(),
+            ));
+        }
+        self.used = used;
+        Ok(())
+    }
+
+    pub(crate) fn before_write(&mut self, id: u64) -> Result<()> {
+        if self.touched.contains(&id) {
+            return Ok(());
+        }
+        self.reserve(PAGE_SIZE as u64 + 32)?;
+        if id < self.header.page_count {
+            let page = read_page(&self.root, id)?;
+            let undo = self.root.join(COMMIT_LOG_DIR).join("active/undo");
+            let pending = undo.join(format!("{id:020}.tmp"));
+            write_checked(&pending, &page)?;
+            fs::rename(pending, undo.join(format!("{id:020}")))?;
+            sync_dir(&undo)?;
+            crash_point("undo_synced");
+        }
+        self.touched.insert(id);
+        Ok(())
+    }
+
+    pub(crate) fn commit(&mut self) -> Result<()> {
+        let log = self.root.join(COMMIT_LOG_DIR);
+        let active = log.join("active");
+        let manifest = read_bounded(
+            &self.root.join(MANIFEST_FILE),
+            self.options.max_transaction_bytes,
+        )?;
+        let after: serde_json::Value = serde_json::from_slice(&manifest)?;
+        let before: serde_json::Value =
+            serde_json::from_slice(&read_checked(&active.join("before"))?)?;
+        let old_hashes: BTreeSet<&str> = hashes(&before)?.into_iter().collect();
+        let mut change = ChangeCommit {
+            schema_version: 1,
+            sequence: self.header.sequence,
+            before_tx: self.header.before_tx,
+            after_tx: number(&after, "clock")?,
+            manifest,
+            pages: Vec::new(),
+            blobs: Vec::new(),
+        };
+        let mut payload_bytes = change.manifest.len() as u64;
+        for &page_id in &self.touched {
+            payload_bytes = payload_bytes.saturating_add(PAGE_SIZE as u64);
+            if payload_bytes > self.options.max_transaction_bytes.saturating_sub(self.used) {
+                return Err(PvError::ResourceLimit("change payload byte limit".into()));
+            }
+            change.pages.push(PageChange {
+                page_id,
+                bytes: read_page(&self.root, page_id)?.to_vec(),
+            });
+        }
+        for hash in hashes(&after)? {
+            if !old_hashes.contains(hash) {
+                if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err(PvError::Corruption("invalid journal blob hash".into()));
+                }
+                let path = self.root.join("blobs").join(&hash[..2]).join(hash);
+                let bytes = read_bounded(
+                    &path,
+                    self.options
+                        .max_transaction_bytes
+                        .saturating_sub(self.used)
+                        .saturating_sub(payload_bytes),
+                )?;
+                payload_bytes = payload_bytes.saturating_add(bytes.len() as u64);
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&path)?
+                    .sync_all()?;
+                sync_dir(path.parent().expect("blob parent"))?;
+                sync_dir(&self.root.join("blobs"))?;
+                if blake3::hash(&bytes).to_hex().as_str() != hash {
+                    return Err(PvError::Corruption("journal blob hash mismatch".into()));
+                }
+                change.blobs.push(BlobChange {
+                    hash: hash.into(),
+                    bytes,
+                });
+            }
+        }
+        // Streaming serialization enforces the budget before allocating a
+        // potentially large JSON representation of binary pages and blobs.
+        let mut encoded = LimitedBytes {
+            bytes: Vec::new(),
+            limit: self.options.max_transaction_bytes.saturating_sub(self.used),
+        };
+        serde_json::to_writer(&mut encoded, &change).map_err(|e| {
+            PvError::ResourceLimit(format!("commit record exceeds transaction budget: {e}"))
+        })?;
+        self.reserve(encoded.bytes.len() as u64 + 32)?;
+        write_checked(&active.join("change"), &encoded.bytes)?;
+        sync_dir(&active)?;
+        crash_point("record_synced");
+        sync_dir(&self.root.join("chunks"))?;
+        sync_dir(&self.root)?;
+        fs::rename(&active, log.join(format!("{:020}", self.header.sequence)))?;
+        crash_point("commit_renamed");
+        sync_dir(&log).map_err(|error| {
+            PvError::TransactionOutcomeUnknown(format!(
+                "commit renamed but directory sync failed: {error}"
+            ))
+        })?;
+        Ok(())
+    }
+}
+
+struct LimitedBytes {
+    bytes: Vec<u8>,
+    limit: u64,
+}
+impl Write for LimitedBytes {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if (self.bytes.len() as u64).saturating_add(bytes.len() as u64) > self.limit {
+            return Err(std::io::Error::other("commit record byte limit"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(crate) fn recover(root: &Path) -> Result<()> {
+    let log = root.join(COMMIT_LOG_DIR);
+    if !log.exists() {
+        return Ok(());
+    }
+    safe_directory(&log)?;
+    let active = log.join("active");
+    if !active.exists() {
+        return Ok(());
+    }
+    safe_directory(&active)?;
+    let header: Header = serde_json::from_slice(&read_checked(&active.join("header"))?)?;
+    let before = read_checked(&active.join("before"))?;
+    let manifest: serde_json::Value = serde_json::from_slice(&before)?;
+    if number(&manifest, "clock")? != header.before_tx
+        || number(&manifest, "page_count")? != header.page_count
+    {
+        return Err(PvError::Corruption(
+            "journal header/manifest mismatch".into(),
+        ));
+    }
+    let undo = active.join("undo");
+    safe_directory(&undo)?;
+    let mut pages = Vec::new();
+    for entry in fs::read_dir(&undo)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name.to_string_lossy().ends_with(".tmp") {
+            continue;
+        }
+        let id = parse_sequence(&name.to_string_lossy())?;
+        if id >= header.page_count {
+            return Err(PvError::Corruption(
+                "undo page outside original image".into(),
+            ));
+        }
+        let bytes = read_checked(&entry.path())?;
+        if bytes.len() != PAGE_SIZE {
+            return Err(PvError::Corruption("invalid undo page size".into()));
+        }
+        // Validate all entries before changing the live workspace. Bound memory
+        // by retaining only ids; the second pass rechecks each payload.
+        pages.push(id);
+        if pages.len() as u64 * (PAGE_SIZE as u64 + 32) > HARD_MAX_RECORD {
+            return Err(PvError::ResourceLimit("undo journal too large".into()));
+        }
+    }
+    safe_directory(&root.join("chunks"))?;
+    for id in pages {
+        let bytes = read_checked(&undo.join(format!("{id:020}")))?;
+        let path = chunk_path(root, id);
+        safe_file(&path)?;
+        let mut file = OpenOptions::new().write(true).open(path)?;
+        file.seek(SeekFrom::Start(id % PAGES_PER_CHUNK * PAGE_SIZE as u64))?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+    }
+    // New append pages and blobs are unreachable under the original manifest;
+    // retaining them avoids destructive directory replacement during recovery.
+    safe_file(&root.join(MANIFEST_FILE))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(root)?;
+    tmp.write_all(&before)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(root.join(MANIFEST_FILE))
+        .map_err(|e| PvError::Io(e.error))?;
+    sync_dir(root)?;
+    // Rename makes cleanup crash-safe: an interrupted delete can never leave
+    // a partially deleted active recovery journal.
+    let discarded = log.join("discarded");
+    if discarded.exists() {
+        safe_directory(&discarded)?;
+        fs::remove_dir_all(&discarded)?;
+    }
+    fs::rename(active, &discarded)?;
+    sync_dir(&log)?;
+    fs::remove_dir_all(discarded)?;
+    Ok(())
+}
+
+pub(crate) fn changes(root: &Path, after: u64, limit: usize) -> Result<Vec<ChangeCommit>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    if limit > 4096 {
+        return Err(PvError::ResourceLimit(
+            "change batch exceeds 4096 commits".into(),
+        ));
+    }
+    let log = root.join(COMMIT_LOG_DIR);
+    let floor = checkpoint(&log)?;
+    if after < floor {
+        return Err(PvError::Transaction(format!(
+            "change cursor {after} was pruned through {floor}; obtain a new base image"
+        )));
+    }
+    let mut out = Vec::new();
+    let mut total = 0u64;
+    for sequence in sequences(&log)?
+        .into_iter()
+        .filter(|seq| *seq > after)
+        .take(limit)
+    {
+        let path = log.join(format!("{sequence:020}")).join("change");
+        total = total.saturating_add(fs::metadata(&path)?.len());
+        if total > HARD_MAX_RECORD {
+            return Err(PvError::ResourceLimit(
+                "change batch exceeds 256 MiB; request fewer commits".into(),
+            ));
+        }
+        let change: ChangeCommit = serde_json::from_slice(&read_checked(&path)?)?;
+        if change.schema_version != 1
+            || change.sequence != sequence
+            || sequence != after + out.len() as u64 + 1
+        {
+            return Err(PvError::Corruption(
+                "change stream sequence or schema mismatch".into(),
+            ));
+        }
+        out.push(change);
+    }
+    Ok(out)
+}
+
+pub(crate) fn prune(root: &Path, through: u64) -> Result<()> {
+    let log = root.join(COMMIT_LOG_DIR);
+    let commits = sequences(&log)?;
+    let old = checkpoint(&log)?;
+    if through < old {
+        return Ok(());
+    }
+    if through > commits.last().copied().unwrap_or(old) {
+        return Err(PvError::Transaction("cannot prune a future commit".into()));
+    }
+    let mut tmp = tempfile::NamedTempFile::new_in(&log)?;
+    let bytes = through.to_le_bytes();
+    tmp.write_all(blake3::hash(&bytes).as_bytes())?;
+    tmp.write_all(&bytes)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(log.join("checkpoint"))
+        .map_err(|e| PvError::Io(e.error))?;
+    sync_dir(&log)?;
+    for seq in commits.into_iter().filter(|seq| *seq <= through) {
+        let path = log.join(format!("{seq:020}"));
+        safe_directory(&path)?;
+        fs::remove_dir_all(path)?;
+    }
+    sync_dir(&log)
+}
+
+fn checkpoint(log: &Path) -> Result<u64> {
+    let path = log.join("checkpoint");
+    if !path.exists() {
+        return Ok(0);
+    }
+    let bytes = read_checked(&path)?;
+    Ok(u64::from_le_bytes(bytes.try_into().map_err(|_| {
+        PvError::Corruption("invalid log checkpoint".into())
+    })?))
+}
+
+fn sequences(log: &Path) -> Result<Vec<u64>> {
+    if !log.exists() {
+        return Ok(Vec::new());
+    }
+    safe_directory(log)?;
+    let mut result = Vec::new();
+    for entry in fs::read_dir(log)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.len() == 20 && name.bytes().all(|c| c.is_ascii_digit()) {
+            safe_directory(&entry.path())?;
+            result.push(parse_sequence(&name)?);
+            if result.len() > 65536 {
+                return Err(PvError::ResourceLimit("too many retained commits".into()));
+            }
+        }
+    }
+    result.sort_unstable();
+    Ok(result)
+}
+
+fn parse_sequence(name: &str) -> Result<u64> {
+    if name.len() != 20 || !name.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(PvError::Corruption("invalid journal entry name".into()));
+    }
+    name.parse()
+        .map_err(|_| PvError::Corruption("journal entry overflow".into()))
+}
+fn number(value: &serde_json::Value, key: &str) -> Result<u64> {
+    value[key]
+        .as_u64()
+        .ok_or_else(|| PvError::Corruption(format!("missing journal manifest {key}")))
+}
+fn hashes(value: &serde_json::Value) -> Result<Vec<&str>> {
+    value["cas_hashes"]
+        .as_array()
+        .ok_or_else(|| PvError::Corruption("missing CAS hashes".into()))?
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .ok_or_else(|| PvError::Corruption("invalid CAS hash".into()))
+        })
+        .collect()
+}
+fn chunk_path(root: &Path, id: u64) -> PathBuf {
+    root.join("chunks")
+        .join(format!("chunk_{:05}.pvd", id / PAGES_PER_CHUNK))
+}
+fn read_page(root: &Path, id: u64) -> Result<[u8; PAGE_SIZE]> {
+    let path = chunk_path(root, id);
+    safe_directory(&root.join("chunks"))?;
+    safe_file(&path)?;
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(id % PAGES_PER_CHUNK * PAGE_SIZE as u64))?;
+    let mut page = [0; PAGE_SIZE];
+    file.read_exact(&mut page)?;
+    Ok(page)
+}
+fn safe_file(path: &Path) -> Result<()> {
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.is_file() || meta.file_type().is_symlink() {
+        return Err(PvError::Corruption(format!(
+            "expected regular journal file: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+fn safe_directory(path: &Path) -> Result<()> {
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.is_dir() || meta.file_type().is_symlink() {
+        return Err(PvError::Corruption(format!(
+            "expected real journal directory: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+fn tree_size(path: &Path) -> Result<u64> {
+    tree_size_bounded(path, 0, &mut 0)
+}
+
+fn tree_size_bounded(path: &Path, depth: usize, entries: &mut usize) -> Result<u64> {
+    if depth > 4 {
+        return Err(PvError::ResourceLimit(
+            "commit log directory nesting exceeds limit".into(),
+        ));
+    }
+    safe_directory(path)?;
+    let mut total = 0u64;
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        *entries += 1;
+        if *entries > 262144 {
+            return Err(PvError::ResourceLimit(
+                "commit log entry count exceeds limit".into(),
+            ));
+        }
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if metadata.file_type().is_symlink() {
+            return Err(PvError::Corruption("symlink in commit log".into()));
+        }
+        total = total.saturating_add(if metadata.is_dir() {
+            tree_size_bounded(&entry.path(), depth + 1, entries)?
+        } else {
+            metadata.len()
+        });
+    }
+    Ok(total)
+}
+fn write_checked(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    file.write_all(blake3::hash(bytes).as_bytes())?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>> {
+    safe_file(path)?;
+    let mut file = File::open(path)?.take(max.saturating_add(1));
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max {
+        return Err(PvError::ResourceLimit(
+            "journal file exceeds byte limit".into(),
+        ));
+    }
+    Ok(bytes)
+}
+fn read_checked(path: &Path) -> Result<Vec<u8>> {
+    let bytes = read_bounded(path, HARD_MAX_RECORD)?;
+    if bytes.len() < 32 || blake3::hash(&bytes[32..]).as_bytes() != &bytes[..32] {
+        return Err(PvError::Corruption("commit log checksum mismatch".into()));
+    }
+    Ok(bytes[32..].to_vec())
+}
+#[cfg(unix)]
+fn sync_dir(path: &Path) -> Result<()> {
+    File::open(path)?.sync_all()?;
+    Ok(())
+}
+#[cfg(not(unix))]
+fn sync_dir(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+// Fault injection exists only in the unit-test binary, never production builds.
+#[cfg(test)]
+pub(crate) fn crash_point(stage: &str) {
+    if std::env::var("PICOVOLT_JOURNAL_CRASH_STAGE").as_deref() == Ok(stage) {
+        std::process::exit(86);
+    }
+}
+#[cfg(not(test))]
+#[inline]
+pub(crate) fn crash_point(_stage: &str) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Database, Value};
+
+    #[test]
+    fn crash_worker() {
+        let Some(root) = std::env::var_os("PICOVOLT_JOURNAL_CRASH_ROOT") else {
+            return;
+        };
+        let mut db = Database::open_dev(root).unwrap();
+        db.enable_commit_log(CommitLogOptions::default()).unwrap();
+        db.begin_transaction().unwrap();
+        db.query("UPDATE t SET value = 'replacement long blob payload' WHERE id = 1")
+            .unwrap();
+        db.query("INSERT INTO t VALUES (2, 'new long content addressed blob')")
+            .unwrap();
+        db.flush_now().unwrap();
+        crash_point("pages_flushed");
+        db.commit_transaction().unwrap();
+        std::process::exit(86);
+    }
+
+    #[test]
+    fn crash_boundaries_recover_database_and_stream_together() {
+        for stage in [
+            "prepared",
+            "undo_synced",
+            "pages_flushed",
+            "record_synced",
+            "commit_renamed",
+            "committed",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut db = Database::open_dev(temp.path()).unwrap();
+            db.enable_commit_log(CommitLogOptions::default()).unwrap();
+            db.transaction(|db| {
+                db.query("CREATE TABLE t (id, value)")?;
+                db.query("INSERT INTO t VALUES (1, 'original long blob payload')")?;
+                Ok(())
+            })
+            .unwrap();
+            drop(db);
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "journal::tests::crash_worker", "--nocapture"])
+                .env("PICOVOLT_JOURNAL_CRASH_ROOT", temp.path())
+                .env("PICOVOLT_JOURNAL_CRASH_STAGE", stage)
+                .output()
+                .unwrap();
+            assert_eq!(
+                child.status.code(),
+                Some(86),
+                "stage {stage}: {}",
+                String::from_utf8_lossy(&child.stderr)
+            );
+            let mut reopened = Database::open_dev(temp.path()).unwrap();
+            let rows = reopened.query("SELECT * FROM t ORDER BY id").unwrap();
+            let committed = stage == "commit_renamed" || stage == "committed";
+            assert_eq!(
+                rows.rows().unwrap().len(),
+                if committed { 2 } else { 1 },
+                "stage {stage}"
+            );
+            assert_eq!(
+                rows.rows().unwrap()[0][1],
+                Value::Text(
+                    if committed {
+                        "replacement long blob payload"
+                    } else {
+                        "original long blob payload"
+                    }
+                    .into()
+                )
+            );
+            assert_eq!(
+                reopened.changes_since(0, 10).unwrap().len(),
+                if committed { 2 } else { 1 }
+            );
+            drop(reopened);
+            assert!(
+                Database::open_dev(temp.path()).is_ok(),
+                "second recovery at {stage}"
+            );
+        }
+    }
+
+    #[test]
+    fn checksum_failure_preserves_recovery_evidence_and_live_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut db = Database::open_dev(temp.path()).unwrap();
+        db.query("CREATE TABLE t (id)").unwrap();
+        db.enable_commit_log(CommitLogOptions::default()).unwrap();
+        db.begin_transaction().unwrap();
+        db.query("INSERT INTO t VALUES (1)").unwrap();
+        db.flush_now().unwrap();
+        drop(db);
+        let active = temp.path().join(COMMIT_LOG_DIR).join("active");
+        let original = fs::read(temp.path().join(MANIFEST_FILE)).unwrap();
+        fs::write(active.join("before"), b"corrupt").unwrap();
+        assert!(Database::open_dev(temp.path()).is_err());
+        assert!(active.exists());
+        assert_eq!(fs::read(temp.path().join(MANIFEST_FILE)).unwrap(), original);
+    }
+}

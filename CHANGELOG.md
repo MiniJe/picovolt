@@ -6,6 +6,33 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## 2.0.0-rc.1 - 2026-09-08
+
+### Added
+
+- Parallel native snapshot transactions with reader-count and image-byte limits.
+- Bounded incremental page journals, checksummed crash recovery, ordered physical
+  change batches, explicit pruning and host-owned change sinks.
+- `pv changes` and `pv log-prune`, format-6 migration and a new golden image,
+  crash-boundary injection, transaction model tests and a contention benchmark.
+- A Linux ThreadSanitizer CI job; execution remains a release gate.
+
+### Changed
+
+- Shared filesystem workspaces enable the log by default and advance to format 6,
+  preventing 1.x binaries from bypassing recovery. In-memory snapshots stay in
+  memory. All existing 1.x images remain readable.
+- Reopened logged workspaces automatically wrap mutating SQL in transactions;
+  low-level mutation methods require explicit transactions on this surface.
+- Candidate package metadata is 2.0.0-rc.1. Maintained starters remain on their
+  verified registry baseline during unpublished development; release gates
+  continue to enforce exact package versions and integrity pins.
+
+This candidate is not a stable-release or security-audit claim. See the
+[2.0 release ledger](docs/RELEASE_2_0.md).
+
+### Earlier concurrency foundation
+
 ### Added
 
 - Added the native Rust `SharedDatabase` concurrency preview: a cloneable,

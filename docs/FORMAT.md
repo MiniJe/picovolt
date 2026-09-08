@@ -1,4 +1,4 @@
-# PicoVolt on-disk format (`FORMAT_VERSION = 5`)
+# PicoVolt on-disk format (`FORMAT_VERSION = 6`)
 
 This document specifies the byte-level layout of PicoVolt's persisted data. It is
 the reference for the **0.11.0 format freeze**: from this version on, a change to
@@ -394,3 +394,42 @@ maintenance metadata.
 
 Every one of these is a structured error, never a panic — see
 `tests/format_robustness.rs` for the corruption-injection coverage.
+
+
+## Format 6 and incremental recovery
+
+Format 6 retains the v5 page, CAS and binary-index layouts. Its version marker
+prevents a 1.x binary from opening a workspace without processing `.pv-log`
+recovery. Enabling the log raises the workspace format before preparing a
+transaction. Baked format-6 images contain committed data and no live log.
+All formats 1–5 remain readable; `pv migrate` upgrades verified images to 6.
+
+The log lives outside the baked image under `.pv-log/`:
+
+- `preparing/`: not active; no mutations may depend on it.
+- `active/header`: sequence, prior MVCC clock and prior allocated page count.
+- `active/before`: complete prior manifest, including the index catalog.
+- `active/undo/<20-digit-page-id>`: original bytes of a page, saved once before
+  its first overwrite. Partial `.tmp` files never permit a write.
+- `active/change`: schema-1 JSON ChangeCommit with final pages, new blobs,
+  complete final manifest and before/after MVCC ids.
+- `<20-digit-sequence>/`: a committed transaction, published by renaming
+  `active` after syncing pages, blobs, manifest and change record.
+- `checkpoint`: a little-endian u64 sequence pruned through; its durable atomic
+  replacement precedes history deletion so expired cursors fail explicitly.
+
+Each metadata/page file begins with the 32-byte BLAKE3 digest of its payload.
+Numeric entries have exactly 20 ASCII decimal digits. Readers reject malformed
+sizes, hashes, sequences and symlink entries. Hashes detect corruption; they
+are not authentication against an attacker with workspace write access.
+
+Recovery validates all original pages before changing live data, restores them
+and the old manifest, then renames `active` to `discarded` before cleanup.
+Interrupted recovery can be repeated. New pages and blobs can remain unreachable
+after rollback; the manifest defines visibility. Log limits are independent of
+total workspace size and orphan-blob disk usage.
+
+Unix synchronizes directories. Windows synchronizes file contents and relies on
+rename for the process-crash commit boundary; portable Rust lacks the same
+portable directory-fsync power-loss guarantee. Tests exercise abrupt process
+death, not hardware power cuts. See [CONCURRENCY.md](CONCURRENCY.md).

@@ -119,7 +119,7 @@ fn statement_error_aborts_the_complete_write_transaction() {
 fn bounded_queue_returns_busy_without_blocking() {
     let database = SharedDatabase::open_memory_with_options(SharedDatabaseOptions::new(1)).unwrap();
     database.query("CREATE TABLE t (id)").unwrap();
-    let read = database.begin_read().unwrap();
+    let read = database.begin_write().unwrap();
 
     let barrier = Arc::new(Barrier::new(3));
     let (sender, receiver) = mpsc::channel();
@@ -430,7 +430,12 @@ fn rollback_failure_is_outcome_unknown_and_closes_the_coordinator() {
     database.query("CREATE TABLE t (id)").unwrap();
 
     let mut write = database.begin_write().unwrap();
-    std::fs::remove_dir_all(workspace.join(TRANSACTION_BACKUP_DIR)).unwrap();
+    std::fs::remove_file(
+        workspace
+            .join(picovolt::COMMIT_LOG_DIR)
+            .join("active/header"),
+    )
+    .unwrap();
     assert!(matches!(
         write.query("INSERT INTO missing VALUES (1)"),
         Err(PvError::TransactionOutcomeUnknown(_))

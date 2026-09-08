@@ -2,15 +2,17 @@
 //!
 //! [`SharedDatabase`] is a cloneable, `Send + Sync` coordinator. One worker
 //! thread owns the underlying [`Database`], while callers submit work through a
-//! bounded FIFO channel. This first concurrency slice deliberately serializes
-//! execution; it establishes safe ownership, transaction, cancellation, and
-//! backpressure semantics without changing the on-disk format.
+//! bounded FIFO channel. Writers have exclusive admission; explicit readers
+//! execute concurrently on private, bounded immutable snapshots. Filesystem
+//! writes use an incremental page journal and expose ordered durable changes.
 
 use std::any::Any;
 use std::cell::Cell;
+use std::io::Write;
 use std::marker::PhantomData;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -27,6 +29,9 @@ const SESSION_POLL_INTERVAL: Duration = Duration::from_millis(25);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SharedDatabaseOptions {
     queue_capacity: usize,
+    max_readers: usize,
+    max_snapshot_bytes: u64,
+    commit_log: crate::CommitLogOptions,
 }
 
 impl SharedDatabaseOptions {
@@ -39,12 +44,32 @@ impl SharedDatabaseOptions {
             } else {
                 queue_capacity
             },
+            max_readers: 16,
+            max_snapshot_bytes: 256 * 1024 * 1024,
+            commit_log: crate::CommitLogOptions {
+                max_transaction_bytes: 64 * 1024 * 1024,
+                max_retained_bytes: 256 * 1024 * 1024,
+                max_retained_commits: 4096,
+            },
         }
     }
 
     /// Number of operations that may wait behind the worker.
     pub const fn queue_capacity(self) -> usize {
         self.queue_capacity
+    }
+
+    /// Maximum live snapshot workers and bytes per private snapshot image.
+    /// Limits reject admission rather than evicting a caller's pinned view.
+    pub const fn with_snapshot_limits(mut self, max_readers: usize, max_bytes: u64) -> Self {
+        self.max_readers = max_readers;
+        self.max_snapshot_bytes = max_bytes;
+        self
+    }
+
+    pub const fn with_commit_log(mut self, options: crate::CommitLogOptions) -> Self {
+        self.commit_log = options;
+        self
     }
 
     fn effective_queue_capacity(self) -> usize {
@@ -134,6 +159,23 @@ impl Default for RequestOptions {
 type Reply<T> = SyncSender<Result<T>>;
 
 enum Command {
+    Checkpoint {
+        destination: std::path::PathBuf,
+        reply: Reply<crate::SnapshotCheckpoint>,
+    },
+    Compact {
+        max_pages: usize,
+        reply: Reply<crate::CompactionReport>,
+    },
+    Changes {
+        after: u64,
+        limit: usize,
+        reply: Reply<Vec<crate::ChangeCommit>>,
+    },
+    Prune {
+        through: u64,
+        reply: Reply<()>,
+    },
     Query {
         sql: String,
         params: Vec<Value>,
@@ -224,10 +266,11 @@ impl Drop for SharedInner {
 /// application threads or tasks.
 ///
 /// Accepted operations execute in FIFO admission order on one worker thread. A
-/// transaction is one admitted operation and owns that worker until it commits,
+/// write transaction is one admitted operation and owns that worker until it commits,
 /// rolls back, expires, is cancelled, or its handle is dropped. Submission is
 /// non-blocking: a full bounded queue returns [`PvError::Busy`]. Once admitted,
 /// the calling thread waits for a terminal response.
+/// Read transactions release this worker after their private snapshot is built.
 ///
 /// This type is not available on `wasm32`; browser callers already use a Web
 /// Worker ownership boundary.
@@ -259,7 +302,14 @@ impl SharedDatabase {
         options: SharedDatabaseOptions,
     ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        Self::spawn(move || Database::open_dev(path), options)
+        Self::spawn(
+            move || {
+                let mut database = Database::open_dev(path)?;
+                database.enable_commit_log(options.commit_log)?;
+                Ok(database)
+            },
+            options,
+        )
     }
 
     /// Open an immutable production image with the default queue capacity.
@@ -280,6 +330,11 @@ impl SharedDatabase {
         open: impl FnOnce() -> Result<Database> + Send + 'static,
         options: SharedDatabaseOptions,
     ) -> Result<Self> {
+        options.commit_log.validate()?;
+        if options.max_readers == 0 || options.max_readers > 1024 || options.max_snapshot_bytes == 0
+        {
+            return Err(PvError::ResourceLimit("invalid snapshot limits".into()));
+        }
         let (sender, receiver) = mpsc::sync_channel(options.effective_queue_capacity());
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let worker = thread::Builder::new()
@@ -291,7 +346,7 @@ impl SharedDatabase {
                         if ready_sender.send(Ok(())).is_err() {
                             return;
                         }
-                        run_worker(&receiver, &mut database);
+                        run_worker(&receiver, &mut database, options);
                         if database.in_transaction() {
                             let _ = safe_rollback(&mut database);
                         }
@@ -400,6 +455,51 @@ impl SharedDatabase {
     /// Return the latest committed MVCC transaction id.
     pub fn current_tx(&self) -> Result<TxId> {
         self.request(|reply| Command::CurrentTx { reply })
+    }
+
+    /// Read a bounded batch of durable changes after an exclusive sequence cursor.
+    pub fn changes_since(&self, after: u64, limit: usize) -> Result<Vec<crate::ChangeCommit>> {
+        self.request(|reply| Command::Changes {
+            after,
+            limit,
+            reply,
+        })
+    }
+
+    /// Prune commits acknowledged by all consumers. Old cursors then fail explicitly.
+    pub fn prune_changes(&self, through: u64) -> Result<()> {
+        self.request(|reply| Command::Prune { through, reply })
+    }
+
+    /// Queue maintenance with the same writer ordering and journal guarantees.
+    pub fn compact_step(&self, max_pages: usize) -> Result<crate::CompactionReport> {
+        self.request(|reply| Command::Compact { max_pages, reply })
+    }
+
+    /// Export and verify a committed image together with its exact following
+    /// change cursor. The writer queue stays reserved for the complete export.
+    pub fn export_checkpoint(
+        &self,
+        destination: impl AsRef<Path>,
+    ) -> Result<crate::SnapshotCheckpoint> {
+        let destination = destination.as_ref().to_path_buf();
+        self.request(|reply| Command::Checkpoint { destination, reply })
+    }
+
+    /// Deliver a batch outside the database worker. A sink error never reverses
+    /// a durable commit. Consumers must deduplicate sequences when retrying.
+    pub fn visit_changes(
+        &self,
+        after: u64,
+        limit: usize,
+        sink: &mut impl crate::ChangeSink,
+    ) -> Result<u64> {
+        let mut cursor = after;
+        for change in self.changes_since(after, limit)? {
+            sink.accept(&change)?;
+            cursor = change.sequence;
+        }
+        Ok(cursor)
     }
 
     /// Whether the underlying database accepts mutations.
@@ -615,9 +715,32 @@ enum StatementClass {
     Control,
 }
 
-fn run_worker(receiver: &Receiver<Command>, database: &mut Database) {
+fn run_worker(
+    receiver: &Receiver<Command>,
+    database: &mut Database,
+    config: SharedDatabaseOptions,
+) {
+    let readers = Arc::new(AtomicUsize::new(0));
     while let Ok(command) = receiver.recv() {
         let keep_running = match command {
+            Command::Checkpoint { destination, reply } => {
+                administrative_call(|| database.export_checkpoint(destination), reply)
+            }
+            Command::Compact { max_pages, reply } => {
+                administrative_call(|| database.compact_step(max_pages), reply)
+            }
+            Command::Changes {
+                after,
+                limit,
+                reply,
+            } => {
+                let _ = reply.send(database.changes_since(after, limit));
+                true
+            }
+            Command::Prune { through, reply } => {
+                let _ = reply.send(database.prune_changes(through));
+                true
+            }
             Command::Query {
                 sql,
                 params,
@@ -632,11 +755,31 @@ fn run_worker(receiver: &Receiver<Command>, database: &mut Database) {
                 let _ = reply.send(Ok(database.is_writable()));
                 true
             }
-            Command::BeginRead { options, reply } => begin_read_session(database, options, reply),
+            Command::BeginRead { options, reply } => {
+                begin_read_session(database, options, reply, &readers, config)
+            }
             Command::BeginWrite { options, reply } => begin_write_session(database, options, reply),
         };
         if !keep_running {
             break;
+        }
+    }
+}
+
+fn administrative_call<T>(operation: impl FnOnce() -> Result<T>, reply: Reply<T>) -> bool {
+    match call_database(operation) {
+        DatabaseCall::Ok(value) => {
+            let _ = reply.send(Ok(value));
+            true
+        }
+        DatabaseCall::Error(error) => {
+            let safe = !outcome_is_unknown(&error);
+            let _ = reply.send(Err(error));
+            safe
+        }
+        DatabaseCall::Panicked(error) => {
+            let _ = reply.send(Err(error));
+            false
         }
     }
 }
@@ -694,31 +837,140 @@ fn execute_top_level(
     safe
 }
 
+struct ReaderPermit(Arc<AtomicUsize>);
+impl Drop for ReaderPermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+struct SnapshotWriter<'a> {
+    file: &'a mut dyn Write,
+    remaining: u64,
+    options: &'a RequestOptions,
+}
+
+enum ReadImage {
+    Memory(Vec<u8>),
+    File(tempfile::NamedTempFile),
+}
+impl ReadImage {
+    fn writer(&mut self) -> &mut dyn Write {
+        match self {
+            Self::Memory(bytes) => bytes,
+            Self::File(file) => file.as_file_mut(),
+        }
+    }
+    fn open(&self) -> Result<Database> {
+        match self {
+            Self::Memory(bytes) => Database::import_bytes(bytes),
+            Self::File(file) => Database::open_prod(file.path()),
+        }
+    }
+}
+impl Write for SnapshotWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.options.check().map_err(std::io::Error::other)?;
+        if bytes.len() as u64 > self.remaining {
+            return Err(std::io::Error::other("snapshot byte limit exceeded"));
+        }
+        let written = self.file.write(bytes)?;
+        self.remaining -= written as u64;
+        Ok(written)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+
 fn begin_read_session(
     database: &mut Database,
     options: RequestOptions,
     reply: Reply<ReadSessionStart>,
+    readers: &Arc<AtomicUsize>,
+    config: SharedDatabaseOptions,
 ) -> bool {
     if let Err(error) = options.check() {
         let _ = reply.send(Err(error));
         return true;
     }
+    if readers.load(Ordering::Acquire) >= config.max_readers {
+        let _ = reply.send(Err(PvError::Busy("snapshot reader limit reached".into())));
+        return true;
+    }
+    readers.fetch_add(1, Ordering::AcqRel);
+    let permit = ReaderPermit(Arc::clone(readers));
     let snapshot_tx = database.current_tx();
-    if let Err(error) = options.check() {
-        let _ = reply.send(Err(error));
-        return true;
-    }
-    let (sender, receiver) = mpsc::sync_channel(1);
-    if reply
-        .send(Ok(ReadSessionStart {
-            sender,
-            snapshot_tx,
-        }))
-        .is_err()
+    let snapshot = call_database(|| {
+        let mut file = if database.is_memory_backed() {
+            ReadImage::Memory(Vec::new())
+        } else {
+            ReadImage::File(tempfile::NamedTempFile::new()?)
+        };
+        let mut writer = SnapshotWriter {
+            file: file.writer(),
+            remaining: config.max_snapshot_bytes,
+            options: &options,
+        };
+        database.bake_to_writer(&mut writer).map_err(|error| {
+            options.check().err().unwrap_or_else(|| match error {
+                PvError::Io(ref io) if io.to_string().contains("snapshot byte limit") => {
+                    PvError::ResourceLimit("snapshot byte limit exceeded".into())
+                }
+                other => other,
+            })
+        })?;
+        options.check()?;
+        Ok(file)
+    });
+    let snapshot = match snapshot {
+        DatabaseCall::Ok(file) => file,
+        DatabaseCall::Error(error) => {
+            let _ = reply.send(Err(error));
+            return true;
+        }
+        DatabaseCall::Panicked(error) => {
+            let _ = reply.send(Err(error));
+            return false;
+        }
+    };
+    let error_reply = reply.clone();
+    if let Err(error) = thread::Builder::new()
+        .name("picovolt-reader".into())
+        .spawn(move || {
+            let opened = call_database(|| snapshot.open());
+            let mut database = match opened {
+                DatabaseCall::Ok(database) => database,
+                DatabaseCall::Error(error) | DatabaseCall::Panicked(error) => {
+                    let _ = reply.send(Err(error));
+                    return;
+                }
+            };
+            drop(snapshot);
+            if let Err(error) = options.check() {
+                let _ = reply.send(Err(error));
+                return;
+            }
+            let (sender, receiver) = mpsc::sync_channel(1);
+            if reply
+                .send(Ok(ReadSessionStart {
+                    sender,
+                    snapshot_tx,
+                }))
+                .is_ok()
+            {
+                let completion = serve_read_session(&mut database, snapshot_tx, &options, receiver);
+                drop(database);
+                drop(permit);
+                if let Some((reply, result)) = completion {
+                    let _ = reply.send(result);
+                }
+            }
+        })
     {
-        return true;
+        let _ = error_reply.send(Err(error.into()));
     }
-    serve_read_session(database, snapshot_tx, &options, receiver)
+    true
 }
 
 fn serve_read_session(
@@ -726,15 +978,14 @@ fn serve_read_session(
     snapshot_tx: TxId,
     options: &RequestOptions,
     receiver: Receiver<ReadCommand>,
-) -> bool {
+) -> Option<(Reply<()>, Result<()>)> {
     loop {
         if options.check().is_err() {
-            return true;
+            return None;
         }
         match receiver.recv_timeout(session_poll_timeout(options)) {
             Ok(ReadCommand::Close { reply }) => {
-                let _ = reply.send(options.check());
-                return true;
+                return Some((reply, options.check()));
             }
             Ok(ReadCommand::Query {
                 sql,
@@ -746,11 +997,11 @@ fn serve_read_session(
                     execute_read(database, snapshot_tx, options, &sql, &params, limits);
                 let _ = reply.send(result);
                 if !safe {
-                    return false;
+                    return None;
                 }
             }
             Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => return true,
+            Err(RecvTimeoutError::Disconnected) => return None,
         }
     }
 }

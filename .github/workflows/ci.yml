@@ -13,6 +13,22 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  thread-sanitizer:
+    name: 2.0 concurrency (ThreadSanitizer)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@be39649afda95dbf70f87cce95f68b8d5797b296
+        with:
+          components: rust-src
+      - name: Instrument runtime and concurrency tests
+        env:
+          RUSTFLAGS: "-Zsanitizer=thread"
+          RUSTDOCFLAGS: "-Zsanitizer=thread"
+          TSAN_OPTIONS: "halt_on_error=1"
+        run: cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu --test concurrency --test concurrency_v2
+
   msrv:
     name: minimum Rust 1.86
     runs-on: ubuntu-latest

@@ -70,7 +70,7 @@ go test ./...
 Install the latest Go wrapper from the public module proxy:
 
 ```sh
-go get github.com/MiniJe/picovolt/bindings/go@latest
+go get github.com/MiniJe/picovolt/bindings/go/v2@latest
 ```
 
 For reproducible builds, replace `latest` with an explicit `vX.Y.Z` tag. Always

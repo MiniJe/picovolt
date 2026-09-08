@@ -3,13 +3,14 @@
 [![CI](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml/badge.svg)](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/picovolt.svg)](https://crates.io/crates/picovolt)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-![Status: stable 1.x](https://img.shields.io/badge/status-stable%201.x-brightgreen.svg)
+![Status: 2.0 release candidate](https://img.shields.io/badge/status-2.0%20release%20candidate-orange.svg)
 [![GitHub stars](https://img.shields.io/github/stars/MiniJe/picovolt?style=social)](https://github.com/MiniJe/picovolt)
 
-PicoVolt is an embedded database engine written in Rust. Its 1.x public API and
-on-disk format are stable under Semantic Versioning. It is young software and
-has not had an external security audit, so review it and keep backups before
-trusting it with data you cannot regenerate.
+PicoVolt is an embedded database engine written in Rust. This branch builds
+**2.0.0-rc.1**, with concurrent snapshot readers, bounded writer scheduling,
+and an incremental durable commit log. The latest published stable release is
+1.9.0. This candidate has not completed an independent security review or
+external application trials. See the [2.0 release ledger](docs/RELEASE_2_0.md).
 
 If PicoVolt is useful to you, consider starring the repository on GitHub. It is
 the simplest way to help others discover the project.
@@ -28,7 +29,7 @@ MVCC-preserving columnar layout with packed decimal encoding.
 
 ## Status
 
-The current stable release is exercised by a 240+ test Rust suite plus doctests
+The engine is exercised by Rust unit and integration suites plus doctests
 and maintained-binding integration tests. CI also enforces formatting and
 warning-free Clippy builds on Linux and Windows. Shipped changes are tracked in
 [CHANGELOG.md](CHANGELOG.md), and the remaining work toward 2.0 is tracked in
@@ -84,10 +85,12 @@ warning-free Clippy builds on Linux and Windows. Shipped changes are tracked in
   each flush `fsync` the data and commit the manifest atomically (write to a temp
   file, `fsync`, then rename). The default `Fast` mode uses the OS cache only:
   fast and durable on a clean exit, but not power-loss-safe.
-- **Crash-recoverable transactions.** Explicit `BEGIN`, `COMMIT`, and
-  `ROLLBACK` group filesystem or in-memory writes. Filesystem transactions keep
-  a synced rollback image and recovery marker; reopening after interruption
-  restores the last committed state before loading the workspace.
+- **Concurrent transactions.** Native `SharedDatabase` exposes independent
+  snapshot readers and bounded FIFO writers. Logged workspaces sync original
+  pages before overwriting them and publish an ordered physical change stream.
+  Reopening rolls back incomplete writes. Format 6 prevents old binaries from
+  bypassing recovery. Existing 1.x images remain readable and migratable.
+  See [the concurrency contract](docs/CONCURRENCY.md) for limits and costs.
 - **Hardened against untrusted input.** Opening a `.pvdb` or workspace, or running
   a WASM module, validates manifest hashes (no path traversal), bounds-checks CAS
   offsets and page chains (no out-of-bounds reads or infinite loops on a crafted
@@ -184,8 +187,8 @@ pv inspect ./data.pv --json
 `Database::compact_step(max_pages)` preserves record addresses, indexes, and
 complete MVCC history; it never compacts the mutable tail and leaves a page in
 row form when transposition would not save space. Each pass uses the
-crash-recoverable workspace transaction protocol, so allow temporary disk space
-for one complete rollback image. Baked-image migration is
+crash-recoverable transaction protocol: allow bounded journal space for logged
+workspaces, or a full rollback image for unlogged workspaces. Baked-image migration is
 out-of-place and deeply verified before publication:
 
 ```sh
@@ -272,7 +275,6 @@ native modules built on the public API. Both are documented in
 | | |
 |--|--|
 | Roadmap | [ROADMAP.md](ROADMAP.md) |
-| One-million-download plan | [docs/ROADMAP_1M_DOWNLOADS.md](docs/ROADMAP_1M_DOWNLOADS.md) |
 | Monetization thesis | [docs/MONETIZATION.md](docs/MONETIZATION.md) |
 | Enterprise integration foundation | [docs/ENTERPRISE.md](docs/ENTERPRISE.md) |
 | Platform and file support | [docs/SUPPORT.md](docs/SUPPORT.md) |

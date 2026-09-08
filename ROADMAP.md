@@ -3,9 +3,7 @@
 This roadmap describes intended outcomes, not release dates. A feature moves into
 a release only when its correctness work, documentation, compatibility tests, and
 upgrade path are ready. Shipped work is recorded in [CHANGELOG.md](CHANGELOG.md).
-The adoption plan lives in
-[docs/ROADMAP_1M_DOWNLOADS.md](docs/ROADMAP_1M_DOWNLOADS.md), and the business
-model hypothesis lives in [docs/MONETIZATION.md](docs/MONETIZATION.md).
+The business model hypothesis lives in [docs/MONETIZATION.md](docs/MONETIZATION.md).
 
 ## Where PicoVolt is now
 
@@ -19,8 +17,8 @@ Worker.
 PicoVolt is still deliberately narrow:
 
 - the filesystem engine is single-writer;
-- filesystem transactions currently take a complete rollback image rather than
-  writing an incremental commit log;
+- shared filesystem transactions use a bounded page journal; the legacy
+  unlogged `Database` surface retains its rollback-image protocol;
 - SQL is a practical subset, not a compatibility claim;
 - the project has extensive automated hardening but no independent security
   audit yet.
@@ -120,28 +118,27 @@ high-severity findings, and compatibility evidence. Current observations and
 the final release decision are tracked in the
 [1.9.0 qualification ledger](docs/RELEASE_1_9_SOAK.md).
 
-## 2.0 — A production concurrency contract
+## 2.0 — A production concurrency contract (release candidate)
 
 **Outcome:** PicoVolt can be shared safely by multiple application tasks without
 forcing callers to build their own ownership thread around the database.
 
-The 2.0 design may break APIs and advance the on-disk format. Its minimum scope is:
+Implemented in **2.0.0-rc.1**:
 
-- explicit database, read-transaction, and write-transaction handles;
-- concurrent snapshot readers with defined writer scheduling and cancellation;
-- a crash-recoverable commit log that exposes an ordered change stream;
-- backpressure and resource limits as part of the public contract;
-- first-party migration tooling from every 1.x format;
-- stable extension points for encryption and replication without making a
-  particular cloud service part of the engine.
+- explicit shared database, read-transaction, and write-transaction handles;
+- concurrent immutable snapshot readers, FIFO writer admission, cancellation,
+  deadlines, bounded queues, and reader/image limits;
+- a checksummed incremental page journal with atomic commit publication and
+  a durable, ordered physical change stream;
+- byte/count retention limits, explicit acknowledgement/pruning, and errors for
+  expired cursors;
+- format-6 identification and first-party verified migration from the complete
+  1.x golden corpus, including optional exact backups;
+- a host-owned change sink for encrypted transport, replication and auditing.
 
-The first implementation slice is additive and keeps format v5: native Rust now
-has one cloneable, bounded coordinator with explicit read/write transaction
-handles, FIFO admission, cooperative cancellation, and failure-safe rollback.
-It intentionally serializes transactions behind the existing engine. Parallel
-snapshot execution, the incremental commit log/change stream, binding adoption,
-and the eventual format migration remain 2.0 work rather than being implied by
-the initial handle API. See [the concurrency contract](docs/CONCURRENCY.md).
+The storage contract and measured costs are in [CONCURRENCY.md](docs/CONCURRENCY.md).
+Stable-release evidence and uncompleted external gates are tracked in
+[RELEASE_2_0.md](docs/RELEASE_2_0.md).
 
 Full distributed consensus, automatic conflict-free multi-device sync, and a
 hosted control plane are **not** required for 2.0. They can build on the ordered

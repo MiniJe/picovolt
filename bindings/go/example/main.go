@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"log"
 
-	picovolt "github.com/MiniJe/picovolt/bindings/go"
+	picovolt "github.com/MiniJe/picovolt/bindings/go/v2"
 )
 
 func main() {

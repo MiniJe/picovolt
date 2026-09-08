@@ -3,7 +3,7 @@
 //
 //	import (
 //		"database/sql"
-//		_ "github.com/MiniJe/picovolt/bindings/go/pvsql"
+//		_ "github.com/MiniJe/picovolt/bindings/go/v2/pvsql"
 //	)
 //
 //	db, _ := sql.Open("picovolt", "memory") // or "dev:./app.pv", "prod:app.pvdb"
@@ -27,7 +27,7 @@ import (
 	"strings"
 	"sync"
 
-	picovolt "github.com/MiniJe/picovolt/bindings/go"
+	picovolt "github.com/MiniJe/picovolt/bindings/go/v2"
 )
 
 func init() { sql.Register("picovolt", drv{}) }

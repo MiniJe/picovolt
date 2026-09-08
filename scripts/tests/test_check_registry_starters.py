@@ -17,6 +17,8 @@ from scripts.check_registry_starters import (
     _retry,
     check_policy,
     project_version,
+    registry_version,
+    go_module,
 )
 
 
@@ -54,12 +56,16 @@ class StarterPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(PolicyError, message):
             check_policy(self.root)
 
+    def test_go_semantic_import_version(self):
+        self.assertTrue(go_module("2.0.0-rc.1").endswith("/v2"))
+        self.assertFalse(go_module("1.9.0").endswith("/v2"))
+
     def test_current_starters_are_registry_only(self):
         check_policy(self.root)
 
     def test_rust_path_dependency_is_rejected(self):
         manifest = self.root / "starters/rust-cli/Cargo.toml"
-        version = project_version(self.root)
+        version = registry_version(self.root)
         manifest.write_text(
             manifest.read_text().replace(
                 f'picovolt = "={version}"', 'picovolt = { path = "../.." }'
@@ -69,7 +75,7 @@ class StarterPolicyTests(unittest.TestCase):
 
     def test_npm_file_dependency_is_rejected(self):
         manifest = self.root / "starters/node/package.json"
-        version = project_version(self.root)
+        version = registry_version(self.root)
         manifest.write_text(
             manifest.read_text().replace(
                 f'"picovolt": "{version}"', '"picovolt": "file:../.."'
@@ -117,7 +123,7 @@ class StarterPolicyTests(unittest.TestCase):
 
     def test_go_sum_must_pin_the_release(self):
         go_sum = self.root / "starters/go/go.sum"
-        version = project_version(self.root)
+        version = registry_version(self.root)
         go_sum.write_text(
             go_sum.read_text().replace(f" v{version} ", " v9.9.9 ")
         )
@@ -126,6 +132,18 @@ class StarterPolicyTests(unittest.TestCase):
     def test_version_mismatch_is_rejected(self):
         with self.assertRaises(PolicyError):
             check_policy(self.root, "9.9.9")
+
+    def test_release_gate_cannot_use_the_prerelease_starter_baseline(self):
+        if "-" in project_version(self.root):
+            with self.assertRaises(PolicyError):
+                check_policy(self.root, project_version(self.root))
+
+    def test_stable_release_cannot_use_an_older_starter_baseline(self):
+        for filename in ["Cargo.toml", "bindings/python/pyproject.toml", "bindings/python/picovolt/__init__.py"]:
+            path = self.root / filename
+            path.write_text(path.read_text().replace(project_version(ROOT), "2.0.0"))
+        with self.assertRaises(PolicyError):
+            check_policy(self.root)
 
     def test_python_distribution_version_mismatch_is_rejected(self):
         pyproject = self.root / "bindings/python/pyproject.toml"

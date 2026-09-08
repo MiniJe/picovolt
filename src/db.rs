@@ -589,6 +589,7 @@ pub enum Durability {
 enum TransactionRollback {
     Memory(Vec<u8>),
     Filesystem(PathBuf),
+    Journal(PathBuf),
 }
 
 struct ActiveTransaction {
@@ -617,18 +618,117 @@ pub struct Database {
     /// Cached write handle for the manifest, so autocommit doesn't reopen it.
     manifest_file: RefCell<Option<File>>,
     active_transaction: Option<ActiveTransaction>,
+    commit_log: Option<crate::CommitLogOptions>,
     #[cfg(feature = "enterprise")]
     enterprise: crate::enterprise::EnterpriseRuntime,
 }
 
 impl Database {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn is_memory_backed(&self) -> bool {
+        matches!(self.cache.borrow().backend(), Backend::Mem(_))
+    }
+    /// Enable bounded incremental filesystem transactions and physical changes.
+    /// Call before sharing the handle. Existing 1.x workspaces need no rewrite.
+    pub fn enable_commit_log(&mut self, options: crate::CommitLogOptions) -> Result<()> {
+        if self.in_transaction() {
+            return Err(PvError::Transaction(
+                "cannot configure log during a transaction".into(),
+            ));
+        }
+        if self.root.is_none() {
+            return Err(PvError::Transaction(
+                "commit log requires a filesystem workspace".into(),
+            ));
+        }
+        self.commit_log = Some(options.validate()?);
+        self.format_version_floor = self
+            .format_version_floor
+            .max(crate::FORMAT_VERSION_COMMIT_LOG);
+        Ok(())
+    }
+
+    /// Read committed changes strictly after a sequence cursor. A pruned cursor
+    /// returns an error rather than silently skipping history.
+    pub fn changes_since(&self, after: u64, limit: usize) -> Result<Vec<crate::ChangeCommit>> {
+        let root = self.root.as_ref().ok_or_else(|| {
+            PvError::Transaction("change stream requires a filesystem workspace".into())
+        })?;
+        crate::journal::changes(root, after, limit)
+    }
+
+    /// Export a verified baked image with its exact following change cursor.
+    /// The sequential caller must own the workspace exclusively for this call.
+    pub fn export_checkpoint(
+        &mut self,
+        destination: impl AsRef<Path>,
+    ) -> Result<crate::SnapshotCheckpoint> {
+        if self.in_transaction() {
+            return Err(PvError::Transaction(
+                "cannot export an uncommitted checkpoint".into(),
+            ));
+        }
+        let root = self.root.clone().ok_or_else(|| {
+            PvError::Transaction("checkpoint requires a filesystem workspace".into())
+        })?;
+        let _lock = acquire_transaction_lock(&root)?;
+        let sequence = crate::journal::head(&root)?;
+        let verification_hash = self.verification_hash()?;
+        let destination = destination.as_ref();
+        let parent = destination
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        if fs::canonicalize(parent)?.starts_with(fs::canonicalize(&root)?) {
+            return Err(PvError::Transaction(
+                "checkpoint destination must be outside the live workspace".into(),
+            ));
+        }
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        self.bake_to_writer(temporary.as_file_mut())?;
+        temporary.as_file().sync_all()?;
+        if Database::open_prod(temporary.path())?.verification_hash()? != verification_hash {
+            return Err(PvError::Corruption(
+                "checkpoint verification mismatch".into(),
+            ));
+        }
+        temporary
+            .persist_noclobber(destination)
+            .map_err(|error| PvError::Io(error.error))?;
+        sync_directory(parent)?;
+        Ok(crate::SnapshotCheckpoint {
+            sequence,
+            transaction: self.current_tx(),
+            verification_hash,
+        })
+    }
+
+    /// Delete history acknowledged by every host-owned consumer.
+    pub fn prune_changes(&mut self, through: u64) -> Result<()> {
+        if self.in_transaction() {
+            return Err(PvError::Transaction(
+                "cannot prune during a transaction".into(),
+            ));
+        }
+        let root = self.root.as_ref().ok_or_else(|| {
+            PvError::Transaction("change stream requires a filesystem workspace".into())
+        })?;
+        let _lock = acquire_transaction_lock(root)?;
+        crate::journal::prune(root, through)
+    }
+
     /// Open (or create) a development workspace rooted at `path`.
     pub fn open_dev(path: impl AsRef<Path>) -> Result<Self> {
         let root = path.as_ref().to_path_buf();
         fs::create_dir_all(&root)?;
         let recovery_lock = acquire_transaction_lock(&root)?;
         recover_workspace_transaction(&root)?;
+        crate::journal::recover(&root)?;
         drop(recovery_lock);
+        let commit_log = root
+            .join(crate::COMMIT_LOG_DIR)
+            .exists()
+            .then(crate::CommitLogOptions::default);
         let manifest_path = root.join(MANIFEST_FILE);
 
         if manifest_path.exists() {
@@ -651,6 +751,7 @@ impl Database {
                 format_version_floor: manifest.format_version,
                 manifest_file: RefCell::new(None),
                 active_transaction: None,
+                commit_log,
                 #[cfg(feature = "enterprise")]
                 enterprise: crate::enterprise::EnterpriseRuntime::default(),
             })
@@ -668,6 +769,7 @@ impl Database {
                 format_version_floor: FORMAT_VERSION_BASE,
                 manifest_file: RefCell::new(None),
                 active_transaction: None,
+                commit_log: None,
                 #[cfg(feature = "enterprise")]
                 enterprise: crate::enterprise::EnterpriseRuntime::default(),
             })
@@ -714,6 +816,7 @@ impl Database {
             format_version_floor: manifest.format_version,
             manifest_file: RefCell::new(None),
             active_transaction: None,
+            commit_log: None,
             #[cfg(feature = "enterprise")]
             enterprise: crate::enterprise::EnterpriseRuntime::default(),
         })
@@ -838,6 +941,7 @@ impl Database {
             format_version_floor: manifest.format_version,
             manifest_file: RefCell::new(None),
             active_transaction: None,
+            commit_log: None,
             #[cfg(feature = "enterprise")]
             enterprise: crate::enterprise::EnterpriseRuntime::default(),
         })
@@ -864,6 +968,7 @@ impl Database {
             format_version_floor: FORMAT_VERSION_BASE,
             manifest_file: RefCell::new(None),
             active_transaction: None,
+            commit_log: None,
             #[cfg(feature = "enterprise")]
             enterprise: crate::enterprise::EnterpriseRuntime::default(),
         }
@@ -944,6 +1049,7 @@ impl Database {
             format_version_floor: manifest.format_version,
             manifest_file: RefCell::new(None),
             active_transaction: None,
+            commit_log: None,
             #[cfg(feature = "enterprise")]
             enterprise: crate::enterprise::EnterpriseRuntime::default(),
         })
@@ -1192,7 +1298,9 @@ impl Database {
     /// Nested transactions are rejected. For a development workspace, this
     /// writes and syncs a recovery copy plus a marker before returning.
     pub fn begin_transaction(&mut self) -> Result<()> {
-        self.ensure_writable()?;
+        if !self.cache.borrow().is_writable() {
+            return Err(PvError::ReadOnly);
+        }
         if self.active_transaction.is_some() {
             return Err(PvError::Transaction(
                 "a transaction is already active".into(),
@@ -1209,23 +1317,31 @@ impl Database {
                 return Err(error);
             }
             self.durability = previous_durability;
-            let marker_preexisted = root.join(TRANSACTION_MARKER_FILE).exists();
-            if let Err(prepare_error) = prepare_workspace_transaction(&root) {
-                if marker_preexisted {
-                    // The failed begin did not create this recovery state. It
-                    // may belong to a crashed or independently managed writer,
-                    // so never discard it from this error path.
-                    return Err(prepare_error);
+            if let Some(options) = self.commit_log {
+                match self.cache.borrow().backend() {
+                    Backend::Dev(dev) => dev.begin_journal(options)?,
+                    _ => return Err(PvError::ReadOnly),
                 }
-                let cleanup = abort_workspace_transaction_preparation(&root);
-                return match cleanup {
+                (TransactionRollback::Journal(root), Some(lock))
+            } else {
+                let marker_preexisted = root.join(TRANSACTION_MARKER_FILE).exists();
+                if let Err(prepare_error) = prepare_workspace_transaction(&root) {
+                    if marker_preexisted {
+                        // The failed begin did not create this recovery state. It
+                        // may belong to a crashed or independently managed writer,
+                        // so never discard it from this error path.
+                        return Err(prepare_error);
+                    }
+                    let cleanup = abort_workspace_transaction_preparation(&root);
+                    return match cleanup {
                     Ok(()) => Err(prepare_error),
                     Err(cleanup_error) => Err(PvError::TransactionOutcomeUnknown(format!(
                         "transaction preparation failed ({prepare_error}); recovery-artifact cleanup also failed ({cleanup_error})"
                     ))),
                 };
+                }
+                (TransactionRollback::Filesystem(root), Some(lock))
             }
-            (TransactionRollback::Filesystem(root), Some(lock))
         } else {
             (TransactionRollback::Memory(self.bake_to_bytes()?), None)
         };
@@ -1256,7 +1372,9 @@ impl Database {
         let (filesystem_root, previous_durability) = match self.active_transaction.as_ref() {
             Some(state) => (
                 match &state.rollback {
-                    TransactionRollback::Filesystem(root) => Some(root.clone()),
+                    TransactionRollback::Filesystem(root) | TransactionRollback::Journal(root) => {
+                        Some(root.clone())
+                    }
                     TransactionRollback::Memory(_) => None,
                 },
                 state.previous_durability,
@@ -1273,7 +1391,18 @@ impl Database {
         }
 
         let commit_point_error = if let Some(root) = &filesystem_root {
-            match commit_workspace_transaction(root) {
+            let result = if matches!(
+                self.active_transaction.as_ref().map(|s| &s.rollback),
+                Some(TransactionRollback::Journal(_))
+            ) {
+                match self.cache.borrow().backend() {
+                    Backend::Dev(dev) => dev.commit_journal(),
+                    _ => Err(PvError::ReadOnly),
+                }
+            } else {
+                commit_workspace_transaction(root)
+            };
+            match result {
                 Ok(()) => None,
                 Err(error @ PvError::TransactionOutcomeUnknown(_)) => Some(error),
                 Err(error) => return Err(error),
@@ -1315,12 +1444,14 @@ impl Database {
             return Err(PvError::Transaction("no transaction is active".into()));
         };
 
+        let commit_log = self.commit_log;
         let rollback = (|| -> Result<()> {
             #[cfg(feature = "enterprise")]
             let enterprise = self.enterprise.clone();
             match state.rollback {
                 TransactionRollback::Memory(snapshot) => {
                     let mut restored = Database::import_bytes(&snapshot)?;
+                    restored.commit_log = commit_log;
                     restored.autocommit = state.previous_autocommit;
                     restored.durability = state.previous_durability;
                     #[cfg(feature = "enterprise")]
@@ -1335,15 +1466,32 @@ impl Database {
                     }
                     *self = restored;
                 }
-                TransactionRollback::Filesystem(root) => {
+                TransactionRollback::Filesystem(ref root)
+                | TransactionRollback::Journal(ref root) => {
+                    let root = root.clone();
+                    let journaled = matches!(state.rollback, TransactionRollback::Journal(_));
                     // Drop all cached filesystem handles before replacing live files.
                     *self = Database::open_memory();
-                    restore_workspace_transaction(&root)?;
+                    if journaled {
+                        if !root
+                            .join(crate::COMMIT_LOG_DIR)
+                            .join("active/header")
+                            .is_file()
+                        {
+                            return Err(PvError::TransactionOutcomeUnknown(
+                                "active page journal is missing".into(),
+                            ));
+                        }
+                        crate::journal::recover(&root)?;
+                    } else {
+                        restore_workspace_transaction(&root)?;
+                    }
                     // Recovery is complete and its marker is gone. Release the
                     // transaction lock before the normal open path acquires it for
                     // its own recovery check.
                     drop(state._filesystem_lock.take());
                     let mut restored = Database::open_dev(&root)?;
+                    restored.commit_log = commit_log;
                     restored.autocommit = state.previous_autocommit;
                     restored.durability = state.previous_durability;
                     #[cfg(feature = "enterprise")]
@@ -1444,6 +1592,20 @@ impl Database {
         statement: Statement,
         mut budget: Option<&mut QueryBudget>,
     ) -> Result<QueryResult> {
+        if self.commit_log.is_some()
+            && !self.in_transaction()
+            && !matches!(
+                &statement,
+                Statement::Select { .. }
+                    | Statement::SelectJoin { .. }
+                    | Statement::Explain { .. }
+                    | Statement::Begin
+                    | Statement::Commit
+                    | Statement::Rollback
+            )
+        {
+            return self.transaction(move |database| database.execute_statement(statement, budget));
+        }
         match statement {
             Statement::Explain { statement } => {
                 let result = self.explain_statement(&statement, budget.is_some())?;
@@ -2956,7 +3118,9 @@ impl Database {
     /// The pass uses the same crash-recoverable whole-workspace transaction as
     /// SQL mutations, so page replacement and catalog metadata publish atomically.
     pub fn compact_step(&mut self, max_pages: usize) -> Result<CompactionReport> {
-        self.ensure_writable()?;
+        if !self.cache.borrow().is_writable() {
+            return Err(PvError::ReadOnly);
+        }
         if self.in_transaction() {
             return Err(PvError::Transaction(
                 "cold-page compaction cannot run inside an active transaction".into(),
@@ -3203,6 +3367,9 @@ impl Database {
     // --- internals ----------------------------------------------------------
 
     fn ensure_writable(&self) -> Result<()> {
+        if self.commit_log.is_some() && !self.in_transaction() {
+            return Err(PvError::Transaction("low-level mutations on a logged workspace require an explicit transaction; SQL queries are atomic automatically".into()));
+        }
         if self.cache.borrow().is_writable() {
             Ok(())
         } else {
