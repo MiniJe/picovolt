@@ -300,6 +300,10 @@ def main():
               "picovolt_source_commit": args.picovolt_source_commit or subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
               "platform": platform.platform(), "python": sys.version, "processor": platform.processor(),
               "logical_cpus": os.cpu_count(), "rows_initial": args.rows, "trials": args.trials,
+              "picovolt_artifact_sha256": {
+                  str(Path(p).resolve()): hashlib.sha256(Path(p).read_bytes()).hexdigest()
+                  for p in [args.initializer, os.environ.get("PICOVOLT_LIB")]
+                  if p and Path(p).is_file()},
               "client": "Python public APIs; PicoVolt ctypes/JSON, SQLite stdlib, DuckDB native extension",
               "sqlite_runtime_override": None if not SQLITE_LIBRARY else {
                   "path": str(Path(SQLITE_LIBRARY).resolve()),
