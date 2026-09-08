@@ -1,8 +1,7 @@
 # Standalone PicoVolt 2.0 review and external-trial prompt
 
 Copy the prompt below into a new agent session with no implementation conversation
-or shared memory. Freeze the candidate commit after the performance/usability work;
-substitute its full SHA below. A separate agent review is useful independent
+or shared memory. The engine candidate is frozen at the full SHA below. A separate agent review is useful independent
 verification, but is not a certification or a guarantee of impartiality.
 
 ---
@@ -14,7 +13,7 @@ make it win benchmarks. A negative result is a successful evaluation when
 supported by reproducible evidence.
 
 Repository: https://github.com/MiniJe/picovolt
-Candidate: FULL_IMMUTABLE_COMMIT_SHA
+Candidate: eeb45c025b53f1b764d1e50774d6aaf700e17c77 (2.0.0-rc.2 engine)
 Candidate PR: https://github.com/MiniJe/picovolt/pull/21
 
 Use a fresh checkout of that exact SHA in your own working directory. Verify

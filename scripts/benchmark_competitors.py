@@ -204,6 +204,7 @@ def worker(args):
     files = [p for p in trial_dir.rglob("*") if p.is_file()]
     total = sum(p.stat().st_size for p in files)
     log = sum(p.stat().st_size for p in files if ".pv-log" in p.parts)
+    main_peak_rss = peak_rss_bytes()
     if args.bulk_api:
         # Separate database: preserve the common SQL workload and its size.
         bulk_path = trial_dir / ("bulk-workspace" if args.engine == "picovolt" else "bulk.db")
@@ -238,7 +239,8 @@ def worker(args):
               "base_file_bytes": total-log, "metrics": {k: summarize(v) for k, v in samples.items()},
               "samples_ms": samples, "cpu_samples_ms": CPU_SAMPLES,
               "measured_cpu_ms_excluding_cli_children": {k: sum(v) for k,v in CPU_SAMPLES.items()},
-              "peak_process_rss_bytes": peak_rss_bytes()}
+              "peak_process_rss_bytes": main_peak_rss,
+              "peak_process_rss_including_optional_bulk_bytes": peak_rss_bytes()}
     Path(args.output).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
 
