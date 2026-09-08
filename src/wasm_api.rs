@@ -10,7 +10,6 @@
 
 use wasm_bindgen::prelude::*;
 
-use crate::json::result_to_json;
 use crate::{Database, PreparedStatement as EnginePreparedStatement};
 
 /// An in-memory PicoVolt database usable from JavaScript.
@@ -189,8 +188,7 @@ impl Db {
 }
 
 fn result_to_string(result: &crate::QueryResult) -> Result<String, JsValue> {
-    serde_json::to_string(&result_to_json(result))
-        .map_err(|error| JsValue::from_str(&error.to_string()))
+    crate::json::result_to_string(result).map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
 fn js_params_to_values(params: JsValue) -> Result<Vec<crate::Value>, JsValue> {

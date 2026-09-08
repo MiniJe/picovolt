@@ -1,5 +1,8 @@
 # PicoVolt JavaScript adapters
 
+For the unpublished 2.0 candidate, see the [interface quickstart](../../docs/QUICKSTART_2_0.md)
+for batching, persistence and diagnostics. Use matching candidate artifacts.
+
 The PicoVolt npm package includes a synchronous,
 [better-sqlite3](https://github.com/WiseLibs/better-sqlite3)-inspired adapter,
 the raw WebAssembly API, durable browser storage, and a module-worker endpoint.

@@ -200,7 +200,7 @@ pub unsafe extern "C" fn pv_query(db: *mut PvDb, sql: *const c_char) -> *mut c_c
             return ptr::null_mut();
         };
         match db.inner.query(sql) {
-            Ok(result) => match serde_json::to_string(&crate::json::result_to_json(&result)) {
+            Ok(result) => match crate::json::result_to_string(&result) {
                 Ok(s) => string_to_c(s),
                 Err(e) => {
                     set_last_error(e.to_string());
@@ -252,7 +252,7 @@ pub unsafe extern "C" fn pv_query_params(
             }
         };
         match db.inner.query_with(sql, &values) {
-            Ok(result) => match serde_json::to_string(&crate::json::result_to_json(&result)) {
+            Ok(result) => match crate::json::result_to_string(&result) {
                 Ok(s) => string_to_c(s),
                 Err(e) => {
                     set_last_error(e.to_string());
@@ -351,7 +351,7 @@ pub unsafe extern "C" fn pv_stmt_execute(
             }
         };
         match stmt.inner.execute(&mut db.inner, &values) {
-            Ok(result) => match serde_json::to_string(&crate::json::result_to_json(&result)) {
+            Ok(result) => match crate::json::result_to_string(&result) {
                 Ok(json) => string_to_c(json),
                 Err(error) => {
                     set_last_error(error.to_string());

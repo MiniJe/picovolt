@@ -12,12 +12,21 @@ import math
 import os
 from pathlib import Path
 import platform
-import sqlite3
 import statistics
 import subprocess
 import sys
 import time
 import uuid
+
+# Optional isolated Windows runtime override, loaded before Python's SQLite
+# extension. This never replaces the user's Python installation or its DLL.
+SQLITE_LIBRARY = os.environ.get("PICOVOLT_BENCH_SQLITE_LIBRARY")
+if SQLITE_LIBRARY:
+    if os.name != "nt":
+        raise RuntimeError("PICOVOLT_BENCH_SQLITE_LIBRARY requires Windows")
+    import ctypes
+    _sqlite_runtime = ctypes.WinDLL(str(Path(SQLITE_LIBRARY).resolve()))
+import sqlite3
 
 CPU_SAMPLES = {}
 
@@ -101,8 +110,8 @@ def worker(args):
     prune_cli = Path(args.initializer).resolve().parents[1] / ("pv.exe" if os.name == "nt" else "pv")
 
     def prune():
-        # Use the shipped CLI because Python does not expose the native Rust
-        # pruning API. Include process startup, open, and pruning in its timing.
+        # Keep the same shipped CLI path for RC1/RC2 comparisons. RC2 also has
+        # a native Python pruning API. Include CLI startup/open/pruning here.
         sequences = [int(p.name) for p in (db_path / ".pv-log").iterdir()
                      if p.is_dir() and len(p.name) == 20 and p.name.isdigit()]
         if sequences:
@@ -290,6 +299,10 @@ def main():
               "platform": platform.platform(), "python": sys.version, "processor": platform.processor(),
               "logical_cpus": os.cpu_count(), "rows_initial": args.rows, "trials": args.trials,
               "client": "Python public APIs; PicoVolt ctypes/JSON, SQLite stdlib, DuckDB native extension",
+              "sqlite_runtime_override": None if not SQLITE_LIBRARY else {
+                  "path": str(Path(SQLITE_LIBRARY).resolve()),
+                  "sha256": hashlib.sha256(Path(SQLITE_LIBRARY).read_bytes()).hexdigest(),
+                  "version": sqlite3.sqlite_version},
               "durability": {"picovolt": "format 6 commit log; Sync transactions; default limits; explicit CLI pruning before writes and every 10 commits, timed separately and included in sustained_write_phase",
                              "sqlite": "WAL, synchronous=FULL; default automatic checkpoint", "duckdb": "persistent database; default WAL/checkpoint; threads=1"},
               "summary": summary, "runs": results}

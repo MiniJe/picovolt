@@ -6,6 +6,39 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## 2.0.0-rc.2 - 2026-09-08
+
+### Added
+
+- Atomic parameter batches across Rust, C, Python, Go, JavaScript/WASM and CLI.
+- Native commit-log configuration, status and pruning helpers in C, Python and
+  Go; `pv log-enable`, `pv log-status` and `pv batch` commands.
+- A shared usability guide and a standalone independent-review/external-trial
+  prompt with reproducible evidence requirements.
+
+### Changed
+
+- Compact binary physical log records retain the public schema-1 change API and
+  can read earlier JSON records. Avoid redundant baseline syncs and manifest
+  decoding while preserving the existing commit/recovery protocol.
+- Logged workspaces persist index definitions and rebuild all indexes in one
+  table scan on open. This reduces commit bytes in exchange for startup work;
+  baked images retain binary indexes.
+- Intersect indexed numeric ranges, including mixed integer/decimal comparisons
+  and BETWEEN; push eligible source predicates before joins.
+- Stream unfiltered grouped aggregates into per-group accumulators and serialize
+  binding results without constructing a second JSON value tree.
+- Avoid unnecessary page writes and repeated checksums on already dirty pages.
+
+### Fixed
+
+- Reject index creation on read-only handles and outside required logged
+  transactions. Regression tests cover rollback, numeric extremes, grouping,
+  time travel and bounded query work.
+
+This remains an unpublished candidate. See the [release ledger](docs/RELEASE_2_0.md)
+for measured performance and outstanding independent/external gates.
+
 ## 2.0.0-rc.1 - 2026-09-08
 
 ### Added

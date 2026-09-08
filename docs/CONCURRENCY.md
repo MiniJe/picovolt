@@ -61,8 +61,8 @@ Configure `SharedDatabaseOptions::new(queue_capacity)` with
 
 A full reader pool returns `Busy`; byte/count limits return `ResourceLimit`.
 Failed writes roll back. Readers and history are never silently evicted. The
-journal budget includes undo pages, metadata and JSON physical changes. JSON
-can expand binary payloads. These limits do not bound total database size,
+journal budget includes undo pages, metadata and compact binary physical changes.
+The public JSON change API can expand binary payloads. These limits do not bound total database size,
 transient SQL input, or unreferenced CAS blobs. Rolled-back appends and blobs
 may remain unreachable. Admission scans retained log files for accounting;
 prune regularly to bound that cost as well as disk use.
@@ -121,6 +121,13 @@ management, automatic replication and distributed consensus are not implemented.
 
 The CLI provides `pv changes <workspace> <after-sequence> [limit]` as JSONL and
 `pv log-prune <workspace> <acknowledged-sequence>`.
+
+RC.2 also exposes `commit_log_status` (head, pruned cursor, retained bytes/count
+and current limits), native binding configuration, `pv log-enable` and
+`pv log-status`. See [the interface guide](QUICKSTART_2_0.md). Logged workspaces
+save index definitions rather than every index entry at commit. Opening rebuilds
+all defined indexes in one scan per table, trading startup CPU for smaller
+durable writes. Baked production images retain persisted binary indexes.
 
 ## Migration and compatibility
 

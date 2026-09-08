@@ -7,10 +7,15 @@
 [![GitHub stars](https://img.shields.io/github/stars/MiniJe/picovolt?style=social)](https://github.com/MiniJe/picovolt)
 
 PicoVolt is an embedded database engine written in Rust. This branch builds
-**2.0.0-rc.1**, with concurrent snapshot readers, bounded writer scheduling,
+**2.0.0-rc.2**, with concurrent snapshot readers, bounded writer scheduling,
 and an incremental durable commit log. The latest published stable release is
 1.9.0. This candidate has not completed an independent security review or
 external application trials. See the [2.0 release ledger](docs/RELEASE_2_0.md).
+
+Start with the [2.0 guide for every maintained interface](docs/QUICKSTART_2_0.md)
+for atomic batches, persistence choices, log diagnostics and error recovery.
+The [standalone review prompt](docs/INDEPENDENT_REVIEW_PROMPT.md) defines an
+independent assessment and the external trials still required before release.
 
 If PicoVolt is useful to you, consider starring the repository on GitHub. It is
 the simplest way to help others discover the project.

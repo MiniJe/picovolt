@@ -130,10 +130,24 @@ impl Database {
                         "snapshot",
                         format!("transaction {}", before.unwrap_or(self.current_tx())),
                     ));
+                    let pushed = filter
+                        .as_ref()
+                        .and_then(|p| source_predicate(p, source.qualifier()));
+                    let access = pushed
+                        .as_ref()
+                        .and_then(|p| index_access(&self.tables[&source.name], p));
                     steps.push((
-                        "table scan",
+                        access
+                            .map(|(_, operation)| operation)
+                            .unwrap_or("table scan"),
                         format!("{} AS {}", source.name, source.qualifier()),
                     ));
+                    if pushed.is_some() {
+                        steps.push((
+                            "source filter",
+                            "apply driving-relation predicates before joining".into(),
+                        ));
+                    }
                     for join in joins {
                         let right = self
                             .column_names(&join.table.name)?
@@ -350,6 +364,11 @@ fn index_access<'a>(table: &'a Table, pred: &'a Predicate) -> Option<(&'a str, &
             _ => None,
         },
         Predicate::And(a, b) => index_access(table, a).or_else(|| index_access(table, b)),
+        Predicate::Between {
+            column,
+            negated: false,
+            ..
+        } if table.indexes.contains_key(column) => Some((column, "index range scan")),
         _ => None,
     }
 }

@@ -1,5 +1,8 @@
 # PicoVolt for Go
 
+For the unpublished 2.0 candidate, see the [interface quickstart](../../docs/QUICKSTART_2_0.md)
+for batching, persistence and diagnostics. Use matching candidate artifacts.
+
 Go bindings for the [PicoVolt](https://github.com/MiniJe/picovolt) embedded
 database engine, via its C ABI and `cgo`.
 

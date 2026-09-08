@@ -411,8 +411,9 @@ The log lives outside the baked image under `.pv-log/`:
 - `active/before`: complete prior manifest, including the index catalog.
 - `active/undo/<20-digit-page-id>`: original bytes of a page, saved once before
   its first overwrite. Partial `.tmp` files never permit a write.
-- `active/change`: schema-1 JSON ChangeCommit with final pages, new blobs,
-  complete final manifest and before/after MVCC ids.
+- `active/change`: compact binary physical changes in rc.2, with final pages,
+  new blobs, complete final manifest and before/after MVCC ids. Earlier schema-1
+  JSON records remain readable; the public `ChangeCommit` API remains schema 1.
 - `<20-digit-sequence>/`: a committed transaction, published by renaming
   `active` after syncing pages, blobs, manifest and change record.
 - `checkpoint`: a little-endian u64 sequence pruned through; its durable atomic
@@ -422,6 +423,23 @@ Each metadata/page file begins with the 32-byte BLAKE3 digest of its payload.
 Numeric entries have exactly 20 ASCII decimal digits. Readers reject malformed
 sizes, hashes, sequences and symlink entries. Hashes detect corruption; they
 are not authentication against an attacker with workspace write access.
+
+The rc.2 change payload starts with the eight bytes `PVCHG001`, followed by
+little-endian u64 sequence, before clock, after clock and manifest byte length;
+then raw UTF-8 manifest bytes. A u64 page count precedes `(u64 page id, 4096 raw
+bytes)` entries. A u64 blob count precedes `(64 ASCII hex hash bytes, u64 byte
+length, raw blob bytes)` entries. Counts and lengths are checked against the
+remaining payload before allocation; trailing bytes are rejected. The existing
+32-byte checksum prefix wraps this entire payload. The magic distinguishes
+binary payloads from legacy JSON; it does not change the publication boundary.
+
+Logged workspace manifests in rc.2 retain `indexed_columns` and omit serialized
+index entries. Open rebuilds all these indexes in one scan per table, including
+historical row versions needed by MVCC. Unlogged workspaces still use JSON index
+entries; baked images still use their binary index region. The format-6 floor
+and existing definitions-only reader path preserve compatibility. Opening a
+logged indexed workspace therefore does more work than reading persisted
+indexes, while each commit avoids rewriting all index entries.
 
 Recovery validates all original pages before changing live data, restores them
 and the old manifest, then renames `active` to `discarded` before cleanup.

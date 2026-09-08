@@ -1,6 +1,122 @@
 use picovolt::{CommitLogOptions, Database, QueryLimits, Value};
 
 #[test]
+fn logged_index_definitions_stay_small_and_rebuild_full_history() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut db = Database::open_dev(temp.path()).unwrap();
+    db.enable_commit_log(CommitLogOptions::default()).unwrap();
+    db.query("CREATE TABLE t (id PRIMARY KEY, value)").unwrap();
+    let rows = (0..2000)
+        .map(|i| vec![Value::Int(i), Value::Int(i % 5)])
+        .collect::<Vec<_>>();
+    db.execute_many("INSERT INTO t VALUES (?,?)", &rows)
+        .unwrap();
+    db.query("CREATE INDEX ON t (value)").unwrap();
+    db.query("CREATE INDEX ON t (id)").unwrap();
+    let before = db.current_tx();
+    db.query("DELETE FROM t WHERE id < 100").unwrap();
+    let hash = db.verification_hash().unwrap();
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(temp.path().join("pv_manifest.json")).unwrap())
+            .unwrap();
+    let table = &manifest["tables"][0];
+    assert!(table["indexes"].is_null());
+    assert_eq!(table["indexed_columns"].as_array().unwrap().len(), 2);
+    assert!(
+        std::fs::metadata(temp.path().join("pv_manifest.json"))
+            .unwrap()
+            .len()
+            < 8192
+    );
+    drop(db);
+    let mut db = Database::open_dev(temp.path()).unwrap();
+    assert_eq!(hash, db.verification_hash().unwrap());
+    assert_eq!(
+        db.query("SELECT id FROM t WHERE id = 1")
+            .unwrap()
+            .rows()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(
+        db.query(&format!("SELECT id FROM t WHERE id = 1 BEFORE {before}"))
+            .unwrap()
+            .rows()
+            .unwrap(),
+        &[vec![Value::Int(1)]]
+    );
+    assert!(db.query("INSERT INTO t VALUES (1999,0)").is_err());
+    assert_eq!(
+        db.query_with_limits(
+            "SELECT id FROM t WHERE id >= 1995 AND id < 2000",
+            &[],
+            QueryLimits::new(5, 8192, 5, None)
+        )
+        .unwrap()
+        .rows()
+        .unwrap()
+        .len(),
+        5
+    );
+}
+
+#[test]
+fn streaming_aggregates_match_general_path_with_bounded_group_memory() {
+    let mut db = Database::open_memory();
+    db.query("CREATE TABLE t (g, v)").unwrap();
+    for i in 0..2000 {
+        db.insert(
+            "t",
+            vec![
+                Value::Int(i % 5),
+                if i % 7 == 0 {
+                    Value::Null
+                } else if i % 3 == 0 {
+                    Value::Decimal(i as i128 * 1_000_000 + 500_000)
+                } else {
+                    Value::Int(i)
+                },
+            ],
+        )
+        .unwrap();
+    }
+    let before = db.current_tx();
+    db.query("DELETE FROM t WHERE v < 500").unwrap();
+    for suffix in [String::new(), format!(" BEFORE {before}")] {
+        for projection in [
+            "g, COUNT(*), COUNT(v), SUM(v), AVG(v), MIN(v), MAX(v)",
+            "g, SUM(v) AS total",
+        ] {
+            let fast = format!("SELECT {projection} FROM t GROUP BY g{suffix} ORDER BY g");
+            let reference =
+                format!("SELECT {projection} FROM t WHERE g >= 0 GROUP BY g{suffix} ORDER BY g");
+            assert_eq!(db.query(&fast).unwrap(), db.query(&reference).unwrap());
+            assert!(db
+                .query_with_limits(&fast, &[], QueryLimits::new(2100, 20_000, 5, None))
+                .is_ok());
+        }
+    }
+    db.query("CREATE TABLE empty (v)").unwrap();
+    assert_eq!(
+        db.query("SELECT COUNT(*),SUM(v),AVG(v),MIN(v),MAX(v) FROM empty")
+            .unwrap()
+            .rows()
+            .unwrap(),
+        &[vec![
+            Value::Int(0),
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null
+        ]]
+    );
+    db.query("INSERT INTO empty VALUES ('not numeric')")
+        .unwrap();
+    assert!(db.query("SELECT SUM(v) FROM empty").is_err());
+}
+
+#[test]
 fn atomic_batches_validate_and_rollback_with_one_physical_commit() {
     let temp = tempfile::tempdir().unwrap();
     let mut db = Database::open_dev(temp.path()).unwrap();

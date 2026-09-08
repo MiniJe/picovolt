@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+mod aggregate;
 mod explain;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1873,6 +1874,19 @@ impl Database {
                 let grouped = !group_by.is_empty()
                     || projection_has_aggregate(&projection)
                     || having.is_some();
+                if grouped && filter.is_none() && having.is_none() {
+                    return self.select_streaming_aggregate(
+                        &table,
+                        before,
+                        projection_to_items(projection)?,
+                        group_by,
+                        order,
+                        distinct,
+                        limit,
+                        offset,
+                        budget.as_deref_mut(),
+                    );
+                }
                 // Fast path: a single-column `ORDER BY` on an indexed column with no
                 // `WHERE`, grouping, aggregate, or `DISTINCT` reads the ordered index
                 // in key order, skipping the sort and (with `LIMIT`) stopping early.
@@ -3491,7 +3505,16 @@ impl Database {
         let Some(root) = self.root.clone() else {
             return Ok(());
         };
-        let manifest = self.build_manifest(false, &IndexPlan::Json)?;
+        // Logged workspaces already retain authoritative pages. Persist index
+        // definitions here and rebuild their in-memory maps on open, avoiding
+        // O(index entries) catalog rewrites for each tiny durable mutation.
+        // Baked production images still carry their compact binary indexes.
+        let plan = if self.commit_log.is_some() {
+            IndexPlan::Definitions
+        } else {
+            IndexPlan::Json
+        };
+        let manifest = self.build_manifest(false, &plan)?;
         // The manifest is on the commit path; whitespace multiplies write and
         // retained-journal bytes without adding information. CLI inspection
         // handles human-readable formatting separately.
@@ -3557,6 +3580,7 @@ impl Database {
             .iter()
             .map(|(name, t)| {
                 let (indexes, binary_indexes) = match plan {
+                    IndexPlan::Definitions => (Vec::new(), Vec::new()),
                     IndexPlan::Json => (
                         t.indexes
                             .iter()
@@ -3618,7 +3642,7 @@ impl Database {
         let (format_version, index_region) = match plan {
             // JSON indexes predate the binary index region and do not by
             // themselves advance the format version.
-            IndexPlan::Json => (schema_version, None),
+            IndexPlan::Json | IndexPlan::Definitions => (schema_version, None),
             IndexPlan::Binary { offset, len, .. } if *len > 0 => (
                 schema_version.max(FORMAT_VERSION_INDEX),
                 Some((*offset, *len)),
@@ -3639,6 +3663,8 @@ impl Database {
 
 /// How a [`Manifest`] should persist secondary indexes.
 enum IndexPlan {
+    /// Authoritative pages rebuild these in-memory indexes at workspace open.
+    Definitions,
     /// JSON `(key, addresses)` pairs inline in the manifest (development
     /// workspaces, which have no monolith region).
     Json,
@@ -6023,19 +6049,29 @@ fn build_tables(
                 );
             }
         } else {
+            let table = tables.get(&meta.name).expect("just inserted");
+            let mut rebuilt = Vec::new();
             for column in &meta.indexed_columns {
-                let table = tables.get(&meta.name).expect("just inserted");
-                let col_ix = column_index(table, column)?;
-                let mut index = SecondaryIndex::new();
+                rebuilt.push((
+                    column.clone(),
+                    column_index(table, column)?,
+                    SecondaryIndex::new(),
+                ));
+            }
+            if !rebuilt.is_empty() {
                 scan(cache, table, cas, |addr, _env, row| {
-                    index.insert(&row[col_ix], addr);
+                    for (_, col_ix, index) in &mut rebuilt {
+                        index.insert(&row[*col_ix], addr);
+                    }
                     Ok(())
                 })?;
+            }
+            for (column, _, index) in rebuilt {
                 tables
                     .get_mut(&meta.name)
                     .expect("just inserted")
                     .indexes
-                    .insert(column.clone(), index);
+                    .insert(column, index);
             }
         }
     }
