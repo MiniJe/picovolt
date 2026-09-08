@@ -73,7 +73,11 @@ class Engine:
         else:
             import duckdb
             self.db = duckdb.connect(str(path), config={"threads": "1"})
-            self.version = duckdb.__version__
+            self.version = self.db.execute("SELECT version()").fetchone()[0].removeprefix("v")
+            assert self.version == duckdb.__version__, "DuckDB Python/native version mismatch"
+            expected = os.environ.get("PICOVOLT_BENCH_DUCKDB_VERSION")
+            if expected:
+                assert self.version == expected, f"expected DuckDB {expected}, loaded {self.version}"
 
     def query(self, sql, params=None):
         if self.name == "picovolt":
