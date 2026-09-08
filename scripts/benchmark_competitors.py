@@ -19,6 +19,28 @@ import sys
 import time
 import uuid
 
+CPU_SAMPLES = {}
+
+
+def peak_rss_bytes():
+    if os.name == "nt":
+        import ctypes
+        class Counters(ctypes.Structure):
+            _fields_ = [("cb", ctypes.c_uint32), ("faults", ctypes.c_uint32)] + [
+                (name, ctypes.c_size_t) for name in ["peak", "working", "paged_peak", "paged",
+                    "nonpaged_peak", "nonpaged", "pagefile", "pagefile_peak"]]
+        counters = Counters()
+        counters.cb = ctypes.sizeof(counters)
+        query = ctypes.windll.psapi.GetProcessMemoryInfo
+        query.argtypes = [ctypes.c_void_p, ctypes.POINTER(Counters), ctypes.c_uint32]
+        query.restype = ctypes.c_int
+        if not query(ctypes.c_void_p(-1), ctypes.byref(counters), counters.cb):
+            raise ctypes.WinError()
+        return counters.peak
+    import resource
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return peak if sys.platform == "darwin" else peak * 1024
+
 
 def row(i):
     return (i, i % 50, (i * 17) % 1000, f"payload-category-{i % 50:02}")
@@ -55,9 +77,11 @@ class Engine:
 
 
 def timed(samples, name, function):
+    cpu_start = time.process_time_ns()
     start = time.perf_counter_ns()
     result = function()
     samples.setdefault(name, []).append((time.perf_counter_ns() - start) / 1e6)
+    CPU_SAMPLES.setdefault(name, []).append((time.process_time_ns() - cpu_start) / 1e6)
     return result
 
 
@@ -171,11 +195,41 @@ def worker(args):
     files = [p for p in trial_dir.rglob("*") if p.is_file()]
     total = sum(p.stat().st_size for p in files)
     log = sum(p.stat().st_size for p in files if ".pv-log" in p.parts)
+    if args.bulk_api:
+        # Separate database: preserve the common SQL workload and its size.
+        bulk_path = trial_dir / ("bulk-workspace" if args.engine == "picovolt" else "bulk.db")
+        bulk = Engine(args.engine, bulk_path, args.initializer)
+        if args.engine != "picovolt":
+            bulk.query("CREATE TABLE events (id INTEGER, bucket INTEGER, amount INTEGER, payload TEXT)")
+        initial = [row(i) for i in range(args.rows)]
+        if args.engine == "duckdb":
+            import csv
+            csv_path = trial_dir / "bulk.csv"
+            with csv_path.open("w", newline="", encoding="utf-8") as stream:
+                csv.writer(stream).writerows(initial)
+        def bulk_load():
+            if args.engine == "picovolt":
+                assert bulk.db.execute_many("INSERT INTO events VALUES (?, ?, ?, ?)", initial) == args.rows
+            elif args.engine == "sqlite":
+                bulk.query("BEGIN")
+                bulk.db.executemany("INSERT INTO events VALUES (?, ?, ?, ?)", initial)
+                bulk.query("COMMIT")
+            else:
+                path = str(csv_path.resolve()).replace("'", "''")
+                bulk.query(f"COPY events FROM '{path}' (FORMAT CSV, HEADER FALSE)")
+        timed(samples, "bulk_api_load_transaction", bulk_load)
+        assert bulk.query("SELECT id, bucket, amount, payload FROM events ORDER BY id") == initial
+        bulk.close()
+        bulk = Engine(args.engine, bulk_path)
+        assert bulk.query("SELECT COUNT(*), SUM(amount) FROM events") == [(args.rows, sum(r[2] for r in initial))]
+        bulk.close()
     result = {"engine": args.engine, "version": engine.version, "trial": args.trial,
               "rows_initial": args.rows, "rows_final": len(data), "verified_sha256": digest,
               "file_bytes_after_close": total, "retained_log_bytes": log,
               "base_file_bytes": total-log, "metrics": {k: summarize(v) for k, v in samples.items()},
-              "samples_ms": samples}
+              "samples_ms": samples, "cpu_samples_ms": CPU_SAMPLES,
+              "measured_cpu_ms_excluding_cli_children": {k: sum(v) for k,v in CPU_SAMPLES.items()},
+              "peak_process_rss_bytes": peak_rss_bytes()}
     Path(args.output).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
 
@@ -188,6 +242,7 @@ def main():
     parser.add_argument("--engine", choices=["picovolt", "sqlite", "duckdb"])
     parser.add_argument("--trial", type=int, default=0)
     parser.add_argument("--run-dir")
+    parser.add_argument("--bulk-api", action="store_true", help="also measure native batch APIs and DuckDB COPY on a separate database")
     args = parser.parse_args()
     if args.rows <= 100 or args.trials < 1:
         parser.error("rows must exceed 100 and trials must be positive")
@@ -206,6 +261,8 @@ def main():
                        "--rows", str(args.rows), "--initializer", args.initializer,
                        "--run-dir", str(run_dir), "--output", str(output)]
             print(f"Trial {trial+1}/{args.trials}: {engine}", flush=True)
+            if args.bulk_api:
+                command.append("--bulk-api")
             subprocess.run(command, check=True)
             results.append(json.loads(output.read_text(encoding="utf-8")))
     assert len({r["verified_sha256"] for r in results}) == 1
@@ -216,6 +273,10 @@ def main():
                            "file_bytes_after_close": statistics.median(r["file_bytes_after_close"] for r in trials),
                            "base_file_bytes": statistics.median(r["base_file_bytes"] for r in trials),
                            "retained_log_bytes": statistics.median(r["retained_log_bytes"] for r in trials)}
+        summary[engine]["peak_process_rss_bytes"] = statistics.median(r["peak_process_rss_bytes"] for r in trials)
+        summary[engine]["measured_cpu_ms_excluding_cli_children"] = {
+            k: statistics.median(r["measured_cpu_ms_excluding_cli_children"][k] for r in trials)
+            for k in trials[0]["measured_cpu_ms_excluding_cli_children"]}
         for metric in trials[0]["metrics"]:
             medians = [r["metrics"][metric]["median_ms"] for r in trials]
             summary[engine]["metrics"][metric] = {

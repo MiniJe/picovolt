@@ -4,6 +4,27 @@ import picovolt.dbapi2 as dbapi
 from picovolt import Database, PicoVoltError
 
 
+def test_atomic_batch_and_native_log_management(tmp_path):
+    with Database.open_dev(str(tmp_path)) as db:
+        db.enable_commit_log()
+        db.query("CREATE TABLE t (id PRIMARY KEY, body)")
+        assert db.execute_many("INSERT INTO t VALUES (?,?)", [(1,"one"),(2,"two")]) == 2
+        assert db.commit_log_status()["head_sequence"] == 2
+        with pytest.raises(PicoVoltError):
+            db.execute_many("INSERT INTO t VALUES (?,?)", [(3,"three"),(1,"duplicate")])
+        assert db.query("SELECT COUNT(*) FROM t")["rows"] == [[2]]
+        assert len(db.changes_since(0)) == 2
+        for method in [db.prune_changes, db.changes_since]:
+            with pytest.raises(ValueError):
+                method(-1)
+        db.prune_changes(2)
+        assert db.commit_log_status()["retained_commits"] == 0
+        with pytest.raises(PicoVoltError, match="pruned"):
+            db.changes_since(0)
+    with pytest.raises(PicoVoltError, match="closed"):
+        db.execute_many("INSERT INTO t VALUES (?,?)", [])
+
+
 def test_low_level_transaction_commit_and_rollback():
     db = Database.open_memory()
     try:

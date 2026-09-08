@@ -127,7 +127,15 @@ impl PageCache {
     }
 
     /// Insert/replace a page in the cache as **dirty** (deferred write-back).
-    pub fn write(&mut self, id: PageId, page: PageBuf) -> Result<()> {
+    pub fn write(&mut self, id: PageId, mut page: PageBuf) -> Result<()> {
+        stamp_page_checksum(&mut page);
+        if self
+            .entries
+            .get(&id)
+            .is_some_and(|entry| entry.page == page)
+        {
+            return Ok(());
+        }
         if !self.entries.contains_key(&id) {
             self.evict_if_needed()?;
         }

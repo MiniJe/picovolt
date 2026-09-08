@@ -62,6 +62,22 @@ impl SecondaryIndex {
             .collect()
     }
 
+    /// Count addresses before allocating range candidates for a bounded query.
+    pub fn range_len<R: RangeBounds<Value>>(&self, range: R) -> usize {
+        self.map
+            .range(range)
+            .map(|(_, addresses)| addresses.len())
+            .sum()
+    }
+
+    pub(crate) fn append_range<R: RangeBounds<Value>>(&self, range: R, out: &mut Vec<RecordAddr>) {
+        out.extend(
+            self.map
+                .range(range)
+                .flat_map(|(_, addresses)| addresses.iter().copied()),
+        );
+    }
+
     /// Every address in key order: ascending, or descending when `descending` is
     /// set. Lets a reader satisfy `ORDER BY indexed_col` without a sort.
     pub fn ordered_addrs(&self, descending: bool) -> Vec<RecordAddr> {

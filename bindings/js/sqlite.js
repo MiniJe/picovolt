@@ -94,6 +94,11 @@ class Database {
     return new Statement(this, sql);
   }
 
+  executeMany(sql, rows) {
+    this._assertOpen();
+    return JSON.parse(this._db.executeMany(sql, rows)).mutated;
+  }
+
   // Run one or more `;`-separated statements with no bound parameters.
   exec(sql) {
     this._assertOpen();

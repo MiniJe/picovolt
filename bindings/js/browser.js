@@ -62,6 +62,11 @@ export class PersistentDb {
     return statement;
   }
 
+  executeMany(sql, rows) {
+    this._assertOpen();
+    return JSON.parse(this.db.executeMany(sql, rows)).mutated;
+  }
+
   async save() {
     this._assertOpen();
     const root = await navigator.storage.getDirectory();

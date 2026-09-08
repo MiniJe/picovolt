@@ -12,6 +12,30 @@ function packageModule(name) {
   return pathToFileURL(resolve(packageDirectory, name)).href;
 }
 
+test("atomic batches across raw, SQLite-style and persistent APIs", async () => {
+  const { Db } = await import(packageModule("picovolt.js"));
+  const { default: Database } = await import(packageModule("sqlite.js"));
+  const { PersistentDb } = await import(packageModule("browser.js"));
+  const raw = new Db();
+  raw.query("CREATE TABLE t (id PRIMARY KEY)");
+  assert.equal(JSON.parse(raw.executeMany("INSERT INTO t VALUES (?)", [[1],[2]])).mutated,2);
+  assert.match(captureThrow(()=>raw.executeMany("INSERT INTO t VALUES (?)",[[3],[1]])),/unique|duplicate/i);
+  assert.deepEqual(JSON.parse(raw.query("SELECT COUNT(*) FROM t")).rows,[[2]]);
+  raw.free();
+  const db = new Database();
+  db.exec("CREATE TABLE t (id)");
+  assert.equal(db.executeMany("INSERT INTO t VALUES (?)",[[1],[2]]),2);
+  db.close();
+  installMemoryOpfs();
+  const persistent = await PersistentDb.open("batch.pvdb");
+  persistent.query("CREATE TABLE t (id)");
+  assert.equal(persistent.executeMany("INSERT INTO t VALUES (?)",[[1],[2]]),2);
+  await persistent.close();
+  const reopened = await PersistentDb.open("batch.pvdb");
+  assert.deepEqual(reopened.query("SELECT COUNT(*) FROM t").rows,[[2]]);
+  await reopened.close();
+});
+
 function captureThrow(fn) {
   let thrown;
   try {

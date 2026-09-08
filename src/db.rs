@@ -15,7 +15,7 @@
 //! only a head page id per table, O(tables), not O(pages), keeping per-insert
 //! manifest writes cheap.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -619,6 +619,8 @@ pub struct Database {
     manifest_file: RefCell<Option<File>>,
     active_transaction: Option<ActiveTransaction>,
     commit_log: Option<crate::CommitLogOptions>,
+    /// True only after this handle synced its current catalog and pages.
+    synced: Cell<bool>,
     #[cfg(feature = "enterprise")]
     enterprise: crate::enterprise::EnterpriseRuntime,
 }
@@ -642,6 +644,7 @@ impl Database {
             ));
         }
         self.commit_log = Some(options.validate()?);
+        self.synced.set(false);
         self.format_version_floor = self
             .format_version_floor
             .max(crate::FORMAT_VERSION_COMMIT_LOG);
@@ -655,6 +658,17 @@ impl Database {
             PvError::Transaction("change stream requires a filesystem workspace".into())
         })?;
         crate::journal::changes(root, after, limit)
+    }
+
+    /// Inspect log usage without decoding database rows or physical commits.
+    pub fn commit_log_status(&self) -> Result<crate::CommitLogStatus> {
+        let options = self.commit_log.ok_or_else(|| {
+            PvError::Transaction("commit log is not enabled; call enable_commit_log first".into())
+        })?;
+        let root = self.root.as_ref().ok_or_else(|| {
+            PvError::Transaction("commit log requires a filesystem workspace".into())
+        })?;
+        crate::journal::status(root, options)
     }
 
     /// Export a verified baked image with its exact following change cursor.
@@ -752,6 +766,7 @@ impl Database {
                 manifest_file: RefCell::new(None),
                 active_transaction: None,
                 commit_log,
+                synced: Cell::new(false),
                 #[cfg(feature = "enterprise")]
                 enterprise: crate::enterprise::EnterpriseRuntime::default(),
             })
@@ -770,6 +785,7 @@ impl Database {
                 manifest_file: RefCell::new(None),
                 active_transaction: None,
                 commit_log: None,
+                synced: Cell::new(false),
                 #[cfg(feature = "enterprise")]
                 enterprise: crate::enterprise::EnterpriseRuntime::default(),
             })
@@ -817,6 +833,7 @@ impl Database {
             manifest_file: RefCell::new(None),
             active_transaction: None,
             commit_log: None,
+            synced: Cell::new(false),
             #[cfg(feature = "enterprise")]
             enterprise: crate::enterprise::EnterpriseRuntime::default(),
         })
@@ -942,6 +959,7 @@ impl Database {
             manifest_file: RefCell::new(None),
             active_transaction: None,
             commit_log: None,
+            synced: Cell::new(false),
             #[cfg(feature = "enterprise")]
             enterprise: crate::enterprise::EnterpriseRuntime::default(),
         })
@@ -969,6 +987,7 @@ impl Database {
             manifest_file: RefCell::new(None),
             active_transaction: None,
             commit_log: None,
+            synced: Cell::new(false),
             #[cfg(feature = "enterprise")]
             enterprise: crate::enterprise::EnterpriseRuntime::default(),
         }
@@ -1050,6 +1069,7 @@ impl Database {
             manifest_file: RefCell::new(None),
             active_transaction: None,
             commit_log: None,
+            synced: Cell::new(false),
             #[cfg(feature = "enterprise")]
             enterprise: crate::enterprise::EnterpriseRuntime::default(),
         })
@@ -1239,6 +1259,56 @@ impl Database {
         })
     }
 
+    /// Execute one INSERT/UPDATE/DELETE template for all parameter sets in one
+    /// atomic transaction. Returns the total affected rows. An active caller
+    /// transaction is rejected; any row failure rolls the entire batch back.
+    pub fn execute_many(&mut self, sql: &str, rows: &[Vec<Value>]) -> Result<usize> {
+        let prepared = self.prepare(sql)?;
+        let bound =
+            crate::engine::query::bind_params(sql, &vec![Value::Null; prepared.parameter_count])?;
+        if !matches!(
+            parse(&bound)?,
+            Statement::Insert { .. }
+                | Statement::InsertMany { .. }
+                | Statement::InsertSchema { .. }
+                | Statement::Update { .. }
+                | Statement::UpdateDefault { .. }
+                | Statement::Delete { .. }
+        ) {
+            return Err(PvError::Query(
+                "execute_many expects INSERT, UPDATE or DELETE".into(),
+            ));
+        }
+        if self.in_transaction() {
+            return Err(PvError::Transaction(
+                "execute_many owns its transaction; call it outside an active transaction".into(),
+            ));
+        }
+        for row in rows {
+            if row.len() != prepared.parameter_count {
+                return Err(PvError::Schema(format!(
+                    "batch row expects {} parameters, got {}",
+                    prepared.parameter_count,
+                    row.len()
+                )));
+            }
+        }
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        self.transaction(|db| {
+            let mut affected = 0usize;
+            for row in rows {
+                if let QueryResult::Mutated(count) = prepared.execute(db, row)? {
+                    affected = affected.checked_add(count).ok_or_else(|| {
+                        PvError::ResourceLimit("batch affected-row count overflow".into())
+                    })?;
+                }
+            }
+            Ok(affected)
+        })
+    }
+
     /// Run a closure atomically against an in-memory database or development
     /// workspace.
     ///
@@ -1312,9 +1382,11 @@ impl Database {
         let (rollback, filesystem_lock) = if let Some(root) = self.root.clone() {
             let lock = acquire_transaction_lock(&root)?;
             self.durability = Durability::Sync;
-            if let Err(error) = self.flush() {
-                self.durability = previous_durability;
-                return Err(error);
+            if !(self.commit_log.is_some() && self.synced.get()) {
+                if let Err(error) = self.flush() {
+                    self.durability = previous_durability;
+                    return Err(error);
+                }
             }
             self.durability = previous_durability;
             if let Some(options) = self.commit_log {
@@ -2053,6 +2125,7 @@ impl Database {
         column: &str,
         mut budget: Option<&mut QueryBudget>,
     ) -> Result<()> {
+        self.ensure_writable()?;
         let mut index = SecondaryIndex::new();
         {
             let table = self
@@ -2401,8 +2474,13 @@ impl Database {
         offset: usize,
         mut budget: Option<&mut QueryBudget>,
     ) -> Result<QueryResult> {
-        let (source_columns, mut rows) =
-            self.select_filtered_bounded(&source.name, None, before, budget.as_deref_mut())?;
+        let source_filter = filter.and_then(|pred| source_predicate(pred, source.qualifier()));
+        let (source_columns, mut rows) = self.select_filtered_bounded(
+            &source.name,
+            source_filter.as_ref(),
+            before,
+            budget.as_deref_mut(),
+        )?;
         let mut columns: Vec<String> = source_columns
             .into_iter()
             .map(|column| format!("{}.{}", source.qualifier(), column))
@@ -3141,6 +3219,7 @@ impl Database {
     }
 
     fn compact_step_transaction(&mut self, max_pages: usize) -> Result<CompactionReport> {
+        self.synced.set(false);
         let mut report = CompactionReport {
             examined_pages: 0,
             compacted_pages: 0,
@@ -3301,6 +3380,7 @@ impl Database {
     /// while preserving pages, indexes, CAS data, and complete MVCC history.
     /// Used by the format migrator; this does not rewrite or discard rows.
     pub fn upgrade_format_to_latest(&mut self) -> (u16, u16) {
+        self.synced.set(false);
         let before = effective_format_version(&self.tables, self.format_version_floor);
         self.format_version_floor = FORMAT_VERSION;
         (before, FORMAT_VERSION)
@@ -3371,6 +3451,7 @@ impl Database {
             return Err(PvError::Transaction("low-level mutations on a logged workspace require an explicit transaction; SQL queries are atomic automatically".into()));
         }
         if self.cache.borrow().is_writable() {
+            self.synced.set(false);
             Ok(())
         } else {
             Err(PvError::ReadOnly)
@@ -3411,10 +3492,16 @@ impl Database {
             return Ok(());
         };
         let manifest = self.build_manifest(false, &IndexPlan::Json)?;
-        let json = serde_json::to_vec_pretty(&manifest)?;
+        // The manifest is on the commit path; whitespace multiplies write and
+        // retained-journal bytes without adding information. CLI inspection
+        // handles human-readable formatting separately.
+        let json = serde_json::to_vec(&manifest)?;
         if self.durability == Durability::Sync {
-            self.write_manifest_atomic(&root, &json)
+            self.write_manifest_atomic(&root, &json)?;
+            self.synced.set(true);
+            Ok(())
         } else {
+            self.synced.set(false);
             self.write_manifest_fast(&root, &json)
         }
     }
@@ -4117,75 +4204,269 @@ fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
 /// (ordered scan), directly or as an `AND` conjunct, never under `OR`. Returns
 /// `None` to fall back to a full scan. Candidates are re-checked against the full
 /// predicate by the caller, so an over-broad set is still correct.
+// Push only predicates explicitly qualified by the driving relation. Keep the
+// original post-join filter to preserve ambiguity errors and outer-join semantics.
+fn source_predicate(pred: &Predicate, qualifier: &str) -> Option<Predicate> {
+    let column = |name: &str| {
+        name.strip_prefix(qualifier)?
+            .strip_prefix('.')
+            .map(str::to_owned)
+    };
+    Some(match pred {
+        Predicate::Compare {
+            column: name,
+            op,
+            value,
+        } => Predicate::Compare {
+            column: column(name)?,
+            op: *op,
+            value: value.clone(),
+        },
+        Predicate::In {
+            column: name,
+            values,
+            negated,
+        } => Predicate::In {
+            column: column(name)?,
+            values: values.clone(),
+            negated: *negated,
+        },
+        Predicate::Between {
+            column: name,
+            low,
+            high,
+            negated,
+        } => Predicate::Between {
+            column: column(name)?,
+            low: low.clone(),
+            high: high.clone(),
+            negated: *negated,
+        },
+        Predicate::IsNull {
+            column: name,
+            negated,
+        } => Predicate::IsNull {
+            column: column(name)?,
+            negated: *negated,
+        },
+        Predicate::And(a, b) => match (
+            source_predicate(a, qualifier),
+            source_predicate(b, qualifier),
+        ) {
+            (Some(a), Some(b)) => Predicate::And(Box::new(a), Box::new(b)),
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            _ => return None,
+        },
+        Predicate::Or(a, b) => Predicate::Or(
+            Box::new(source_predicate(a, qualifier)?),
+            Box::new(source_predicate(b, qualifier)?),
+        ),
+    })
+}
+
+type IndexRange = (std::ops::Bound<Value>, std::ops::Bound<Value>);
+
+fn intersect_range(a: &IndexRange, b: &IndexRange) -> Option<IndexRange> {
+    use std::ops::Bound::{Excluded, Included, Unbounded};
+    fn lower(a: &std::ops::Bound<Value>, b: &std::ops::Bound<Value>) -> std::ops::Bound<Value> {
+        match (a, b) {
+            (Unbounded, _) => b.clone(),
+            (_, Unbounded) => a.clone(),
+            (Included(x) | Excluded(x), Included(y) | Excluded(y)) => {
+                if x > y {
+                    a.clone()
+                } else if y > x {
+                    b.clone()
+                } else if matches!(a, Excluded(_)) {
+                    a.clone()
+                } else {
+                    b.clone()
+                }
+            }
+        }
+    }
+    fn upper(a: &std::ops::Bound<Value>, b: &std::ops::Bound<Value>) -> std::ops::Bound<Value> {
+        match (a, b) {
+            (Unbounded, _) => b.clone(),
+            (_, Unbounded) => a.clone(),
+            (Included(x) | Excluded(x), Included(y) | Excluded(y)) => {
+                if x < y {
+                    a.clone()
+                } else if y < x {
+                    b.clone()
+                } else if matches!(a, Excluded(_)) {
+                    a.clone()
+                } else {
+                    b.clone()
+                }
+            }
+        }
+    }
+    let result = (lower(&a.0, &b.0), upper(&a.1, &b.1));
+    match (&result.0, &result.1) {
+        (Included(x) | Excluded(x), Included(y) | Excluded(y))
+            if x > y
+                || (x == y
+                    && (matches!(result.0, Excluded(_)) || matches!(result.1, Excluded(_)))) =>
+        {
+            None
+        }
+        _ => Some(result),
+    }
+}
+
+// SQL promotes Int/Decimal comparisons, while the persisted B-tree orders
+// variants separately. Search both numeric regions with exact rounded bounds.
+fn comparison_ranges(op: CompareOp, value: &Value) -> Option<Vec<IndexRange>> {
+    use std::ops::Bound::{Excluded, Included, Unbounded};
+    let raw = |v: Value| match op {
+        CompareOp::Eq => Some((Included(v.clone()), Included(v))),
+        CompareOp::Lt => Some((Unbounded, Excluded(v))),
+        CompareOp::Le => Some((Unbounded, Included(v))),
+        CompareOp::Gt => Some((Excluded(v), Unbounded)),
+        CompareOp::Ge => Some((Included(v), Unbounded)),
+        _ => None,
+    };
+    if matches!(value, Value::Null) {
+        return raw(Value::Null).map(|_| Vec::new());
+    }
+    let numeric = match value {
+        Value::Int(n) => Some(promote_int(*n)),
+        Value::Decimal(n) => Some(*n),
+        _ => None,
+    };
+    let Some(n) = numeric else {
+        return raw(value.clone()).map(|r| {
+            intersect_range(&r, &(Excluded(Value::Null), Unbounded))
+                .into_iter()
+                .collect()
+        });
+    };
+    raw(value.clone())?;
+    let mut result = Vec::new();
+    let floor = n.div_euclid(DECIMAL_DEN);
+    let remainder = n.rem_euclid(DECIMAL_DEN);
+    let min = i64::MIN as i128;
+    let max = i64::MAX as i128;
+    let integers = match op {
+        CompareOp::Eq if remainder == 0 && floor >= min && floor <= max => Some((floor, floor)),
+        CompareOp::Eq => None,
+        CompareOp::Lt => Some((min, floor - i128::from(remainder == 0))),
+        CompareOp::Le => Some((min, floor)),
+        CompareOp::Gt => Some((floor + 1, max)),
+        CompareOp::Ge => Some((floor + i128::from(remainder != 0), max)),
+        _ => None,
+    };
+    if let Some((lo, hi)) = integers {
+        let (lo, hi) = (lo.max(min), hi.min(max));
+        if lo <= hi {
+            result.push((
+                Included(Value::Int(lo as i64)),
+                Included(Value::Int(hi as i64)),
+            ));
+        }
+    }
+    if let Some(range) = intersect_range(
+        &raw(Value::Decimal(n))?,
+        &(
+            Included(Value::Decimal(i128::MIN)),
+            Included(Value::Decimal(i128::MAX)),
+        ),
+    ) {
+        result.push(range);
+    }
+    if matches!(op, CompareOp::Gt | CompareOp::Ge) {
+        result.push((Excluded(Value::Decimal(i128::MAX)), Unbounded));
+    }
+    Some(result)
+}
+
 fn index_candidates(
     table: &Table,
     pred: &Predicate,
     mut budget: Option<&mut QueryBudget>,
 ) -> Result<Option<Vec<RecordAddr>>> {
-    use std::ops::Bound::{Excluded, Included, Unbounded};
-    match pred {
-        Predicate::Compare { column, op, value } => {
-            let Some(idx) = table.indexes.get(column) else {
-                return Ok(None);
-            };
-            let v = || value.clone();
-            let candidates = match op {
-                CompareOp::Eq => Some(index_equality_candidates(
-                    idx,
-                    value,
-                    budget.as_deref_mut(),
-                )?),
-                // Value's persisted total order is type-strict, while SQL range
-                // comparisons promote Int/Decimal pairs by magnitude. A raw
-                // BTree range would therefore miss valid mixed-numeric rows.
-                // Bounded callers deliberately fall back to the streaming scan:
-                // SecondaryIndex::range materializes its full result before we
-                // can inspect its length, bypassing the allocation budget.
-                CompareOp::Lt
-                    if budget.is_none() && !matches!(value, Value::Int(_) | Value::Decimal(_)) =>
-                {
-                    Some(idx.range((Unbounded, Excluded(v()))))
-                }
-                CompareOp::Le
-                    if budget.is_none() && !matches!(value, Value::Int(_) | Value::Decimal(_)) =>
-                {
-                    Some(idx.range((Unbounded, Included(v()))))
-                }
-                CompareOp::Gt
-                    if budget.is_none() && !matches!(value, Value::Int(_) | Value::Decimal(_)) =>
-                {
-                    Some(idx.range((Excluded(v()), Unbounded)))
-                }
-                CompareOp::Ge
-                    if budget.is_none() && !matches!(value, Value::Int(_) | Value::Decimal(_)) =>
-                {
-                    Some(idx.range((Included(v()), Unbounded)))
-                }
-                // `!=` and `LIKE`/`NOT LIKE` aren't range-shaped, a scan is no worse.
-                CompareOp::Ne
-                | CompareOp::Lt
-                | CompareOp::Le
-                | CompareOp::Gt
-                | CompareOp::Ge
-                | CompareOp::Like
-                | CompareOp::NotLike => None,
-            };
-            Ok(candidates)
-        }
-        Predicate::And(a, b) => {
-            if let Some(candidates) = index_candidates(table, a, budget.as_deref_mut())? {
-                Ok(Some(candidates))
-            } else {
-                index_candidates(table, b, budget)
+    fn collect<'a>(pred: &'a Predicate, out: &mut Vec<(&'a str, Vec<IndexRange>)>) {
+        match pred {
+            Predicate::And(a, b) => {
+                collect(a, out);
+                collect(b, out);
             }
+            Predicate::Compare { column, op, value } => {
+                if let Some(ranges) = comparison_ranges(*op, value) {
+                    out.push((column, ranges));
+                }
+            }
+            Predicate::Between {
+                column,
+                low,
+                high,
+                negated: false,
+            } => {
+                if let (Some(lo), Some(hi)) = (
+                    comparison_ranges(CompareOp::Ge, low),
+                    comparison_ranges(CompareOp::Le, high),
+                ) {
+                    let ranges = lo
+                        .iter()
+                        .flat_map(|a| hi.iter().filter_map(|b| intersect_range(a, b)))
+                        .collect();
+                    out.push((column, ranges));
+                }
+            }
+            _ => {}
         }
-        // IN / BETWEEN / IS NULL aren't lowered to the index yet: a full scan is
-        // correct (the caller re-checks the full predicate), just not optimized.
-        Predicate::In { .. }
-        | Predicate::Between { .. }
-        | Predicate::IsNull { .. }
-        | Predicate::Or(_, _) => Ok(None),
     }
+    // Preserve the allocation-free counting path for the common single lookup.
+    if let Predicate::Compare {
+        column,
+        op: CompareOp::Eq,
+        value,
+    } = pred
+    {
+        if let Some(index) = table.indexes.get(column) {
+            return Ok(Some(index_equality_candidates(index, value, budget)?));
+        }
+    }
+    let mut conjuncts = Vec::new();
+    collect(pred, &mut conjuncts);
+    let mut by_column: BTreeMap<&str, Vec<IndexRange>> = BTreeMap::new();
+    for (column, ranges) in conjuncts {
+        if !table.indexes.contains_key(column) {
+            continue;
+        }
+        if let Some(existing) = by_column.get_mut(column) {
+            *existing = existing
+                .iter()
+                .flat_map(|a| ranges.iter().filter_map(|b| intersect_range(a, b)))
+                .collect();
+        } else {
+            by_column.insert(column, ranges);
+        }
+    }
+    let mut best = None;
+    for (column, ranges) in by_column {
+        if let Some(budget) = budget.as_deref_mut() {
+            budget.checkpoint()?;
+        }
+        let index = &table.indexes[column];
+        let count: usize = ranges.iter().map(|r| index.range_len(r.clone())).sum();
+        if best.as_ref().is_none_or(|(_, _, old)| count < *old) {
+            best = Some((index, ranges, count));
+        }
+    }
+    let Some((index, ranges, count)) = best else {
+        return Ok(None);
+    };
+    if let Some(budget) = budget {
+        budget.reserve_index_candidates(count)?;
+    }
+    let mut result = Vec::with_capacity(count);
+    for range in ranges {
+        index.append_range(range, &mut result);
+    }
+    Ok(Some(result))
 }
 
 /// Fetch every type representation equal under SQL numeric promotion. The

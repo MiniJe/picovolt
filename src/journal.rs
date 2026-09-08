@@ -93,6 +93,29 @@ pub struct SnapshotCheckpoint {
     pub verification_hash: String,
 }
 
+/// Retention diagnostics; cursors are commit sequences, not MVCC transaction IDs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitLogStatus {
+    pub head_sequence: u64,
+    pub pruned_through: u64,
+    pub retained_commits: usize,
+    pub retained_bytes: u64,
+    pub limits: CommitLogOptions,
+}
+
+pub(crate) fn status(root: &Path, options: CommitLogOptions) -> Result<CommitLogStatus> {
+    let log = root.join(COMMIT_LOG_DIR);
+    let commits = sequences(&log)?;
+    let pruned_through = checkpoint(&log)?;
+    Ok(CommitLogStatus {
+        head_sequence: commits.last().copied().unwrap_or(0).max(pruned_through),
+        pruned_through,
+        retained_commits: commits.len(),
+        retained_bytes: if log.exists() { tree_size(&log)? } else { 0 },
+        limits: options,
+    })
+}
+
 pub(crate) fn head(root: &Path) -> Result<u64> {
     let log = root.join(COMMIT_LOG_DIR);
     Ok(sequences(&log)?
@@ -109,6 +132,15 @@ struct Header {
     page_count: u64,
 }
 
+// Deserialize only recovery metadata. Persisted indexes can dwarf these fields;
+// building a generic JSON tree for them on every commit wastes CPU and memory.
+#[derive(Deserialize)]
+struct ManifestMeta {
+    clock: u64,
+    page_count: u64,
+    cas_hashes: Vec<String>,
+}
+
 pub(crate) struct Journal {
     root: PathBuf,
     header: Header,
@@ -116,6 +148,7 @@ pub(crate) struct Journal {
     options: CommitLogOptions,
     used: u64,
     retained: u64,
+    old_hashes: BTreeSet<String>,
 }
 
 impl Journal {
@@ -136,7 +169,7 @@ impl Journal {
         }
         let retained = tree_size(&log)?;
         let before = read_bounded(&root.join(MANIFEST_FILE), options.max_transaction_bytes)?;
-        let manifest: serde_json::Value = serde_json::from_slice(&before)?;
+        let manifest: ManifestMeta = serde_json::from_slice(&before)?;
         let header = Header {
             sequence: commits
                 .last()
@@ -145,8 +178,8 @@ impl Journal {
                 .max(checkpoint(&log)?)
                 .checked_add(1)
                 .ok_or_else(|| PvError::ResourceLimit("commit sequence exhausted".into()))?,
-            before_tx: number(&manifest, "clock")?,
-            page_count: number(&manifest, "page_count")?,
+            before_tx: manifest.clock,
+            page_count: manifest.page_count,
         };
         let staging = log.join("preparing");
         if staging.exists() {
@@ -161,6 +194,7 @@ impl Journal {
             options,
             used: 0,
             retained,
+            old_hashes: manifest.cas_hashes.into_iter().collect(),
         };
         journal.reserve(before.len() as u64 + 1024)?;
         write_checked(&staging.join("before"), &before)?;
@@ -218,15 +252,12 @@ impl Journal {
             &self.root.join(MANIFEST_FILE),
             self.options.max_transaction_bytes,
         )?;
-        let after: serde_json::Value = serde_json::from_slice(&manifest)?;
-        let before: serde_json::Value =
-            serde_json::from_slice(&read_checked(&active.join("before"))?)?;
-        let old_hashes: BTreeSet<&str> = hashes(&before)?.into_iter().collect();
+        let after: ManifestMeta = serde_json::from_slice(&manifest)?;
         let mut change = ChangeCommit {
             schema_version: 1,
             sequence: self.header.sequence,
             before_tx: self.header.before_tx,
-            after_tx: number(&after, "clock")?,
+            after_tx: after.clock,
             manifest,
             pages: Vec::new(),
             blobs: Vec::new(),
@@ -242,8 +273,8 @@ impl Journal {
                 bytes: read_page(&self.root, page_id)?.to_vec(),
             });
         }
-        for hash in hashes(&after)? {
-            if !old_hashes.contains(hash) {
+        for hash in &after.cas_hashes {
+            if !self.old_hashes.contains(hash) {
                 if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
                     return Err(PvError::Corruption("invalid journal blob hash".into()));
                 }
@@ -278,7 +309,7 @@ impl Journal {
             bytes: Vec::new(),
             limit: self.options.max_transaction_bytes.saturating_sub(self.used),
         };
-        serde_json::to_writer(&mut encoded, &change).map_err(|e| {
+        encode_change(&mut encoded, &change).map_err(|e| {
             PvError::ResourceLimit(format!("commit record exceeds transaction budget: {e}"))
         })?;
         self.reserve(encoded.bytes.len() as u64 + 32)?;
@@ -328,10 +359,8 @@ pub(crate) fn recover(root: &Path) -> Result<()> {
     safe_directory(&active)?;
     let header: Header = serde_json::from_slice(&read_checked(&active.join("header"))?)?;
     let before = read_checked(&active.join("before"))?;
-    let manifest: serde_json::Value = serde_json::from_slice(&before)?;
-    if number(&manifest, "clock")? != header.before_tx
-        || number(&manifest, "page_count")? != header.page_count
-    {
+    let manifest: ManifestMeta = serde_json::from_slice(&before)?;
+    if manifest.clock != header.before_tx || manifest.page_count != header.page_count {
         return Err(PvError::Corruption(
             "journal header/manifest mismatch".into(),
         ));
@@ -439,7 +468,7 @@ pub(crate) fn changes(root: &Path, after: u64, limit: usize) -> Result<Vec<Chang
                 "change batch exceeds 256 MiB; request fewer commits".into(),
             ));
         }
-        let change: ChangeCommit = serde_json::from_slice(&read_checked(&path)?)?;
+        let change = decode_change(&read_checked(&path)?)?;
         if change.schema_version != 1
             || change.sequence != sequence
             || sequence != after + out.len() as u64 + 1
@@ -519,21 +548,109 @@ fn parse_sequence(name: &str) -> Result<u64> {
     name.parse()
         .map_err(|_| PvError::Corruption("journal entry overflow".into()))
 }
-fn number(value: &serde_json::Value, key: &str) -> Result<u64> {
-    value[key]
-        .as_u64()
-        .ok_or_else(|| PvError::Corruption(format!("missing journal manifest {key}")))
+const CHANGE_MAGIC: &[u8; 8] = b"PVCHG001";
+
+fn encode_change(out: &mut impl Write, change: &ChangeCommit) -> std::io::Result<()> {
+    out.write_all(CHANGE_MAGIC)?;
+    for n in [
+        change.sequence,
+        change.before_tx,
+        change.after_tx,
+        change.manifest.len() as u64,
+    ] {
+        out.write_all(&n.to_le_bytes())?;
+    }
+    out.write_all(&change.manifest)?;
+    out.write_all(&(change.pages.len() as u64).to_le_bytes())?;
+    for page in &change.pages {
+        out.write_all(&page.page_id.to_le_bytes())?;
+        out.write_all(&page.bytes)?;
+    }
+    out.write_all(&(change.blobs.len() as u64).to_le_bytes())?;
+    for blob in &change.blobs {
+        out.write_all(blob.hash.as_bytes())?;
+        out.write_all(&(blob.bytes.len() as u64).to_le_bytes())?;
+        out.write_all(&blob.bytes)?;
+    }
+    Ok(())
 }
-fn hashes(value: &serde_json::Value) -> Result<Vec<&str>> {
-    value["cas_hashes"]
-        .as_array()
-        .ok_or_else(|| PvError::Corruption("missing CAS hashes".into()))?
-        .iter()
-        .map(|v| {
-            v.as_str()
-                .ok_or_else(|| PvError::Corruption("invalid CAS hash".into()))
-        })
-        .collect()
+
+fn decode_change(bytes: &[u8]) -> Result<ChangeCommit> {
+    if !bytes.starts_with(CHANGE_MAGIC) {
+        // Existing rc.1 JSON records remain readable. The public ChangeCommit
+        // JSON representation is unchanged; only the disk envelope is compact.
+        return Ok(serde_json::from_slice(bytes)?);
+    }
+    struct Input<'a>(&'a [u8]);
+    impl<'a> Input<'a> {
+        fn take(&mut self, n: u64) -> Result<&'a [u8]> {
+            let n = usize::try_from(n)
+                .ok()
+                .filter(|&n| n <= self.0.len())
+                .ok_or_else(|| PvError::Corruption("truncated binary commit".into()))?;
+            let (head, tail) = self.0.split_at(n);
+            self.0 = tail;
+            Ok(head)
+        }
+        fn number(&mut self) -> Result<u64> {
+            Ok(u64::from_le_bytes(
+                self.take(8)?.try_into().expect("eight bytes"),
+            ))
+        }
+    }
+    let mut input = Input(&bytes[CHANGE_MAGIC.len()..]);
+    let sequence = input.number()?;
+    let before_tx = input.number()?;
+    let after_tx = input.number()?;
+    let len = input.number()?;
+    let manifest = input.take(len)?.to_vec();
+    let count = input.number()?;
+    if count > input.0.len() as u64 / (PAGE_SIZE as u64 + 8) {
+        return Err(PvError::Corruption(
+            "invalid binary commit page count".into(),
+        ));
+    }
+    let mut pages = Vec::new();
+    for _ in 0..count {
+        pages.push(PageChange {
+            page_id: input.number()?,
+            bytes: input.take(PAGE_SIZE as u64)?.to_vec(),
+        });
+    }
+    let count = input.number()?;
+    if count > input.0.len() as u64 / 72 {
+        return Err(PvError::Corruption(
+            "invalid binary commit blob count".into(),
+        ));
+    }
+    let mut blobs = Vec::new();
+    for _ in 0..count {
+        let hash = std::str::from_utf8(input.take(64)?)
+            .map_err(|_| PvError::Corruption("invalid binary commit blob hash".into()))?
+            .to_string();
+        if !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(PvError::Corruption(
+                "invalid binary commit blob hash".into(),
+            ));
+        }
+        let len = input.number()?;
+        blobs.push(BlobChange {
+            hash,
+            bytes: input.take(len)?.to_vec(),
+        });
+    }
+    if !input.0.is_empty() {
+        return Err(PvError::Corruption("trailing binary commit data".into()));
+    }
+    Ok(ChangeCommit {
+        schema_version: 1,
+        sequence,
+        before_tx,
+        after_tx,
+        manifest,
+        pages,
+        blobs,
+    })
 }
 fn chunk_path(root: &Path, id: u64) -> PathBuf {
     root.join("chunks")
@@ -652,6 +769,41 @@ pub(crate) fn crash_point(_stage: &str) {}
 mod tests {
     use super::*;
     use crate::{Database, Value};
+
+    #[test]
+    fn binary_commits_and_legacy_json_round_trip_and_reject_truncation() {
+        let change = ChangeCommit {
+            schema_version: 1,
+            sequence: 9,
+            before_tx: 10,
+            after_tx: 12,
+            manifest: br#"{"clock":12}"#.to_vec(),
+            pages: vec![PageChange {
+                page_id: 3,
+                bytes: vec![7; PAGE_SIZE],
+            }],
+            blobs: vec![BlobChange {
+                hash: blake3::hash(b"payload").to_hex().to_string(),
+                bytes: b"payload".to_vec(),
+            }],
+        };
+        let mut bytes = Vec::new();
+        encode_change(&mut bytes, &change).unwrap();
+        assert_eq!(decode_change(&bytes).unwrap(), change);
+        assert_eq!(
+            decode_change(&serde_json::to_vec(&change).unwrap()).unwrap(),
+            change
+        );
+        for end in 0..bytes.len() {
+            assert!(decode_change(&bytes[..end]).is_err(), "prefix {end}");
+        }
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(decode_change(&trailing).is_err());
+        // Hostile manifest length cannot overflow or cause speculative allocation.
+        bytes[32..40].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(decode_change(&bytes).is_err());
+    }
 
     #[test]
     fn crash_worker() {

@@ -107,6 +107,25 @@ impl Db {
         self.inner.current_tx() as u32
     }
 
+    /// Atomically execute an INSERT/UPDATE/DELETE for an array of parameter arrays.
+    #[wasm_bindgen(js_name = executeMany)]
+    pub fn execute_many(&mut self, sql: &str, rows: JsValue) -> Result<String, JsValue> {
+        if !js_sys::Array::is_array(&rows) {
+            return Err(JsValue::from_str(
+                "executeMany expects an array of parameter arrays",
+            ));
+        }
+        let rows = js_sys::Array::from(&rows)
+            .iter()
+            .map(js_params_to_values)
+            .collect::<Result<Vec<_>, _>>()?;
+        let count = self
+            .inner
+            .execute_many(sql, &rows)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(format!("{{\"mutated\":{count}}}"))
+    }
+
     /// Begin an explicit multi-statement in-memory transaction.
     #[wasm_bindgen(js_name = beginTransaction)]
     pub fn begin_transaction(&mut self) -> Result<(), JsValue> {

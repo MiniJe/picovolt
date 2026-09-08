@@ -101,6 +101,18 @@ int32_t pv_commit_transaction(PvDb *db);
 int32_t pv_rollback_transaction(PvDb *db);
 int32_t pv_in_transaction(const PvDb *db);
 
+/* Atomic INSERT/UPDATE/DELETE batch; rows_json is an array of parameter arrays.
+ * Returns {"mutated":n}; free with pv_string_free. Rejects active transactions. */
+char *pv_execute_many(PvDb *db, const char *sql, const char *rows_json);
+/* Zero selects the default for each retention limit. Native filesystem only. */
+int32_t pv_enable_commit_log(PvDb *db, uint64_t transaction_bytes,
+                             uint64_t retained_bytes, size_t retained_commits);
+/* JSON diagnostics / physical changes; free either result with pv_string_free. */
+char *pv_commit_log_status(const PvDb *db);
+char *pv_changes_since(const PvDb *db, uint64_t after_sequence, size_t limit);
+/* Only prune commits acknowledged by every consumer that needs them. */
+int32_t pv_prune_changes(PvDb *db, uint64_t acknowledged_sequence);
+
 /*
  * Export the database as a .pvdb byte image. On success returns a buffer of
  * *out_len bytes (free with pv_bytes_free) and writes its length to out_len;
