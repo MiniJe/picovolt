@@ -1,4 +1,4 @@
-"""Check default unpruned RC2 log capacity without discarding required history.
+"""Check default unpruned log capacity without discarding required history.
 
 Use the matching release benchmark_workspace initializer and PICOVOLT_LIB.
 This is a local synthetic trial, not external application evidence.

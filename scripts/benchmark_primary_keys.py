@@ -64,6 +64,7 @@ def worker(args):
     engine.close()
     stored = [p for p in folder.rglob("*") if p.is_file() and p != csv]
     result = dict(engine=args.engine, version=version, rows=args.rows, trial=args.trial,
+                  workspace_format=json.loads((path / "pv_manifest.json").read_text(encoding="utf-8"))["format_version"] if name == "picovolt" else None,
                   elapsed_ms=elapsed, cpu_ms=cpu_ms, peak_process_rss_bytes=peak,
                   stored_bytes=sum(p.stat().st_size for p in stored),
                   verified_sha256=digest, uniqueness_after_reopen=True)

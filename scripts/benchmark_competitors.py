@@ -238,6 +238,7 @@ def worker(args):
         assert bulk.query("SELECT COUNT(*), SUM(amount) FROM events") == [(args.rows, sum(r[2] for r in initial))]
         bulk.close()
     result = {"engine": args.engine, "version": engine.version, "trial": args.trial,
+              "workspace_format": json.loads((db_path / "pv_manifest.json").read_text(encoding="utf-8"))["format_version"] if args.engine == "picovolt" else None,
               "rows_initial": args.rows, "rows_final": len(data), "verified_sha256": digest,
               "file_bytes_after_close": total, "retained_log_bytes": log,
               "base_file_bytes": total-log, "metrics": {k: summarize(v) for k, v in samples.items()},
@@ -313,7 +314,7 @@ def main():
                   "path": str(Path(SQLITE_LIBRARY).resolve()),
                   "sha256": hashlib.sha256(Path(SQLITE_LIBRARY).read_bytes()).hexdigest(),
                   "version": sqlite3.sqlite_version},
-              "durability": {"picovolt": "format 6 commit log; Sync transactions; default limits; explicit CLI pruning before writes and every 10 commits, timed separately and included in sustained_write_phase",
+              "durability": {"picovolt": "incremental commit log (format pinned by source revision); Sync transactions; default limits; explicit CLI pruning before writes and every 10 commits, timed separately and included in sustained_write_phase",
                              "sqlite": "WAL, synchronous=FULL; default automatic checkpoint", "duckdb": "persistent database; default WAL/checkpoint; threads=1"},
               "summary": summary, "runs": results}
     Path(args.output).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
