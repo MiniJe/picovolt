@@ -1,7 +1,8 @@
 # PicoVolt 2.0 release-candidate ledger
 
 Candidate: **2.0.0-rc.1**. Implementation date: **2026-09-08**.
-This is a local candidate build, not a published stable release.
+This candidate is available for review in [PR #21](https://github.com/MiniJe/picovolt/pull/21),
+not a published stable release.
 
 ## Implemented contract
 
@@ -25,7 +26,7 @@ platform durability assumptions and unsupported capabilities.
 
 | Check | Result |
 | --- | --- |
-| Full Rust suite, all targets and all features | 321 tests passed on the final implementation |
+| Full Rust suite, all targets and all features | 322 tests passed after the interrupted-cleanup fix |
 | Final concurrency/transaction/migration regression run | 30 tests passed, including checkpoint export and compaction |
 | Clippy, all targets and all features, warnings denied | Passed |
 | Rust 1.86 minimum-version check, all features | Passed |
@@ -36,6 +37,7 @@ platform durability assumptions and unsupported capabilities.
 | Go adapter tests and vet | Passed; v2 import-path verification included |
 | Cross-process journal crash injection | Passed at six publication boundaries |
 | Corrupt recovery evidence | Rejected before changing live state |
+| Interrupted journal preparation/cleanup | Removed before retention accounting; retry/reopen regression passed |
 | Golden migration rehearsal | All checked-in historical images and v6 passed |
 | Release CLI, server and C ABI build | Built; CLI reports 2.0.0-rc.1 |
 
@@ -46,11 +48,31 @@ insert journaled one page of a 24-page image. These are local observations,
 not latency promises. Full snapshot construction and retained-log enumeration
 remain explicit performance costs.
 
+## Hosted validation and competitor evidence
+
+Linux ThreadSanitizer, Linux/Windows tests, dependency audit, fuzz build,
+minimum Rust, Go adapters and WASM checks passed for the candidate in
+[CI](https://github.com/MiniJe/picovolt/actions/runs/34236576438).
+The recovery cleanup fix also passed
+[Linux ThreadSanitizer](https://github.com/MiniJe/picovolt/actions/runs/34237742732/job/102099743918).
+This is automated validation and an implementation review, not an independent
+security audit.
+
+The [candidate wheel workflow](https://github.com/MiniJe/picovolt/actions/runs/34238031021)
+also passed: Windows, universal2 macOS and manylinux x86-64 wheels were built
+and installed outside the source tree, including the minimum Python smoke
+test on Linux. These are downloadable CI artifacts, not published registry
+versions.
+
+[Five-trial competitor measurements](../benchmarks/COMPETITORS_2_0.md) compare
+SQLite 3.49.1 and DuckDB 1.5.5 on the same data. The report retains the failed
+unpruned-log finding and includes explicit pruning cost in sustained writes.
+PicoVolt is substantially slower for durable commits in this workload;
+the report records the next performance priorities without inflating claims.
+
 ## Gates before a stable tag
 
 - Independent security review of format/recovery, FFI and network boundaries.
-- A passing Linux ThreadSanitizer run. The CI job is implemented; it cannot be
-  claimed from a Windows-only local run.
 - Migration rehearsals on real external 1.x databases with verified backups.
 - At least three external applications completing candidate trials.
 - Exact candidate/stable registry installation tests, release checksums, SBOMs,

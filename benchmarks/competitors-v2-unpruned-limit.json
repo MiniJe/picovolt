@@ -1,0 +1,12 @@
+{
+  "engine_version": "2.0.0-rc.1",
+  "engine_source_commit": "f31af9b",
+  "scenario": "10000 rows, default limits, no pruning",
+  "successful_commits": 42,
+  "committed_rows": 10037,
+  "failed_single_row_insert_ordinal": 38,
+  "error": "query resource limit exceeded: commit log byte limit reached; reduce transaction or prune history",
+  "retained_file_bytes": 265169549,
+  "retained_budget_bytes": 268435456,
+  "active_recovery_remaining": false
+}

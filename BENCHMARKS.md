@@ -1,5 +1,18 @@
 # Benchmarks
 
+## 2.0 release-candidate comparison
+
+See [the reproducible SQLite/DuckDB comparison](benchmarks/COMPETITORS_2_0.md)
+for synced filesystem writes and SQL reads in 2.0.0-rc.1. SQLite wins this
+durable application workload; DuckDB wins the analytical query shapes.
+PicoVolt's indexed point latency is competitive with DuckDB, but write
+amplification and retained-log management remain substantial costs.
+
+The figures below are **historical 1.x measurements**, including explicitly
+unsynced `Fast` workloads. They are not 2.0 durable-commit performance claims.
+
+## Historical 1.x measurements
+
 Produced by [`examples/bench.rs`](examples/bench.rs). Reproduce with:
 
 ```sh
