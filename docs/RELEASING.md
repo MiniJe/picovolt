@@ -104,6 +104,10 @@ with no Cargo credential is a failure, never a silent skip.
 The release compiler and `wasm-pack` version are pinned, Cargo commands use the
 committed lockfile, and build paths are remapped out of the npm WebAssembly
 binary so a pre-release package checksum can be reproduced on Linux.
+When building through WSL, pack from a native Linux filesystem with regular
+package files set to mode 0644. Windows-mounted files can appear executable;
+those permission bits change npm tarball integrity even when contents match.
+The hosted npm-package gate must reproduce the committed starter integrity.
 
 After public artifacts exist, the same checks can be reproduced locally (the Go
 native test currently requires Linux):

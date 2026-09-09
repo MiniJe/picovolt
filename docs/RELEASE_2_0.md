@@ -20,7 +20,35 @@ review and external-owner evidence below remain uncompleted.
 - Preserve historical RC3 benchmark evidence below. The lock-lifetime repair
   does not establish new independent-review or external-trial evidence.
 
-Final validation and publication results will be recorded here as they complete.
+### Validation of engine revision `fe1aea1`
+
+| Check | Result |
+| --- | --- |
+| Local Rust all targets/features | 340 Linux tests; 339 Windows tests passed |
+| Local Linux lint/docs | All-feature Clippy and two doctests passed |
+| Lock/recovery regression | 20 repeated journal suites and 1,000 abrupt-process crash cycles passed |
+| Starter policy | 24 tests and explicit 2.0.0 policy passed |
+| JavaScript/WASM | Five tests passed against built and isolated installed npm packages |
+| Python | Eight tests passed against the installed hosted Windows 2.0.0 wheel |
+| Rust distribution | `cargo package --locked` built and verified the packaged crate |
+| Hosted CI | [All jobs passed](https://github.com/MiniJe/picovolt/actions/runs/34401341252), including Linux/Windows, Go 1.26/1.27, WASM, MSRV, ThreadSanitizer and dependency audit |
+| Platform wheels | [Windows, macOS universal2 and manylinux builds/install smoke tests passed](https://github.com/MiniJe/picovolt/actions/runs/34401525448); publication skipped |
+| Performance budgets | [Benchmark smoke and all seven budgets passed](https://github.com/MiniJe/picovolt/actions/runs/34401528348) |
+| Extended fuzz/model/recovery | [Bounded stabilization workflow](https://github.com/MiniJe/picovolt/actions/runs/34401531502) records all six fuzz shards and 5,000-operation/1,000-crash stress results |
+
+The initial hosted npm-package check correctly rejected the Windows-mounted
+tarball's executable permission bits. Packing identical contents on a native
+Linux filesystem with regular 0644 files reproduced the hosted checksum exactly:
+
+```text
+sha512-oiiQNnCtSPWtKk+9hxmBhwqzXA9ZkZmZT8VABKwOg/D3hIg0mwSR2nBLuKY6F2/yCNHnCmHgpFENZeOt4sZiEg==
+```
+
+The corrected starter pins preserve that integrity. This packaging-only follow-up
+does not change engine or binding contents. Exact registry installs, native
+release bundles, SBOMs and attestations remain post-tag workflow gates. The
+independent review and external-owner gates below have not been completed or
+waived by these engineering checks.
 
 ## RC3 qualification baseline
 
