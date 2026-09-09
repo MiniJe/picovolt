@@ -34,7 +34,7 @@ review and external-owner evidence below remain uncompleted.
 | Hosted CI | [All jobs passed](https://github.com/MiniJe/picovolt/actions/runs/34401341252), including Linux/Windows, Go 1.26/1.27, WASM, MSRV, ThreadSanitizer and dependency audit |
 | Platform wheels | [Windows, macOS universal2 and manylinux builds/install smoke tests passed](https://github.com/MiniJe/picovolt/actions/runs/34401525448); publication skipped |
 | Performance budgets | [Benchmark smoke and all seven budgets passed](https://github.com/MiniJe/picovolt/actions/runs/34401528348) |
-| Extended fuzz/model/recovery | [Bounded stabilization workflow](https://github.com/MiniJe/picovolt/actions/runs/34401531502) records all six fuzz shards and 5,000-operation/1,000-crash stress results |
+| Extended fuzz/model/recovery | [All six fuzz shards and 5,000-operation/1,000-crash stress checks passed](https://github.com/MiniJe/picovolt/actions/runs/34401531502) |
 
 The initial hosted npm-package check correctly rejected the Windows-mounted
 tarball's executable permission bits. Packing identical contents on a native
@@ -117,9 +117,9 @@ been performed by the implementation agent.
 - SQLite ecosystem compatibility is partial: the independent probes found
   missing PRAGMA/transaction-state hooks, Python UDF registration and composite
   primary keys. Do not advertise drop-in Datasette/sqlite-utils/beets support.
-- Exact RC3 registry installation, release provenance and publication must be
-  verified through the release workflow. Published starters remain pinned to
-  the genuine 1.9.0 baseline until publication; local RC3 builds are separate.
+- Exact 2.0.0 registry installation, release provenance and publication must be
+  verified through the release workflow. Prepared starters now pin 2.0.0 and
+  become installable when those exact packages are published.
 
 No stable tag, registry publication or universal competitor-win claim follows
 from these local repairs. See [the interface guide](QUICKSTART_2_0.md) and
