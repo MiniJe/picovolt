@@ -44,7 +44,10 @@ Linux filesystem with regular 0644 files reproduced the hosted checksum exactly:
 sha512-oiiQNnCtSPWtKk+9hxmBhwqzXA9ZkZmZT8VABKwOg/D3hIg0mwSR2nBLuKY6F2/yCNHnCmHgpFENZeOt4sZiEg==
 ```
 
-The corrected starter pins preserve that integrity. This packaging-only follow-up
+The [hosted npm-package gate passed with the corrected starter pins](https://github.com/MiniJe/picovolt/actions/runs/34402128551),
+and the downloaded hosted tarball matches the local tarball byte for byte
+(SHA-256 `332e8e9493b7f57d957cdbc77825e20969a3e9e884611745d43a9c79d2e50325`).
+This packaging-only follow-up
 does not change engine or binding contents. Exact registry installs, native
 release bundles, SBOMs and attestations remain post-tag workflow gates. The
 independent review and external-owner gates below have not been completed or

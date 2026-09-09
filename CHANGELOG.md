@@ -42,7 +42,7 @@ recorded in the [release ledger](docs/RELEASE_2_0.md). SQLite ecosystem support
 remains partial; this release does not claim drop-in compatibility or universal
 performance superiority.
 
-## 2.0.0-rc.3 - 2026-09-08
+## [2.0.0-rc.3] - 2026-09-08
 
 ### Fixed
 
@@ -67,7 +67,7 @@ performance superiority.
 This is an unpublished candidate. Independent RC2 findings and deferred external
 and security gates remain recorded in the [release ledger](docs/RELEASE_2_0.md).
 
-## 2.0.0-rc.2 - 2026-09-08
+## [2.0.0-rc.2] - 2026-09-08
 
 ### Added
 
@@ -100,7 +100,7 @@ and security gates remain recorded in the [release ledger](docs/RELEASE_2_0.md).
 This remains an unpublished candidate. See the [release ledger](docs/RELEASE_2_0.md)
 for measured performance and outstanding independent/external gates.
 
-## 2.0.0-rc.1 - 2026-09-08
+## [2.0.0-rc.1] - 2026-09-08
 
 ### Added
 
