@@ -603,8 +603,8 @@ struct ActiveTransaction {
     previous_autocommit: bool,
     previous_durability: Durability,
     /// Held from before backup preparation through commit or rollback. The file
-    /// itself persists, but the OS lock is released automatically on drop.
-    _filesystem_lock: Option<File>,
+    /// itself persists, but the OS lock is explicitly released on drop.
+    _filesystem_lock: Option<TransactionLock>,
 }
 
 /// A PicoVolt database handle.
@@ -3816,7 +3816,23 @@ fn abort_workspace_transaction_preparation(root: &Path) -> Result<()> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn acquire_transaction_lock(root: &Path) -> Result<File> {
+struct TransactionLock(File);
+
+#[cfg(target_arch = "wasm32")]
+type TransactionLock = File;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for TransactionLock {
+    fn drop(&mut self) {
+        // On Unix, fork/dup shares the locked open-file description. Closing
+        // only our descriptor can leave the lock held until a concurrently
+        // spawned child execs. Release it at the end of the protected operation.
+        let _ = FileExt::unlock(&self.0);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn acquire_transaction_lock(root: &Path) -> Result<TransactionLock> {
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
@@ -3828,11 +3844,11 @@ fn acquire_transaction_lock(root: &Path) -> Result<File> {
             "workspace transaction is active in another handle or process: {error}"
         ))
     })?;
-    Ok(lock)
+    Ok(TransactionLock(lock))
 }
 
 #[cfg(target_arch = "wasm32")]
-fn acquire_transaction_lock(root: &Path) -> Result<File> {
+fn acquire_transaction_lock(root: &Path) -> Result<TransactionLock> {
     // Browser databases use the in-memory/OPFS wrapper and never enter this
     // filesystem transaction path. Keep the native API compilable for wasm.
     Ok(OpenOptions::new()
@@ -6125,6 +6141,23 @@ fn build_tables(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn transaction_lock_drop_releases_duplicated_description() {
+        let temp = tempfile::tempdir().unwrap();
+        let lock = acquire_transaction_lock(temp.path()).unwrap();
+        // A duplicate shares the open-file description, just like an inherited
+        // descriptor in the window between fork and exec on another thread.
+        let inherited = lock.0.try_clone().unwrap();
+        assert!(acquire_transaction_lock(temp.path()).is_err());
+        drop(lock);
+        let next = acquire_transaction_lock(temp.path()).unwrap();
+        drop(inherited);
+        assert!(acquire_transaction_lock(temp.path()).is_err());
+        drop(next);
+        assert!(acquire_transaction_lock(temp.path()).is_ok());
+    }
 
     #[test]
     fn dev_insert_select_and_reopen() {

@@ -37,7 +37,7 @@ __all__ = [
     "version",
     "__version__",
 ]
-__version__ = "2.0.0-rc.3"
+__version__ = "2.0.0"
 
 
 class PicoVoltError(RuntimeError):

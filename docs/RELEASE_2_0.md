@@ -1,6 +1,30 @@
 # PicoVolt 2.0 release ledger
 
-Current candidate: **2.0.0-rc.3**, engine `adf527af35ca7fec6c300bdf24bda9810f0bf7f4`, unpublished. Stable release remains gated.
+Current release preparation: **2.0.0**, unpublished, on PR #21.
+No stable tag or registry publication has occurred. The outstanding independent
+review and external-owner evidence below remain uncompleted.
+
+## Stable preparation — 2026-09-09
+
+- Correct the Linux CI lock-lifetime regression found on RC3 documentation
+  revision `8720192`. Transaction guards now explicitly unlock their file before
+  closing it, so a duplicate inherited during concurrent process creation cannot
+  delay release. A Unix regression test keeps a duplicate descriptor alive,
+  verifies exclusion while held, and verifies reacquisition after guard drop.
+- Align Cargo and Python metadata and every maintained starter with 2.0.0.
+  Go starters migrate to the `/v2` module path. Go checksums are calculated from
+  canonical Git source bytes including the inherited root LICENSE; the method
+  is checked against the published 1.9.0 checksum before generating 2.0.0 pins.
+- Build the npm package with release-pinned Rust 1.98.1 and wasm-pack 0.15.0;
+  verify its exact tarball integrity before publication.
+- Preserve historical RC3 benchmark evidence below. The lock-lifetime repair
+  does not establish new independent-review or external-trial evidence.
+
+Final validation and publication results will be recorded here as they complete.
+
+## RC3 qualification baseline
+
+RC3: **2.0.0-rc.3**, engine `adf527af35ca7fec6c300bdf24bda9810f0bf7f4`, unpublished.
 The [RC2 ledger](RELEASE_2_0_RC2.md) preserves the previous candidate's evidence.
 
 ## Independent review and corrections

@@ -6,6 +6,42 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-09
+
+### Added
+
+- Native `SharedDatabase` with concurrent immutable snapshots, FIFO writer
+  admission, cancellation, deadlines, and bounded reader/queue/image resources.
+- Checksummed incremental transaction journals, crash recovery, an ordered
+  physical change stream, checkpoints, and explicit acknowledgement/pruning.
+- Atomic parameter batches across Rust, C, Python, Go, JavaScript/WASM and CLI;
+  native commit-log configuration and diagnostics across maintained interfaces.
+
+### Changed
+
+- Logged workspaces use format 7 to persist the acknowledged commit-sequence
+  anchor. Baked formats 1-6 remain readable. Back up before upgrading writable
+  workspaces; 1.x binaries cannot open upgraded logged workspaces.
+- Go imports use `github.com/MiniJe/picovolt/bindings/go/v2`.
+- PRIMARY KEY and UNIQUE columns receive automatic indexes. Batch validation,
+  indexed range intersections, filtered joins, and grouped aggregates avoid
+  unnecessary scans and intermediate allocations.
+
+### Fixed
+
+- Missing unpruned commit history fails explicitly instead of reusing an
+  acknowledged sequence; pruning and rollback preserve the manifest anchor.
+- SQL-dump import skips complete trigger bodies, handles comments and nested
+  CASE expressions, and rejects incomplete dumps before changing data.
+- Registry starter execution passes the policy version to every dispatch path.
+- Workspace transaction locks explicitly unlock on drop so forked or duplicated
+  file descriptors cannot extend their lifetime and spuriously block reopening.
+
+Qualification, pending independent/external evidence, and publication status are
+recorded in the [release ledger](docs/RELEASE_2_0.md). SQLite ecosystem support
+remains partial; this release does not claim drop-in compatibility or universal
+performance superiority.
+
 ## 2.0.0-rc.3 - 2026-09-08
 
 ### Fixed

@@ -154,9 +154,11 @@ class StarterPolicyTests(unittest.TestCase):
                 check_policy(self.root, project_version(self.root))
 
     def test_stable_release_cannot_use_an_older_starter_baseline(self):
+        current = project_version(self.root)
+        future = f"{int(current.split('.')[0]) + 1}.0.0"
         for filename in ["Cargo.toml", "bindings/python/pyproject.toml", "bindings/python/picovolt/__init__.py"]:
             path = self.root / filename
-            path.write_text(path.read_text().replace(project_version(ROOT), "2.0.0"))
+            path.write_text(path.read_text().replace(current, future))
         with self.assertRaises(PolicyError):
             check_policy(self.root)
 

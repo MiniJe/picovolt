@@ -3,14 +3,14 @@
 [![CI](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml/badge.svg)](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/picovolt.svg)](https://crates.io/crates/picovolt)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-![Status: 2.0 release candidate](https://img.shields.io/badge/status-2.0%20release%20candidate-orange.svg)
+![Version: 2.0](https://img.shields.io/badge/version-2.0-blue.svg)
 [![GitHub stars](https://img.shields.io/github/stars/MiniJe/picovolt?style=social)](https://github.com/MiniJe/picovolt)
 
-PicoVolt is an embedded database engine written in Rust. This branch builds
-**2.0.0-rc.3**, with concurrent snapshot readers, bounded writer scheduling,
-and an incremental durable commit log. The latest published stable release is
-1.9.0. This candidate has not completed an independent security review or
-external application trials. See the [2.0 release ledger](docs/RELEASE_2_0.md).
+PicoVolt is an embedded database engine written in Rust. **2.0** provides
+concurrent snapshot readers, bounded writer scheduling, and an incremental
+durable commit log. Independent security review and external application trials
+have not been completed. See the [2.0 release ledger](docs/RELEASE_2_0.md)
+for qualification evidence and publication status.
 
 Start with the [2.0 guide for every maintained interface](docs/QUICKSTART_2_0.md)
 for atomic batches, persistence choices, log diagnostics and error recovery.
@@ -213,7 +213,7 @@ See [Migration and compaction](docs/MIGRATION.md).
 | **Rust** (crates.io) | `cargo add picovolt` |
 | **JavaScript / npm** (WebAssembly, browser and Node) | `npm install picovolt` |
 | **Python** (native wheels) | `python -m pip install picovolt` |
-| **Go** (`database/sql` and direct API) | `go get github.com/MiniJe/picovolt/bindings/go@latest`, then provide the matching native C ABI library described in [`bindings/go/`](bindings/go) |
+| **Go** (`database/sql` and direct API) | `go get github.com/MiniJe/picovolt/bindings/go/v2@v2.0.0`, then provide the matching native C ABI library described in [`bindings/go/`](bindings/go) |
 | **C** | Download the matching `picovolt-capi-*` bundle from the [latest release](https://github.com/MiniJe/picovolt/releases/latest), or run `cargo build --release --features capi` |
 | **In-memory** (native, no filesystem) | `Database::open_memory()`, export with `bake_to_bytes()` |
 

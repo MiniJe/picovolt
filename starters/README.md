@@ -15,9 +15,8 @@ complete. See [`../docs/RELEASING.md`](../docs/RELEASING.md) for the local
 command and the Go native-library details.
 
 
-During unpublished 2.0 release-candidate development these starters intentionally
-remain on the published version in `REGISTRY_VERSION`. They exercise real public
-registry installations, not this checkout. Local engine/binding tests validate
-the candidate. Tagged release checks still require exact candidate/stable pins
-and genuine registry checksums; the development baseline cannot pass that gate.
+These starters pin 2.0.0 and exercise public registry installations. They become
+installable when the corresponding release packages are published. See the
+[release ledger](../docs/RELEASE_2_0.md) for publication status. Tagged release
+checks require exact version pins and genuine registry checksums.
 The 2.x Go module uses `github.com/MiniJe/picovolt/bindings/go/v2`.

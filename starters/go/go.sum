@@ -1,2 +1,2 @@
-github.com/MiniJe/picovolt/bindings/go v1.9.0 h1:BI9c0+TmW9ZXS0gWqkL9hK6buU++MMlcVW5Zas/YgyY=
-github.com/MiniJe/picovolt/bindings/go v1.9.0/go.mod h1:Y51FSpOz8BExbwyCO9njVoH0dFFkEYY+YYwP/MOp86s=
+github.com/MiniJe/picovolt/bindings/go/v2 v2.0.0 h1:Czq15X2RcXVWlzOFb2YGKLJm0CrWXoOJnVaf5xDgwog=
+github.com/MiniJe/picovolt/bindings/go/v2 v2.0.0/go.mod h1:VqMrIiRUokhzCvFtPrTuDBgSxSlUityMmvjIC27D9bg=

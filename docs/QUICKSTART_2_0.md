@@ -1,8 +1,9 @@
 # PicoVolt 2.0: faster writes and simpler operation
 
-This guide describes **2.0.0-rc.3**, an unpublished candidate. Use the matching
-candidate library/wheel or build this checkout. Existing registry-only starters
-remain on the published stable release until candidate publication completes.
+This guide describes **2.0.0**. Use matching 2.0 libraries and native binaries;
+the maintained starters pin this exact version. See the
+[release ledger](RELEASE_2_0.md) for publication status. Go imports use
+`github.com/MiniJe/picovolt/bindings/go/v2`.
 
 ## Choose storage
 
@@ -198,7 +199,7 @@ image's verification hash and the correct following sequence. Do not delete
 | Snapshot admission rejected | Close completed readers; review snapshot count/image limits |
 | Unexpected scan | Use `pv explain` / `EXPLAIN SELECT ...`; index selective filter columns |
 | Read-only error | Open a writable workspace or writable memory copy |
-| Missing native library/symbol | Install/build the matching rc.3 wheel/library; do not mix candidate versions |
+| Missing native library/symbol | Install/build the matching 2.0.0 wheel/library; do not mix versions |
 | Transaction outcome unknown | Close and reopen to recover/inspect; reconcile before retrying the mutation |
 
 See [the independent review prompt](INDEPENDENT_REVIEW_PROMPT.md) and

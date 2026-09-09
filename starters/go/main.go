@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 
-	_ "github.com/MiniJe/picovolt/bindings/go/pvsql"
+	_ "github.com/MiniJe/picovolt/bindings/go/v2/pvsql"
 )
 
 func main() {
