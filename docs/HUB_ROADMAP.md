@@ -30,6 +30,20 @@ Start with user-prepared `.pvdb` files and existing `pv bake`, `pv inspect` and
 
 ## First implementation
 
+As of 2026-09-10, the private Hub pilot source also implements operator-issued
+revocable account keys, private projects with pinned publisher keys, bounded
+uploads verified by the real PicoVolt CLI, authorized artifact delivery,
+immutable release identities, revision-checked channel promotion/rollback, and
+release activity. The React console is built. Integration tests cover isolation,
+revocation/expiry, tampering, persistence and stale channel updates.
+
+The public website and React service status page are deployed on Hetzner.
+The PHP status endpoint performs bounded on-demand HTTPS/integrity probes and
+marks stale observations unknown. It is not independent continuous monitoring.
+The hosted Hub API is not launched. It still needs a Hetzner application server,
+private storage, operational ownership, legal onboarding and a deployment review.
+The pilot code is not a claim of general availability or a formal SLA.
+
 `scripts/hub_release.py` prepares a local release from an existing signed dataset
 and an independently supplied public key. It verifies the copied image with the
 existing CLI and records SHA-256 transport digests. It does not upload or issue
