@@ -1,10 +1,27 @@
 # PicoVolt 2.0 release ledger
 
-Current release: **2.0.0**, authorized for publication on 2026-09-10.
-Publication and registry verification are being completed through PR #21 and
-the tagged release workflows.
+Current release: **2.0.0**, published on **2026-09-10 at 04:53 UTC**.
+[PicoVolt v2.0.0](https://github.com/MiniJe/picovolt/releases/tag/v2.0.0) is the
+latest stable release. PR #21 merged as
+`5177210e98a78d1fe72aa3cc682a04a0ad87bdcd`; both the main release tag and
+`bindings/go/v2.0.0` resolve to that exact commit.
 
-## Maintainer decision â€” 2026-09-10
+## Completed publication
+
+- [Release workflow](https://github.com/MiniJe/picovolt/actions/runs/34437482502): passed verification, crates.io/npm publication, native builds, registry starters, and GitHub Release creation.
+- [Python/Go workflow](https://github.com/MiniJe/picovolt/actions/runs/34437482531): passed three platform wheel builds, PyPI publication, the Go tag, and clean Python/Go registry installs.
+- Rust, Node, browser, Python and Go starters passed using public registry packages without source-tree fallbacks.
+- All 12 native files and SBOMs match the public SHA256SUMS and verified attestations from the exact release commit and workflow. Linux/Windows CLI and Windows C ABI version probes report 2.0.0.
+- All three PyPI wheel hashes match the tagged build outputs. npm integrity matches both starter lockfiles; npm registry signature and provenance attestation verification passed.
+- [Machine-readable distribution verification](RELEASE_2_0_VERIFICATION.json) records artifact hashes, registry versions, provenance checks and the approved deferrals.
+
+The Go proxy initially cached a missing version-info response. Its standard
+hosted clean-install gate succeeded before release creation; some regional
+version-info responses remained cached briefly afterward. The verification
+record preserves that response and expiry, alongside exact-version metadata
+from the public proxy's latest endpoint and the verified Go archive checksum.
+
+## Maintainer decision — 2026-09-10
 
 The maintainer explicitly approved publishing 2.0.0 with independent review and
 external migration/trial acceptance deferred. Those activities remain
@@ -12,7 +29,7 @@ uncompleted follow-up work; this decision does not claim review or external
 acceptance evidence. Engineering checks, exact registry installs, native
 downloads, checksums, SBOMs and provenance remain required release checks.
 
-## Stable preparation â€” 2026-09-09
+## Stable preparation — 2026-09-09
 
 - Correct the Linux CI lock-lifetime regression found on RC3 documentation
   revision `8720192`. Transaction guards now explicitly unlock their file before
@@ -57,7 +74,7 @@ and the downloaded hosted tarball matches the local tarball byte for byte
 (SHA-256 `332e8e9493b7f57d957cdbc77825e20969a3e9e884611745d43a9c79d2e50325`).
 This packaging-only follow-up
 does not change engine or binding contents. Exact registry installs, native
-release bundles, SBOMs and attestations remain post-tag workflow gates. The
+release bundles, SBOMs and attestations passed the tagged workflows above. The
 independent review and external-owner activities below were not completed by
 these engineering checks; their deferral was explicitly authorized separately.
 
@@ -70,7 +87,7 @@ sha512-+ZTOep8ANxJcI21WijHIRGlNa7+Dk1eGJhuCjuJVU4cXBM8LZFfGlxNfljDC7jRY0LmusSYkm
 SHA-256 0b975b152f2c47fdc6f1097ba5347b1cf8a490be720442f5c3ce8b181a77f8f4
 ```
 
-The tagged workflow must reproduce this integrity before publishing.
+The tagged workflow reproduced this integrity before publishing.
 
 ## RC3 qualification baseline
 
@@ -139,9 +156,8 @@ been performed by the implementation agent.
 - SQLite ecosystem compatibility is partial: the independent probes found
   missing PRAGMA/transaction-state hooks, Python UDF registration and composite
   primary keys. Do not advertise drop-in Datasette/sqlite-utils/beets support.
-- Exact 2.0.0 registry installation, release provenance and publication must be
-  verified through the release workflow. Prepared starters now pin 2.0.0 and
-  become installable when those exact packages are published.
+- Exact 2.0.0 registry installation, release provenance and publication passed
+  the tagged workflows. Maintained starters pin the published 2.0.0 packages.
 
 The maintainer's explicit decision authorizes stable publication with the
 documented deferrals; no universal competitor-win claim is made.

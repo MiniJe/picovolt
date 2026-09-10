@@ -1,0 +1,106 @@
+{
+  "version": "2.0.0",
+  "verified_at_utc": "2026-09-10T04:56:06.068411+00:00",
+  "source_commit": "5177210e98a78d1fe72aa3cc682a04a0ad87bdcd",
+  "release_url": "https://github.com/MiniJe/picovolt/releases/tag/v2.0.0",
+  "release_workflow": 34437482502,
+  "python_go_workflow": 34437482531,
+  "registries": {
+    "crates.io": "2.0.0",
+    "npm": "2.0.0",
+    "PyPI": "2.0.0",
+    "Go proxy": "v2.0.0"
+  },
+  "npm_integrity": "sha512-+ZTOep8ANxJcI21WijHIRGlNa7+Dk1eGJhuCjuJVU4cXBM8LZFfGlxNfljDC7jRY0LmusSYkmONFHsrOjRVRQA==",
+  "native_assets": [
+    {
+      "name": "picovolt-capi-linux-x86_64.tar.gz",
+      "sha256": "81f1501bc715acee0444b2b57df04bd1294443f9221157d5487cb240c20f33c1",
+      "size": 858088,
+      "provenance_verified": true
+    },
+    {
+      "name": "picovolt-capi-macos-arm64.tar.gz",
+      "sha256": "9bd0c951cfb6f47dffb4144e5698f7652578f97beade9fe4ee83ef0c251a8ec4",
+      "size": 716094,
+      "provenance_verified": true
+    },
+    {
+      "name": "picovolt-capi-windows-x86_64.tar.gz",
+      "sha256": "84d208b5061191af4a4ac388918eafb0c953f87c4ebcb33f24add74257bd746b",
+      "size": 667180,
+      "provenance_verified": true
+    },
+    {
+      "name": "picovolt-linux-x86_64.cdx.json",
+      "sha256": "2c55f877b27f7a96ce97598c500b6e2630ca8642550267374c0221dfa8d1330b",
+      "size": 146158,
+      "provenance_verified": true
+    },
+    {
+      "name": "picovolt-macos-arm64.cdx.json",
+      "sha256": "8f567554ddc04016416d8db642395e2b6259af76777b544f040ac28c5543dc7f",
+      "size": 144643,
+      "provenance_verified": true
+    },
+    {
+      "name": "picovolt-server-linux-x86_64",
+      "sha256": "5e20411332b5c642805910eb9abd17b40b1831023992126e813fe42c72e71bdc",
+      "size": 3105064,
+      "provenance_verified": true
+    },
+    {
+      "name": "picovolt-server-macos-arm64",
+      "sha256": "1e510d59a46e7856b0586a479f62b1b3b389d963ab4ea2d2d3ffac4c589e3d2a",
+      "size": 2530704,
+      "provenance_verified": true
+    },
+    {
+      "name": "picovolt-server-windows-x86_64.exe",
+      "sha256": "ae57cdf3009c8a2f44121b84151362aff1a76af7d5c28ac524a45b0bfb3a7058",
+      "size": 2177536,
+      "provenance_verified": true
+    },
+    {
+      "name": "picovolt-windows-x86_64.cdx.json",
+      "sha256": "517c4322a691727e7f9a561078554fc80ed40885a1d3860758ffdfd9d73dc434",
+      "size": 143031,
+      "provenance_verified": true
+    },
+    {
+      "name": "pv-linux-x86_64",
+      "sha256": "aabe343fad568bed24bf63d6f34b2ff7991e0c65a1bded9918c50acc4fce6b89",
+      "size": 15354968,
+      "provenance_verified": true
+    },
+    {
+      "name": "pv-macos-arm64",
+      "sha256": "241f07fb34016b69da82ceb40fda1f9898d1d10a0a0bea3eb4cdee479eb2e68d",
+      "size": 12251664,
+      "provenance_verified": true
+    },
+    {
+      "name": "pv-windows-x86_64.exe",
+      "sha256": "eda7058adf655b09da5a859041f1d4d54bed9296116b630e03e969a82dfbc99c",
+      "size": 11674112,
+      "provenance_verified": true
+    }
+  ],
+  "crate_checksum": "4c73165749ee6b1965a97492fb44be92915254472d5f27e4ff174ab79e8b3fc5",
+  "go_metadata_endpoint": "https://proxy.golang.org/github.com/!mini!je/picovolt/bindings/go/v2/@latest",
+  "go_regional_cache": {
+    "url": "https://proxy.golang.org/github.com/!mini!je/picovolt/bindings/go/v2/@v/v2.0.0.info",
+    "status": 404,
+    "expires": "Thu, 10 Sep 2026 05:01:21 GMT",
+    "response": "not found: github.com/MiniJe/picovolt/bindings/go/v2@v2.0.0: invalid version: unknown revision bindings/go/v2.0.0"
+  },
+  "python_wheels": [
+    "picovolt-2.0.0-py3-none-macosx_10_9_universal2.whl",
+    "picovolt-2.0.0-py3-none-manylinux_2_28_x86_64.whl",
+    "picovolt-2.0.0-py3-none-win_amd64.whl"
+  ],
+  "deferred": [
+    "independent review",
+    "external migration/trial acceptance"
+  ]
+}

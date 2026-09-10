@@ -1,4 +1,4 @@
-# Roadmap to PicoVolt 2.0
+# PicoVolt roadmap
 
 This roadmap describes intended outcomes, not release dates. A feature moves into
 a release only when its correctness work, documentation, compatibility tests, and
@@ -7,10 +7,11 @@ The business model hypothesis lives in [docs/MONETIZATION.md](docs/MONETIZATION.
 
 ## Where PicoVolt is now
 
-The **1.9.0 release** adds measured stabilization and a verified
-format-v5 upgrade path. The engine
+The **2.0.0 release** adds concurrent native snapshots, bounded writer admission,
+format-7 commit-sequence anchoring, durable change streams and atomic batches.
+It builds on the stabilization and verified upgrades in 1.9. The engine
 includes page-backed storage, MVCC time-travel queries, persisted secondary
-indexes, a stable 1.x file format, Rust/JavaScript/Python/Go/C bindings, a CLI,
+indexes, readable legacy 1.x images, Rust/JavaScript/Python/Go/C bindings, a CLI,
 an optional bounded HTTP server, and a durable browser path using OPFS and a Web
 Worker.
 
@@ -118,7 +119,7 @@ high-severity findings, and compatibility evidence. Current observations and
 the final release decision are tracked in the
 [1.9.0 qualification ledger](docs/RELEASE_1_9_SOAK.md).
 
-## 2.0 — A production concurrency contract
+## 2.0 — A production concurrency contract (released 2026-09-10)
 
 **Outcome:** PicoVolt can be shared safely by multiple application tasks without
 forcing callers to build their own ownership thread around the database.
