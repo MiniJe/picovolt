@@ -31,6 +31,99 @@ type DB struct {
 	ptr *C.PvDb
 }
 
+// CommitLogOptions bounds disk retention. Zero selects the default per field.
+type CommitLogOptions struct {
+	TransactionBytes uint64
+	RetainedBytes    uint64
+	RetainedCommits  uint
+}
+
+// ExecuteMany atomically executes a mutation template for all parameter rows.
+// An active transaction is rejected and any row failure rolls the batch back.
+func (db *DB) ExecuteMany(sql string, rows [][]any) (uint64, error) {
+	if db.ptr == nil {
+		return 0, errors.New("picovolt: database is closed")
+	}
+	if rows == nil {
+		rows = [][]any{}
+	}
+	payload, err := json.Marshal(rows)
+	if err != nil {
+		return 0, err
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	csql, crows := C.CString(sql), C.CString(string(payload))
+	defer C.free(unsafe.Pointer(csql))
+	defer C.free(unsafe.Pointer(crows))
+	result := C.pv_execute_many(db.ptr, csql, crows)
+	if result == nil {
+		return 0, lastError()
+	}
+	defer C.pv_string_free(result)
+	var count struct {
+		Mutated uint64 `json:"mutated"`
+	}
+	err = json.Unmarshal([]byte(C.GoString(result)), &count)
+	return count.Mutated, err
+}
+
+// EnableCommitLog enables native synced transactions and explicit retention.
+func (db *DB) EnableCommitLog(options CommitLogOptions) error {
+	if db.ptr == nil {
+		return errors.New("picovolt: database is closed")
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if C.pv_enable_commit_log(db.ptr, C.uint64_t(options.TransactionBytes), C.uint64_t(options.RetainedBytes), C.size_t(options.RetainedCommits)) == 0 {
+		return lastError()
+	}
+	return nil
+}
+
+// CommitLogStatus returns JSON usage, limits, and sequence cursors without reading rows.
+func (db *DB) CommitLogStatus() (string, error) {
+	if db.ptr == nil {
+		return "", errors.New("picovolt: database is closed")
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	result := C.pv_commit_log_status(db.ptr)
+	if result == nil {
+		return "", lastError()
+	}
+	defer C.pv_string_free(result)
+	return C.GoString(result), nil
+}
+
+// ChangesSince returns a JSON array of physical commits after a sequence cursor.
+func (db *DB) ChangesSince(after uint64, limit uint) (string, error) {
+	if db.ptr == nil {
+		return "", errors.New("picovolt: database is closed")
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	result := C.pv_changes_since(db.ptr, C.uint64_t(after), C.size_t(limit))
+	if result == nil {
+		return "", lastError()
+	}
+	defer C.pv_string_free(result)
+	return C.GoString(result), nil
+}
+
+// PruneChanges deletes history through a sequence acknowledged by all consumers.
+func (db *DB) PruneChanges(acknowledged uint64) error {
+	if db.ptr == nil {
+		return errors.New("picovolt: database is closed")
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if C.pv_prune_changes(db.ptr, C.uint64_t(acknowledged)) == 0 {
+		return lastError()
+	}
+	return nil
+}
+
 // Stmt is a reusable positional-parameter SQL statement. It retains a native
 // prepared handle and the database used for execution. Close the statement
 // before closing its DB. A Stmt is not safe for concurrent use, matching its DB.

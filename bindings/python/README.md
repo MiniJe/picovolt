@@ -1,5 +1,8 @@
 # PicoVolt for Python
 
+For 2.0, see the [interface quickstart](../../docs/QUICKSTART_2_0.md)
+for batching, persistence and diagnostics. Use matching 2.0 artifacts.
+
 Python bindings for the [PicoVolt](https://github.com/MiniJe/picovolt) embedded
 database engine, via its C ABI and `ctypes`. Released platform wheels bundle the
 native library, so installing from PyPI does not require a Rust or C compiler.

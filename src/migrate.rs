@@ -8,6 +8,8 @@
 //! support (PRAGMA, transactions, triggers, views, indexes, ALTER, ATTACH) are
 //! skipped with a reason. Each statement that does run is reported, and a
 //! statement that errors is collected rather than stopping the import.
+//! Incomplete quotes, block comments or compound triggers reject the complete
+//! dump before execution; this prevents a fragment from being run separately.
 
 use crate::Database;
 
@@ -27,9 +29,16 @@ impl Database {
     /// the rewriting and skipping rules.
     pub fn import_sql(&mut self, dump: &str) -> ImportReport {
         let mut report = ImportReport::default();
-        for raw in split_statements(dump) {
+        let statements = match split_statements(dump) {
+            Ok(statements) => statements,
+            Err(error) => {
+                report.errors.push(error);
+                return report;
+            }
+        };
+        for raw in statements {
             let stmt = raw.trim();
-            if stmt.is_empty() || stmt.starts_with("--") {
+            if stmt.is_empty() {
                 continue;
             }
             match rewrite_statement(stmt) {
@@ -61,6 +70,9 @@ fn preview(s: &str) -> String {
 }
 
 fn rewrite_statement(stmt: &str) -> Rewrite {
+    if is_trigger(stmt) {
+        return Rewrite::Skip("triggers not supported".to_string());
+    }
     let upper = stmt.to_ascii_uppercase();
     for (kw, reason) in [
         ("PRAGMA", "pragma not supported"),
@@ -83,8 +95,7 @@ fn rewrite_statement(stmt: &str) -> Rewrite {
         }
     }
     if upper == "END" {
-        // The tail of a trigger body, left behind when its inner `;` split it.
-        return Rewrite::Skip("trigger body fragment".to_string());
+        return Rewrite::Skip("transactions not supported".to_string());
     }
     if upper.starts_with("CREATE TABLE") {
         return match rewrite_create_table(stmt) {
@@ -237,10 +248,25 @@ fn first_unquoted_paren(sql: &str) -> Option<usize> {
     None
 }
 
-fn split_statements(sql: &str) -> Vec<String> {
+fn is_trigger(sql: &str) -> bool {
+    let Some(rest) = strip_keyword(sql, "CREATE") else {
+        return false;
+    };
+    let rest = strip_keyword(rest, "TEMPORARY")
+        .or_else(|| strip_keyword(rest, "TEMP"))
+        .unwrap_or(rest);
+    starts_keyword(rest, "TRIGGER")
+}
+
+// Preflight the entire dump before executing anything. Unsupported compound
+// statements must remain indivisible, including when they are incomplete.
+fn split_statements(sql: &str) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut quoted = None;
+    let mut trigger = false;
+    let mut body_started = false;
+    let mut depth = 0usize;
     let mut chars = sql.chars().peekable();
     while let Some(c) = chars.next() {
         if let Some(closing) = quoted {
@@ -253,19 +279,71 @@ fn split_statements(sql: &str) -> Vec<String> {
                     quoted = None;
                 }
             }
+        } else if c == '-' && chars.peek() == Some(&'-') {
+            chars.next();
+            for next in chars.by_ref() {
+                if next == '\n' {
+                    break;
+                }
+            }
+            cur.push(' ');
+        } else if c == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            let mut closed = false;
+            while let Some(next) = chars.next() {
+                if next == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    closed = true;
+                    break;
+                }
+            }
+            if !closed {
+                return Err("unterminated SQL comment; no statements imported".into());
+            }
+            cur.push(' ');
         } else if let Some(closing) = quote_closing(c) {
             quoted = Some(closing);
             cur.push(c);
+        } else if c.is_alphabetic() || c == '_' {
+            let mut word = String::from(c);
+            while chars
+                .peek()
+                .is_some_and(|ch| ch.is_alphanumeric() || *ch == '_')
+            {
+                word.push(chars.next().expect("peeked"));
+            }
+            cur.push_str(&word);
+            trigger |= is_trigger(&cur);
+            if trigger {
+                match word.to_ascii_uppercase().as_str() {
+                    "BEGIN" => {
+                        body_started = true;
+                        depth += 1;
+                    }
+                    "CASE" if body_started => depth += 1,
+                    "END" if depth > 0 => depth -= 1,
+                    _ => (),
+                }
+            }
         } else if c == ';' {
-            out.push(std::mem::take(&mut cur));
+            if trigger && (!body_started || depth > 0) {
+                cur.push(c);
+            } else {
+                out.push(std::mem::take(&mut cur));
+                trigger = false;
+                body_started = false;
+            }
         } else {
             cur.push(c);
         }
     }
+    if quoted.is_some() || (trigger && (!body_started || depth > 0)) {
+        return Err("unterminated SQL quote or trigger; no statements imported".into());
+    }
     if !cur.trim().is_empty() {
         out.push(cur);
     }
-    out
+    Ok(out)
 }
 
 fn split_top_level_commas(body: &str) -> Vec<String> {

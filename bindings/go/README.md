@@ -1,5 +1,8 @@
 # PicoVolt for Go
 
+For 2.0, see the [interface quickstart](../../docs/QUICKSTART_2_0.md)
+for batching, persistence and diagnostics. Use matching 2.0 artifacts.
+
 Go bindings for the [PicoVolt](https://github.com/MiniJe/picovolt) embedded
 database engine, via its C ABI and `cgo`.
 
@@ -70,7 +73,7 @@ go test ./...
 Install the latest Go wrapper from the public module proxy:
 
 ```sh
-go get github.com/MiniJe/picovolt/bindings/go@latest
+go get github.com/MiniJe/picovolt/bindings/go/v2@latest
 ```
 
 For reproducible builds, replace `latest` with an explicit `vX.Y.Z` tag. Always

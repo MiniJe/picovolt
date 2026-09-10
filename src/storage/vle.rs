@@ -99,6 +99,7 @@ pub struct DevStore {
     page_count: u64,
     write_handle: RefCell<Option<(u64, File)>>,
     dirty_chunks: RefCell<BTreeSet<u64>>,
+    journal: RefCell<Option<crate::journal::Journal>>,
 }
 
 impl DevStore {
@@ -111,6 +112,7 @@ impl DevStore {
             page_count: 0,
             write_handle: RefCell::new(None),
             dirty_chunks: RefCell::new(BTreeSet::new()),
+            journal: RefCell::new(None),
         })
     }
 
@@ -123,12 +125,50 @@ impl DevStore {
             page_count,
             write_handle: RefCell::new(None),
             dirty_chunks: RefCell::new(BTreeSet::new()),
+            journal: RefCell::new(None),
         })
     }
 
     /// Number of pages allocated so far.
     pub fn page_count(&self) -> u64 {
         self.page_count
+    }
+
+    pub(crate) fn begin_journal(&self, options: crate::CommitLogOptions) -> Result<()> {
+        *self.journal.borrow_mut() = Some(
+            crate::journal::Journal::begin(&self.root, options).map_err(|error| {
+                if self
+                    .root
+                    .join(crate::COMMIT_LOG_DIR)
+                    .join("active")
+                    .exists()
+                {
+                    PvError::TransactionOutcomeUnknown(format!(
+                        "journal preparation requires recovery: {error}"
+                    ))
+                } else {
+                    error
+                }
+            })?,
+        );
+        Ok(())
+    }
+
+    pub(crate) fn commit_journal(&self) -> Result<()> {
+        let mut journal = self.journal.borrow_mut();
+        journal
+            .as_mut()
+            .ok_or_else(|| PvError::Transaction("no active page journal".into()))?
+            .commit()?;
+        journal.take();
+        Ok(())
+    }
+
+    pub(crate) fn journal_sequence(&self) -> Option<u64> {
+        self.journal
+            .borrow()
+            .as_ref()
+            .map(crate::journal::Journal::sequence)
     }
 
     /// Overwrite the page count (used when the workspace is rewritten wholesale
@@ -175,6 +215,9 @@ impl DevStore {
 
     /// Write a full page to its chunk file, extending the file if necessary.
     pub fn write_page(&self, id: u64, page: &[u8; PAGE_SIZE]) -> Result<()> {
+        if let Some(journal) = self.journal.borrow_mut().as_mut() {
+            journal.before_write(id)?;
+        }
         let within = (id % PAGES_PER_CHUNK) * PAGE_SIZE as u64;
         self.with_chunk_write(id / PAGES_PER_CHUNK, |file| {
             file.seek(SeekFrom::Start(within))?;
@@ -187,6 +230,12 @@ impl DevStore {
     /// chunk file **once** and issuing one bulk write per chunk. Dramatically
     /// faster than per-page [`Self::write_page`] calls.
     pub fn write_pages_from(&self, start_id: u64, pages: &[&PageBuf]) -> Result<()> {
+        if self.journal.borrow().is_some() {
+            for (offset, page) in pages.iter().enumerate() {
+                self.write_page(start_id + offset as u64, page)?;
+            }
+            return Ok(());
+        }
         let end = start_id + pages.len() as u64;
         let mut id = start_id;
         let mut idx = 0usize;

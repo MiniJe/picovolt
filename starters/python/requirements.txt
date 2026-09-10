@@ -1,1 +1,1 @@
-picovolt==1.9.0
+picovolt==2.0.0

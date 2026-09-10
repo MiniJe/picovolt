@@ -3,13 +3,19 @@
 [![CI](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml/badge.svg)](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/picovolt.svg)](https://crates.io/crates/picovolt)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-![Status: stable 1.x](https://img.shields.io/badge/status-stable%201.x-brightgreen.svg)
+![Version: 2.0](https://img.shields.io/badge/version-2.0-blue.svg)
 [![GitHub stars](https://img.shields.io/github/stars/MiniJe/picovolt?style=social)](https://github.com/MiniJe/picovolt)
 
-PicoVolt is an embedded database engine written in Rust. Its 1.x public API and
-on-disk format are stable under Semantic Versioning. It is young software and
-has not had an external security audit, so review it and keep backups before
-trusting it with data you cannot regenerate.
+PicoVolt is an embedded database engine written in Rust. **2.0** provides
+concurrent snapshot readers, bounded writer scheduling, and an incremental
+durable commit log. Independent security review and external application trials
+have not been completed. See the [2.0 release ledger](docs/RELEASE_2_0.md)
+for qualification evidence and publication status.
+
+Start with the [2.0 guide for every maintained interface](docs/QUICKSTART_2_0.md)
+for atomic batches, persistence choices, log diagnostics and error recovery.
+The [standalone review prompt](docs/INDEPENDENT_REVIEW_PROMPT.md) defines an
+independent assessment and external trials deferred beyond the 2.0 release.
 
 If PicoVolt is useful to you, consider starring the repository on GitHub. It is
 the simplest way to help others discover the project.
@@ -28,7 +34,7 @@ MVCC-preserving columnar layout with packed decimal encoding.
 
 ## Status
 
-The current stable release is exercised by a 240+ test Rust suite plus doctests
+The engine is exercised by Rust unit and integration suites plus doctests
 and maintained-binding integration tests. CI also enforces formatting and
 warning-free Clippy builds on Linux and Windows. Shipped changes are tracked in
 [CHANGELOG.md](CHANGELOG.md), and the remaining work toward 2.0 is tracked in
@@ -73,8 +79,10 @@ warning-free Clippy builds on Linux and Windows. Shipped changes are tracked in
   and are rejected rather than mis-run.
 - **Page-backed engine.** Tables are append-only chains of hot row pages and
   optional packed cold pages, each header linking to the next. Inserts append to
-  a row tail and write only that page plus an O(tables) manifest, so autocommit
-  is O(1) per insert rather than a whole-table rewrite. Reads stream through a
+  a row tail. Commit cost also includes catalog/index maintenance, retained-log
+  accounting and the selected durability protocol; it is not uniformly O(1).
+  Logged 2.0 workspaces persist index definitions to reduce catalog rewrites.
+  Reads stream through a
   bounded buffer pool ([`storage/cache.rs`](src/storage/cache.rs)), so datasets
   need not fit in RAM, and opt-in ordered indexes
   ([`storage/index.rs`](src/storage/index.rs)) turn `WHERE col = value` into a
@@ -84,10 +92,12 @@ warning-free Clippy builds on Linux and Windows. Shipped changes are tracked in
   each flush `fsync` the data and commit the manifest atomically (write to a temp
   file, `fsync`, then rename). The default `Fast` mode uses the OS cache only:
   fast and durable on a clean exit, but not power-loss-safe.
-- **Crash-recoverable transactions.** Explicit `BEGIN`, `COMMIT`, and
-  `ROLLBACK` group filesystem or in-memory writes. Filesystem transactions keep
-  a synced rollback image and recovery marker; reopening after interruption
-  restores the last committed state before loading the workspace.
+- **Concurrent transactions.** Native `SharedDatabase` exposes independent
+  snapshot readers and bounded FIFO writers. Logged workspaces sync original
+  pages before overwriting them and publish an ordered physical change stream.
+  Reopening rolls back incomplete writes. Format 6 prevents old binaries from
+  bypassing recovery. Existing 1.x images remain readable and migratable.
+  See [the concurrency contract](docs/CONCURRENCY.md) for limits and costs.
 - **Hardened against untrusted input.** Opening a `.pvdb` or workspace, or running
   a WASM module, validates manifest hashes (no path traversal), bounds-checks CAS
   offsets and page chains (no out-of-bounds reads or infinite loops on a crafted
@@ -184,8 +194,8 @@ pv inspect ./data.pv --json
 `Database::compact_step(max_pages)` preserves record addresses, indexes, and
 complete MVCC history; it never compacts the mutable tail and leaves a page in
 row form when transposition would not save space. Each pass uses the
-crash-recoverable workspace transaction protocol, so allow temporary disk space
-for one complete rollback image. Baked-image migration is
+crash-recoverable transaction protocol: allow bounded journal space for logged
+workspaces, or a full rollback image for unlogged workspaces. Baked-image migration is
 out-of-place and deeply verified before publication:
 
 ```sh
@@ -203,7 +213,7 @@ See [Migration and compaction](docs/MIGRATION.md).
 | **Rust** (crates.io) | `cargo add picovolt` |
 | **JavaScript / npm** (WebAssembly, browser and Node) | `npm install picovolt` |
 | **Python** (native wheels) | `python -m pip install picovolt` |
-| **Go** (`database/sql` and direct API) | `go get github.com/MiniJe/picovolt/bindings/go@latest`, then provide the matching native C ABI library described in [`bindings/go/`](bindings/go) |
+| **Go** (`database/sql` and direct API) | `go get github.com/MiniJe/picovolt/bindings/go/v2@v2.0.0`, then provide the matching native C ABI library described in [`bindings/go/`](bindings/go) |
 | **C** | Download the matching `picovolt-capi-*` bundle from the [latest release](https://github.com/MiniJe/picovolt/releases/latest), or run `cargo build --release --features capi` |
 | **In-memory** (native, no filesystem) | `Database::open_memory()`, export with `bake_to_bytes()` |
 
@@ -272,7 +282,6 @@ native modules built on the public API. Both are documented in
 | | |
 |--|--|
 | Roadmap | [ROADMAP.md](ROADMAP.md) |
-| One-million-download plan | [docs/ROADMAP_1M_DOWNLOADS.md](docs/ROADMAP_1M_DOWNLOADS.md) |
 | Monetization thesis | [docs/MONETIZATION.md](docs/MONETIZATION.md) |
 | Enterprise integration foundation | [docs/ENTERPRISE.md](docs/ENTERPRISE.md) |
 | Platform and file support | [docs/SUPPORT.md](docs/SUPPORT.md) |

@@ -10,7 +10,6 @@
 
 use wasm_bindgen::prelude::*;
 
-use crate::json::result_to_json;
 use crate::{Database, PreparedStatement as EnginePreparedStatement};
 
 /// An in-memory PicoVolt database usable from JavaScript.
@@ -107,6 +106,25 @@ impl Db {
         self.inner.current_tx() as u32
     }
 
+    /// Atomically execute an INSERT/UPDATE/DELETE for an array of parameter arrays.
+    #[wasm_bindgen(js_name = executeMany)]
+    pub fn execute_many(&mut self, sql: &str, rows: JsValue) -> Result<String, JsValue> {
+        if !js_sys::Array::is_array(&rows) {
+            return Err(JsValue::from_str(
+                "executeMany expects an array of parameter arrays",
+            ));
+        }
+        let rows = js_sys::Array::from(&rows)
+            .iter()
+            .map(js_params_to_values)
+            .collect::<Result<Vec<_>, _>>()?;
+        let count = self
+            .inner
+            .execute_many(sql, &rows)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(format!("{{\"mutated\":{count}}}"))
+    }
+
     /// Begin an explicit multi-statement in-memory transaction.
     #[wasm_bindgen(js_name = beginTransaction)]
     pub fn begin_transaction(&mut self) -> Result<(), JsValue> {
@@ -170,8 +188,7 @@ impl Db {
 }
 
 fn result_to_string(result: &crate::QueryResult) -> Result<String, JsValue> {
-    serde_json::to_string(&result_to_json(result))
-        .map_err(|error| JsValue::from_str(&error.to_string()))
+    crate::json::result_to_string(result).map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
 fn js_params_to_values(params: JsValue) -> Result<Vec<crate::Value>, JsValue> {

@@ -50,7 +50,17 @@ pub const MAGIC_BYTES: [u8; 4] = [0x50, 0x56, 0x44, 0x42];
 /// - Version 4: persists literal defaults and `CHECK` constraints.
 /// - Version 5: permits MVCC-preserving cold columnar pages with packed decimal
 ///   mantissas and stable page-chain links.
-pub const FORMAT_VERSION: u16 = 5;
+/// - Version 6: identifies workspaces that may require incremental commit-log
+///   recovery. Page and baked-region encodings remain compatible with v5, but
+///   1.x readers must reject this version instead of skipping recovery.
+/// - Version 7: anchors the committed change sequence in the workspace manifest.
+pub const FORMAT_VERSION: u16 = 7;
+
+/// Minimum format for a persisted monotonic commit-sequence anchor.
+pub const FORMAT_VERSION_COMMIT_ANCHOR: u16 = 7;
+
+/// Minimum workspace format for the production concurrency contract.
+pub const FORMAT_VERSION_COMMIT_LOG: u16 = 6;
 
 /// The version required when any table page uses the integrated cold columnar
 /// layout.

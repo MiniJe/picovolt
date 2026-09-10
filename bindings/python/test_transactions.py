@@ -4,6 +4,60 @@ import picovolt.dbapi2 as dbapi
 from picovolt import Database, PicoVoltError
 
 
+def test_missing_commit_tail_rejects_reopen_without_sequence_reuse(tmp_path):
+    workspace = tmp_path / "workspace"
+    with Database.open_dev(str(workspace)) as db:
+        db.enable_commit_log()
+        db.query("CREATE TABLE t(id)")
+        db.query("INSERT INTO t VALUES(1)")
+        assert db.commit_log_status()["head_sequence"] == 2
+    (workspace / ".pv-log" / f"{2:020d}").rename(tmp_path / "preserved-tail")
+    with pytest.raises(PicoVoltError):
+        Database.open_dev(str(workspace))
+
+
+def test_genuine_sqlite_trigger_dump_does_not_execute_skipped_body():
+    import sqlite3
+    source = sqlite3.connect(":memory:")
+    source.executescript("""
+        CREATE TABLE audit(id INTEGER);
+        CREATE TABLE t(id INTEGER, name TEXT);
+        INSERT INTO t VALUES(1, 'original');
+        CREATE TRIGGER t_log AFTER INSERT ON t BEGIN
+          INSERT INTO audit VALUES(new.id);
+          UPDATE t SET name='triggered' WHERE id=1;
+        END;
+    """)
+    dump = "\n".join(source.iterdump())
+    source.close()
+    with Database.open_memory() as db:
+        report = db.import_sql(dump)
+        assert not report["errors"]
+        assert db.query("SELECT * FROM t")["rows"] == [[1, "original"]]
+        assert db.query("SELECT * FROM audit")["rows"] == []
+
+
+def test_atomic_batch_and_native_log_management(tmp_path):
+    with Database.open_dev(str(tmp_path)) as db:
+        db.enable_commit_log()
+        db.query("CREATE TABLE t (id PRIMARY KEY, body)")
+        assert db.execute_many("INSERT INTO t VALUES (?,?)", [(1,"one"),(2,"two")]) == 2
+        assert db.commit_log_status()["head_sequence"] == 2
+        with pytest.raises(PicoVoltError):
+            db.execute_many("INSERT INTO t VALUES (?,?)", [(3,"three"),(1,"duplicate")])
+        assert db.query("SELECT COUNT(*) FROM t")["rows"] == [[2]]
+        assert len(db.changes_since(0)) == 2
+        for method in [db.prune_changes, db.changes_since]:
+            with pytest.raises(ValueError):
+                method(-1)
+        db.prune_changes(2)
+        assert db.commit_log_status()["retained_commits"] == 0
+        with pytest.raises(PicoVoltError, match="pruned"):
+            db.changes_since(0)
+    with pytest.raises(PicoVoltError, match="closed"):
+        db.execute_many("INSERT INTO t VALUES (?,?)", [])
+
+
 def test_low_level_transaction_commit_and_rollback():
     db = Database.open_memory()
     try:

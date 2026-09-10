@@ -58,7 +58,12 @@ pub mod core;
 pub mod engine;
 #[cfg(feature = "enterprise")]
 pub mod enterprise;
+pub mod journal;
 pub mod storage;
+pub use journal::{
+    BlobChange, ChangeCommit, ChangeSink, CommitLogOptions, CommitLogStatus, PageChange,
+    SnapshotCheckpoint, COMMIT_LOG_DIR,
+};
 
 /// History-preserving baked-image format migration.
 pub mod upgrade;

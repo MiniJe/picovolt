@@ -200,7 +200,7 @@ pub unsafe extern "C" fn pv_query(db: *mut PvDb, sql: *const c_char) -> *mut c_c
             return ptr::null_mut();
         };
         match db.inner.query(sql) {
-            Ok(result) => match serde_json::to_string(&crate::json::result_to_json(&result)) {
+            Ok(result) => match crate::json::result_to_string(&result) {
                 Ok(s) => string_to_c(s),
                 Err(e) => {
                     set_last_error(e.to_string());
@@ -252,7 +252,7 @@ pub unsafe extern "C" fn pv_query_params(
             }
         };
         match db.inner.query_with(sql, &values) {
-            Ok(result) => match serde_json::to_string(&crate::json::result_to_json(&result)) {
+            Ok(result) => match crate::json::result_to_string(&result) {
                 Ok(s) => string_to_c(s),
                 Err(e) => {
                     set_last_error(e.to_string());
@@ -351,7 +351,7 @@ pub unsafe extern "C" fn pv_stmt_execute(
             }
         };
         match stmt.inner.execute(&mut db.inner, &values) {
-            Ok(result) => match serde_json::to_string(&crate::json::result_to_json(&result)) {
+            Ok(result) => match crate::json::result_to_string(&result) {
                 Ok(json) => string_to_c(json),
                 Err(error) => {
                     set_last_error(error.to_string());
@@ -492,6 +492,124 @@ fn transaction_control(
             0
         }
     }
+}
+
+fn json_result<T: serde::Serialize>(result: crate::Result<T>) -> *mut c_char {
+    match result.and_then(|v| serde_json::to_string(&v).map_err(Into::into)) {
+        Ok(s) => string_to_c(s),
+        Err(error) => {
+            set_last_error(error.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Atomic repeated INSERT/UPDATE/DELETE. Parameters are a JSON array of arrays;
+/// returns `{"mutated":n}` owned by the caller, or NULL on any failure.
+/// # Safety
+/// `db` must be live; strings must be valid NUL-terminated UTF-8 or NULL.
+#[no_mangle]
+pub unsafe extern "C" fn pv_execute_many(
+    db: *mut PvDb,
+    sql: *const c_char,
+    rows_json: *const c_char,
+) -> *mut c_char {
+    guard(ptr::null_mut(), || {
+        clear_last_error();
+        let (Some(db), Some(sql), Some(rows)) = (
+            unsafe { db.as_mut() },
+            unsafe { cstr_to_str(sql) },
+            unsafe { cstr_to_str(rows_json) },
+        ) else {
+            set_last_error("pv_execute_many: null handle or invalid UTF-8 input");
+            return ptr::null_mut();
+        };
+        let result = (|| -> crate::Result<_> {
+            let rows: Vec<Vec<serde_json::Value>> = serde_json::from_str(rows)?;
+            let rows: Vec<Vec<crate::Value>> = rows
+                .into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|v| json_to_value(v).map_err(crate::PvError::Query))
+                        .collect()
+                })
+                .collect::<crate::Result<_>>()?;
+            Ok(serde_json::json!({"mutated":db.inner.execute_many(sql,&rows)?}))
+        })();
+        json_result(result)
+    })
+}
+
+/// Enable filesystem commit logging. Zero limits select the default per field.
+/// # Safety
+/// `db` must be a live handle or NULL.
+#[no_mangle]
+pub unsafe extern "C" fn pv_enable_commit_log(
+    db: *mut PvDb,
+    transaction_bytes: u64,
+    retained_bytes: u64,
+    retained_commits: usize,
+) -> i32 {
+    guard(0, || {
+        transaction_control(db, "pv_enable_commit_log", |db| {
+            let mut options = crate::CommitLogOptions::default();
+            if transaction_bytes != 0 {
+                options.max_transaction_bytes = transaction_bytes;
+            }
+            if retained_bytes != 0 {
+                options.max_retained_bytes = retained_bytes;
+            }
+            if retained_commits != 0 {
+                options.max_retained_commits = retained_commits;
+            }
+            db.enable_commit_log(options)
+        })
+    })
+}
+
+/// Return JSON retention diagnostics. Free the result with pv_string_free.
+/// # Safety
+/// `db` must be a live handle or NULL.
+#[no_mangle]
+pub unsafe extern "C" fn pv_commit_log_status(db: *const PvDb) -> *mut c_char {
+    guard(ptr::null_mut(), || {
+        clear_last_error();
+        let Some(db) = (unsafe { db.as_ref() }) else {
+            set_last_error("pv_commit_log_status: null handle");
+            return ptr::null_mut();
+        };
+        json_result(db.inner.commit_log_status())
+    })
+}
+
+/// Return a JSON array of physical changes strictly after the sequence cursor.
+/// Free the result with pv_string_free. At most 4096 commits per call.
+/// # Safety
+/// `db` must be a live handle or NULL.
+#[no_mangle]
+pub unsafe extern "C" fn pv_changes_since(
+    db: *const PvDb,
+    after: u64,
+    limit: usize,
+) -> *mut c_char {
+    guard(ptr::null_mut(), || {
+        clear_last_error();
+        let Some(db) = (unsafe { db.as_ref() }) else {
+            set_last_error("pv_changes_since: null handle");
+            return ptr::null_mut();
+        };
+        json_result(db.inner.changes_since(after, limit))
+    })
+}
+
+/// Prune through an acknowledged sequence; never automatically acknowledges data.
+/// # Safety
+/// `db` must be a live handle or NULL.
+#[no_mangle]
+pub unsafe extern "C" fn pv_prune_changes(db: *mut PvDb, through: u64) -> i32 {
+    guard(0, || {
+        transaction_control(db, "pv_prune_changes", |db| db.prune_changes(through))
+    })
 }
 
 /// Begin an explicit multi-statement transaction. Returns 1 on success and 0 on

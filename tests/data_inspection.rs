@@ -28,7 +28,7 @@ fn explain_matches_access_paths_without_reading_pages() {
     );
     assert!(
         operations(db.explain("SELECT * FROM t WHERE id > 0").unwrap())
-            .contains(&"table scan".into())
+            .contains(&"index range scan".into())
     );
     assert!(operations(
         db.query_with_limits(
@@ -38,7 +38,7 @@ fn explain_matches_access_paths_without_reading_pages() {
         )
         .unwrap()
     )
-    .contains(&"table scan".into()));
+    .contains(&"index range scan".into()));
     let ordered = operations(db.explain("SELECT * FROM t ORDER BY id LIMIT 1").unwrap());
     assert!(ordered.contains(&"ordered index scan".into()));
     assert!(!ordered.contains(&"sort".into()));

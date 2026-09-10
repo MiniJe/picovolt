@@ -6,6 +6,129 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-10
+
+### Added
+
+- Native `SharedDatabase` with concurrent immutable snapshots, FIFO writer
+  admission, cancellation, deadlines, and bounded reader/queue/image resources.
+- Checksummed incremental transaction journals, crash recovery, an ordered
+  physical change stream, checkpoints, and explicit acknowledgement/pruning.
+- Atomic parameter batches across Rust, C, Python, Go, JavaScript/WASM and CLI;
+  native commit-log configuration and diagnostics across maintained interfaces.
+
+### Changed
+
+- Logged workspaces use format 7 to persist the acknowledged commit-sequence
+  anchor. Baked formats 1-6 remain readable. Back up before upgrading writable
+  workspaces; 1.x binaries cannot open upgraded logged workspaces.
+- Go imports use `github.com/MiniJe/picovolt/bindings/go/v2`.
+- PRIMARY KEY and UNIQUE columns receive automatic indexes. Batch validation,
+  indexed range intersections, filtered joins, and grouped aggregates avoid
+  unnecessary scans and intermediate allocations.
+
+### Fixed
+
+- Missing unpruned commit history fails explicitly instead of reusing an
+  acknowledged sequence; pruning and rollback preserve the manifest anchor.
+- SQL-dump import skips complete trigger bodies, handles comments and nested
+  CASE expressions, and rejects incomplete dumps before changing data.
+- Registry starter execution passes the policy version to every dispatch path.
+- Workspace transaction locks explicitly unlock on drop so forked or duplicated
+  file descriptors cannot extend their lifetime and spuriously block reopening.
+
+Independent review and external migration/trial acceptance are deferred by the
+maintainer's release decision on 2026-09-10; they are not claimed as completed.
+Qualification, deferred independent/external evidence, and publication status are
+recorded in the [release ledger](docs/RELEASE_2_0.md). SQLite ecosystem support
+remains partial; this release does not claim drop-in compatibility or universal
+performance superiority.
+
+## [2.0.0-rc.3] - 2026-09-08
+
+### Fixed
+
+- Persist a format-7 commit sequence anchor in the manifest. Missing unpruned
+  history now rejects open, writes and change consumption instead of reusing an
+  acknowledged sequence. Pruning and crash rollback preserve the anchor.
+- Skip complete SQLite trigger bodies, including TEMP/TEMPORARY triggers and
+  nested CASE expressions. Handle SQL comments without discarding following
+  statements. Reject incomplete quotes, comments or triggers before importing.
+- Repair the registry starter runner's out-of-scope argument reference and test
+  all five dispatch paths plus explicit release-version policy.
+
+### Changed
+
+- Automatically index PRIMARY KEY and UNIQUE columns, including rebuilding
+  missing constraint indexes in writable legacy workspaces. Batch uniqueness
+  uses numeric-aware sets instead of repeatedly scanning previous input rows.
+- Intact legacy logs upgrade when their final change matches the database.
+  Ambiguous empty/pruned legacy logs require a verified backup; their lost
+  cursor cannot be reconstructed safely. Baked formats 1-6 remain readable.
+
+This is an unpublished candidate. Independent RC2 findings and deferred external
+and security gates remain recorded in the [release ledger](docs/RELEASE_2_0.md).
+
+## [2.0.0-rc.2] - 2026-09-08
+
+### Added
+
+- Atomic parameter batches across Rust, C, Python, Go, JavaScript/WASM and CLI.
+- Native commit-log configuration, status and pruning helpers in C, Python and
+  Go; `pv log-enable`, `pv log-status` and `pv batch` commands.
+- A shared usability guide and a standalone independent-review/external-trial
+  prompt with reproducible evidence requirements.
+
+### Changed
+
+- Compact binary physical log records retain the public schema-1 change API and
+  can read earlier JSON records. Avoid redundant baseline syncs and manifest
+  decoding while preserving the existing commit/recovery protocol.
+- Logged workspaces persist index definitions and rebuild all indexes in one
+  table scan on open. This reduces commit bytes in exchange for startup work;
+  baked images retain binary indexes.
+- Intersect indexed numeric ranges, including mixed integer/decimal comparisons
+  and BETWEEN; push eligible source predicates before joins.
+- Stream unfiltered grouped aggregates into per-group accumulators and serialize
+  binding results without constructing a second JSON value tree.
+- Avoid unnecessary page writes and repeated checksums on already dirty pages.
+
+### Fixed
+
+- Reject index creation on read-only handles and outside required logged
+  transactions. Regression tests cover rollback, numeric extremes, grouping,
+  time travel and bounded query work.
+
+This remains an unpublished candidate. See the [release ledger](docs/RELEASE_2_0.md)
+for measured performance and outstanding independent/external gates.
+
+## [2.0.0-rc.1] - 2026-09-08
+
+### Added
+
+- Parallel native snapshot transactions with reader-count and image-byte limits.
+- Bounded incremental page journals, checksummed crash recovery, ordered physical
+  change batches, explicit pruning and host-owned change sinks.
+- `pv changes` and `pv log-prune`, format-6 migration and a new golden image,
+  crash-boundary injection, transaction model tests and a contention benchmark.
+- A Linux ThreadSanitizer CI job; execution remains a release gate.
+
+### Changed
+
+- Shared filesystem workspaces enable the log by default and advance to format 6,
+  preventing 1.x binaries from bypassing recovery. In-memory snapshots stay in
+  memory. All existing 1.x images remain readable.
+- Reopened logged workspaces automatically wrap mutating SQL in transactions;
+  low-level mutation methods require explicit transactions on this surface.
+- Candidate package metadata is 2.0.0-rc.1. Maintained starters remain on their
+  verified registry baseline during unpublished development; release gates
+  continue to enforce exact package versions and integrity pins.
+
+This candidate is not a stable-release or security-audit claim. See the
+[2.0 release ledger](docs/RELEASE_2_0.md).
+
+### Earlier concurrency foundation
+
 ### Added
 
 - Added the native Rust `SharedDatabase` concurrency preview: a cloneable,

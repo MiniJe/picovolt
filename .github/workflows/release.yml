@@ -63,7 +63,7 @@ jobs:
       - name: Registry-only starter policy
         run: |
           python -m unittest discover -s scripts/tests -v
-          python scripts/check_registry_starters.py policy
+          python scripts/check_registry_starters.py policy --version "${GITHUB_REF_NAME#v}"
       - name: Exact npm package integrity
         shell: bash
         run: |

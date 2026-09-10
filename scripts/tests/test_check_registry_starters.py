@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from unittest import mock
+from scripts import check_registry_starters as runner
 
 from scripts.check_registry_starters import (
     CRATES_IO_SOURCE,
@@ -17,10 +18,26 @@ from scripts.check_registry_starters import (
     _retry,
     check_policy,
     project_version,
+    registry_version,
+    go_module,
 )
 
 
 class StarterPolicyTests(unittest.TestCase):
+    def test_run_routes_all_five_starters_without_cli_global_state(self):
+        with mock.patch.object(runner, "_run_rust") as rust, mock.patch.object(runner, "_run_npm") as npm, mock.patch.object(runner, "_run_python") as python, mock.patch.object(runner, "_run_go") as go:
+            runner.run_starters(runner.STARTER_NAMES, runner.registry_version())
+        self.assertEqual(rust.call_count, 1)
+        self.assertEqual(npm.call_count, 2)
+        self.assertEqual(python.call_count, 1)
+        self.assertEqual(go.call_count, 1)
+
+    def test_main_preserves_explicit_release_policy_version(self):
+        with mock.patch.object(runner, "check_policy") as policy, mock.patch.object(runner, "run_starters") as run:
+            self.assertEqual(runner.main(["run", "--version", "2.0.0", "--starter", "rust"]), 0)
+        policy.assert_called_once_with(runner.ROOT, "2.0.0")
+        run.assert_called_once_with(["rust"], "2.0.0", policy_version="2.0.0")
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="picovolt-starter-policy-")
         self.root = Path(self.temp.name)
@@ -54,12 +71,16 @@ class StarterPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(PolicyError, message):
             check_policy(self.root)
 
+    def test_go_semantic_import_version(self):
+        self.assertTrue(go_module("2.0.0-rc.1").endswith("/v2"))
+        self.assertFalse(go_module("1.9.0").endswith("/v2"))
+
     def test_current_starters_are_registry_only(self):
         check_policy(self.root)
 
     def test_rust_path_dependency_is_rejected(self):
         manifest = self.root / "starters/rust-cli/Cargo.toml"
-        version = project_version(self.root)
+        version = registry_version(self.root)
         manifest.write_text(
             manifest.read_text().replace(
                 f'picovolt = "={version}"', 'picovolt = { path = "../.." }'
@@ -69,7 +90,7 @@ class StarterPolicyTests(unittest.TestCase):
 
     def test_npm_file_dependency_is_rejected(self):
         manifest = self.root / "starters/node/package.json"
-        version = project_version(self.root)
+        version = registry_version(self.root)
         manifest.write_text(
             manifest.read_text().replace(
                 f'"picovolt": "{version}"', '"picovolt": "file:../.."'
@@ -117,7 +138,7 @@ class StarterPolicyTests(unittest.TestCase):
 
     def test_go_sum_must_pin_the_release(self):
         go_sum = self.root / "starters/go/go.sum"
-        version = project_version(self.root)
+        version = registry_version(self.root)
         go_sum.write_text(
             go_sum.read_text().replace(f" v{version} ", " v9.9.9 ")
         )
@@ -126,6 +147,20 @@ class StarterPolicyTests(unittest.TestCase):
     def test_version_mismatch_is_rejected(self):
         with self.assertRaises(PolicyError):
             check_policy(self.root, "9.9.9")
+
+    def test_release_gate_cannot_use_the_prerelease_starter_baseline(self):
+        if "-" in project_version(self.root):
+            with self.assertRaises(PolicyError):
+                check_policy(self.root, project_version(self.root))
+
+    def test_stable_release_cannot_use_an_older_starter_baseline(self):
+        current = project_version(self.root)
+        future = f"{int(current.split('.')[0]) + 1}.0.0"
+        for filename in ["Cargo.toml", "bindings/python/pyproject.toml", "bindings/python/picovolt/__init__.py"]:
+            path = self.root / filename
+            path.write_text(path.read_text().replace(current, future))
+        with self.assertRaises(PolicyError):
+            check_policy(self.root)
 
     def test_python_distribution_version_mismatch_is_rejected(self):
         pyproject = self.root / "bindings/python/pyproject.toml"

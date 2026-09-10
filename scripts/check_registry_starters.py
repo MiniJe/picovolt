@@ -64,6 +64,22 @@ def project_version(root: Path = ROOT) -> str:
     return match.group(1)
 
 
+def registry_version(root: Path = ROOT) -> str:
+    """Unpublished candidates keep runnable starters on a verified stable release."""
+    current = project_version(root)
+    baseline = root / "starters/REGISTRY_VERSION"
+    if "-" not in current or not baseline.is_file():
+        return current
+    version = baseline.read_text(encoding="utf-8").strip()
+    _require(bool(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version)), "invalid stable starter baseline")
+    return version
+
+
+def go_module(version: str) -> str:
+    major = int(version.split(".", 1)[0])
+    return GO_MODULE if major < 2 else f"{GO_MODULE}/v{major}"
+
+
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise PolicyError(message)
@@ -117,6 +133,7 @@ def _npm_policy(root: Path, name: str, version: str) -> None:
 def check_policy(root: Path = ROOT, version: Optional[str] = None) -> None:
     """Raise ``PolicyError`` unless every starter is registry-only and pinned."""
 
+    requested_version = version
     version = version or project_version(root)
 
     python_project = (root / "bindings/python/pyproject.toml").read_text(
@@ -153,6 +170,9 @@ def check_policy(root: Path = ROOT, version: Optional[str] = None) -> None:
         "go: copied C header differs from include/picovolt.h",
     )
 
+    if requested_version is None:
+        version = registry_version(root)
+
     cargo = (root / "starters/rust-cli/Cargo.toml").read_text(encoding="utf-8")
     match = re.search(r'(?m)^picovolt\s*=\s*"([^"]+)"\s*$', cargo)
     _require(bool(match), "rust: picovolt must use a simple registry version")
@@ -171,9 +191,10 @@ def check_policy(root: Path = ROOT, version: Optional[str] = None) -> None:
         "python: editable, VCS, or filesystem requirement found",
     )
 
+    module_name = go_module(version)
     go_mod = (root / "starters/go/go.mod").read_text(encoding="utf-8")
     go_requirement = re.search(
-        rf"(?m)^\s*require\s+{re.escape(GO_MODULE)}\s+(v\S+)\s*$", go_mod
+        rf"(?m)^\s*require\s+{re.escape(module_name)}\s+(v\S+)\s*$", go_mod
     )
     _require(bool(go_requirement), "go: public PicoVolt module requirement is missing")
     _require(go_requirement.group(1) == f"v{version}", f"go: module must be pinned to v{version}")
@@ -182,7 +203,7 @@ def check_policy(root: Path = ROOT, version: Optional[str] = None) -> None:
     go_sum_path = root / "starters/go/go.sum"
     _require(go_sum_path.is_file(), "go: go.sum is required")
     go_sum = go_sum_path.read_text(encoding="utf-8").splitlines()
-    module_prefix = f"{GO_MODULE} v{version}"
+    module_prefix = f"{module_name} v{version}"
     _require(
         any(line.startswith(f"{module_prefix} h1:") for line in go_sum),
         f"go: go.sum has no checksum for {module_prefix}",
@@ -328,7 +349,9 @@ def _run_rust(temp: Path, version: str) -> None:
     package = next((item for item in packages if item["name"] == "picovolt"), None)
     _require(package is not None, "rust: cargo metadata omitted picovolt")
     _require_crates_io_package(package, version)
-    _run(["cargo", "run", "--quiet", "--locked"], cwd=starter, env=env)
+    # A clean registry-only build also compiles dependencies on slower Windows
+    # hosts; keep a finite cold-build budget separate from ordinary commands.
+    _run(["cargo", "run", "--quiet", "--locked"], cwd=starter, env=env, timeout=900)
 
 
 def _run_npm(temp: Path, name: str, version: str) -> None:
@@ -417,7 +440,9 @@ if loaded.resolve(strict=True) != native.resolve(strict=True):
 
 distribution_version = importlib.metadata.version("picovolt")
 native_version = picovolt.version()
-if (distribution_version, picovolt.__version__, native_version) != (expected, expected, expected):
+# Wheel metadata normalizes the SemVer RC spelling under PEP 440.
+distribution_expected = expected.replace("-rc.", "rc")
+if (distribution_version, picovolt.__version__, native_version) != (distribution_expected, expected, expected):
     raise RuntimeError(
         "version mismatch: "
         f"metadata={distribution_version}, module={picovolt.__version__}, "
@@ -539,7 +564,7 @@ print(actual)
             "LD_LIBRARY_PATH": str(library_dir),
         }
     )
-    module = f"{GO_MODULE}@v{version}"
+    module = f"{go_module(version)}@v{version}"
     _retry(
         lambda: _run(
             ["go", "mod", "download", module],
@@ -556,15 +581,15 @@ print(actual)
         delay=30,
         max_elapsed=2400,
     )
-    details = _run(["go", "list", "-m", "-json", GO_MODULE], cwd=starter, env=env, capture=True)
+    details = _run(["go", "list", "-m", "-json", go_module(version)], cwd=starter, env=env, capture=True)
     resolved = json.loads(details.stdout)
     _require(resolved["Version"] == f"v{version}", "go: module proxy resolved the wrong version")
     _require("Replace" not in resolved, "go: module resolution used a replacement")
     _run(["go", "run", "."], cwd=starter, env=env)
 
 
-def run_starters(starters: Iterable[str], version: str) -> None:
-    check_policy(ROOT, version)
+def run_starters(starters: Iterable[str], version: str, *, policy_version: Optional[str] = None) -> None:
+    check_policy(ROOT, policy_version)
     with tempfile.TemporaryDirectory(prefix="picovolt-registry-starters-") as directory:
         temp = Path(directory)
         for starter in starters:
@@ -584,7 +609,7 @@ def run_starters(starters: Iterable[str], version: str) -> None:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("policy", "run"))
-    parser.add_argument("--version", help="release version; defaults to Cargo.toml")
+    parser.add_argument("--version", help="require exact release version; defaults to the published starter baseline during prerelease development")
     parser.add_argument(
         "--starter",
         action="append",
@@ -593,12 +618,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="starter to execute in run mode (repeatable; default: all)",
     )
     args = parser.parse_args(argv)
-    version = args.version or project_version()
+    if args.version is None and os.environ.get("GITHUB_REF", "").startswith("refs/tags/"):
+        args.version = project_version()
+    version = args.version or registry_version()
     try:
-        check_policy(ROOT, version)
+        check_policy(ROOT, args.version)
         print(f"starter policy passed for PicoVolt {version}")
         if args.mode == "run":
-            run_starters(args.starters or STARTER_NAMES, version)
+            run_starters(args.starters or STARTER_NAMES, version, policy_version=args.version)
     except (PolicyError, OSError, subprocess.SubprocessError) as error:
         print(f"starter gate failed: {error}", file=sys.stderr)
         return 1

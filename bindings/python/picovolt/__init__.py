@@ -37,7 +37,7 @@ __all__ = [
     "version",
     "__version__",
 ]
-__version__ = "1.9.0"
+__version__ = "2.0.0"
 
 
 class PicoVoltError(RuntimeError):
@@ -113,6 +113,16 @@ _lib.pv_rollback_transaction.restype = ctypes.c_int32
 _lib.pv_rollback_transaction.argtypes = [c_void_p]
 _lib.pv_in_transaction.restype = ctypes.c_int32
 _lib.pv_in_transaction.argtypes = [c_void_p]
+_lib.pv_execute_many.restype = c_void_p
+_lib.pv_execute_many.argtypes = [c_void_p, c_char_p, c_char_p]
+_lib.pv_enable_commit_log.restype = ctypes.c_int32
+_lib.pv_enable_commit_log.argtypes = [c_void_p, c_uint64, c_uint64, c_size_t]
+_lib.pv_commit_log_status.restype = c_void_p
+_lib.pv_commit_log_status.argtypes = [c_void_p]
+_lib.pv_changes_since.restype = c_void_p
+_lib.pv_changes_since.argtypes = [c_void_p, c_uint64, c_size_t]
+_lib.pv_prune_changes.restype = ctypes.c_int32
+_lib.pv_prune_changes.argtypes = [c_void_p, c_uint64]
 _lib.pv_export.restype = c_void_p
 _lib.pv_export.argtypes = [c_void_p, POINTER(c_size_t)]
 _lib.pv_import.restype = c_void_p
@@ -281,6 +291,63 @@ class Database:
         if not self._ptr:
             raise PicoVoltError("database is closed")
         return PreparedStatement(self, sql)
+
+    def _json_result(self, ptr):
+        if not ptr:
+            raise _last_error()
+        try:
+            return json.loads(ctypes.string_at(ptr).decode("utf-8"))
+        finally:
+            _lib.pv_string_free(ptr)
+
+    @staticmethod
+    def _unsigned(value, name, bits=64):
+        if not isinstance(value, int) or not 0 <= value < (1 << bits):
+            raise ValueError(f"{name} must be an unsigned {bits}-bit integer")
+        return value
+
+    def execute_many(self, sql: str, rows) -> int:
+        """Atomically execute INSERT/UPDATE/DELETE for parameter rows; return affected count.
+
+        Owns one transaction. Any row failure rolls the entire batch back.
+        Pass bounded batches when the input is large; parameters are materialized.
+        """
+        if not self._ptr:
+            raise PicoVoltError("database is closed")
+        payload = json.dumps([list(row) for row in rows]).encode("utf-8")
+        return self._json_result(_lib.pv_execute_many(self._ptr, sql.encode("utf-8"), payload))["mutated"]
+
+    def enable_commit_log(self, *, transaction_bytes=0, retained_bytes=0, retained_commits=0):
+        """Enable native synced transactions and physical changes; zero selects defaults."""
+        args = [self._unsigned(transaction_bytes, "transaction_bytes"),
+                self._unsigned(retained_bytes, "retained_bytes"),
+                self._unsigned(retained_commits, "retained_commits", ctypes.sizeof(c_size_t)*8)]
+        if not self._ptr:
+            raise PicoVoltError("database is closed")
+        if not _lib.pv_enable_commit_log(self._ptr, *args):
+            raise _last_error()
+
+    def commit_log_status(self):
+        """Return sequence cursors, retained bytes/count, and configured limits."""
+        if not self._ptr:
+            raise PicoVoltError("database is closed")
+        return self._json_result(_lib.pv_commit_log_status(self._ptr))
+
+    def changes_since(self, after_sequence: int, limit: int = 64):
+        """Read physical commits after a sequence; pruned cursors raise an error."""
+        self._unsigned(after_sequence, "after_sequence")
+        self._unsigned(limit, "limit", ctypes.sizeof(c_size_t)*8)
+        if not self._ptr:
+            raise PicoVoltError("database is closed")
+        return self._json_result(_lib.pv_changes_since(self._ptr, after_sequence, limit))
+
+    def prune_changes(self, acknowledged_sequence: int):
+        """Delete history only after all consumers have acknowledged this sequence."""
+        self._unsigned(acknowledged_sequence, "acknowledged_sequence")
+        if not self._ptr:
+            raise PicoVoltError("database is closed")
+        if not _lib.pv_prune_changes(self._ptr, acknowledged_sequence):
+            raise _last_error()
 
     def import_sql(self, dump: str) -> object:
         """Import a SQL dump (e.g. ``sqlite3 db .dump``). Returns a report dict

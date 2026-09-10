@@ -15,7 +15,7 @@
 //! only a head page id per table, O(tables), not O(pages), keeping per-insert
 //! manifest writes cheap.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+mod aggregate;
 mod explain;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -108,6 +109,8 @@ struct Manifest {
     #[serde(default)]
     format_version: u16,
     clock: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    commit_sequence: Option<u64>,
     page_count: u64,
     tables: Vec<TableMeta>,
     cas_hashes: Vec<String>,
@@ -153,6 +156,9 @@ fn check_header_manifest_version(header_version: u16, manifest: &Manifest) -> Re
 
 fn required_manifest_version(manifest: &Manifest) -> u16 {
     let mut required = FORMAT_VERSION_BASE;
+    if manifest.commit_sequence.is_some() {
+        required = crate::FORMAT_VERSION_COMMIT_ANCHOR;
+    }
     if manifest.index_region.is_some()
         || manifest
             .tables
@@ -589,6 +595,7 @@ pub enum Durability {
 enum TransactionRollback {
     Memory(Vec<u8>),
     Filesystem(PathBuf),
+    Journal(PathBuf),
 }
 
 struct ActiveTransaction {
@@ -596,8 +603,8 @@ struct ActiveTransaction {
     previous_autocommit: bool,
     previous_durability: Durability,
     /// Held from before backup preparation through commit or rollback. The file
-    /// itself persists, but the OS lock is released automatically on drop.
-    _filesystem_lock: Option<File>,
+    /// itself persists, but the OS lock is explicitly released on drop.
+    _filesystem_lock: Option<TransactionLock>,
 }
 
 /// A PicoVolt database handle.
@@ -617,23 +624,141 @@ pub struct Database {
     /// Cached write handle for the manifest, so autocommit doesn't reopen it.
     manifest_file: RefCell<Option<File>>,
     active_transaction: Option<ActiveTransaction>,
+    commit_log: Option<crate::CommitLogOptions>,
+    /// True only after this handle synced its current catalog and pages.
+    synced: Cell<bool>,
     #[cfg(feature = "enterprise")]
     enterprise: crate::enterprise::EnterpriseRuntime,
 }
 
 impl Database {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn is_memory_backed(&self) -> bool {
+        matches!(self.cache.borrow().backend(), Backend::Mem(_))
+    }
+    /// Enable bounded incremental filesystem transactions and physical changes.
+    /// Call before sharing the handle. Existing 1.x workspaces need no rewrite.
+    pub fn enable_commit_log(&mut self, options: crate::CommitLogOptions) -> Result<()> {
+        if self.in_transaction() {
+            return Err(PvError::Transaction(
+                "cannot configure log during a transaction".into(),
+            ));
+        }
+        if self.root.is_none() {
+            return Err(PvError::Transaction(
+                "commit log requires a filesystem workspace".into(),
+            ));
+        }
+        self.commit_log = Some(options.validate()?);
+        self.synced.set(false);
+        self.format_version_floor = self
+            .format_version_floor
+            .max(crate::FORMAT_VERSION_COMMIT_ANCHOR);
+        Ok(())
+    }
+
+    /// Read committed changes strictly after a sequence cursor. A pruned cursor
+    /// returns an error rather than silently skipping history.
+    pub fn changes_since(&self, after: u64, limit: usize) -> Result<Vec<crate::ChangeCommit>> {
+        let root = self.root.as_ref().ok_or_else(|| {
+            PvError::Transaction("change stream requires a filesystem workspace".into())
+        })?;
+        crate::journal::changes(root, after, limit)
+    }
+
+    /// Inspect log usage without decoding database rows or physical commits.
+    pub fn commit_log_status(&self) -> Result<crate::CommitLogStatus> {
+        let options = self.commit_log.ok_or_else(|| {
+            PvError::Transaction("commit log is not enabled; call enable_commit_log first".into())
+        })?;
+        let root = self.root.as_ref().ok_or_else(|| {
+            PvError::Transaction("commit log requires a filesystem workspace".into())
+        })?;
+        crate::journal::status(root, options)
+    }
+
+    /// Export a verified baked image with its exact following change cursor.
+    /// The sequential caller must own the workspace exclusively for this call.
+    pub fn export_checkpoint(
+        &mut self,
+        destination: impl AsRef<Path>,
+    ) -> Result<crate::SnapshotCheckpoint> {
+        if self.in_transaction() {
+            return Err(PvError::Transaction(
+                "cannot export an uncommitted checkpoint".into(),
+            ));
+        }
+        let root = self.root.clone().ok_or_else(|| {
+            PvError::Transaction("checkpoint requires a filesystem workspace".into())
+        })?;
+        let _lock = acquire_transaction_lock(&root)?;
+        let sequence = crate::journal::head(&root)?;
+        let verification_hash = self.verification_hash()?;
+        let destination = destination.as_ref();
+        let parent = destination
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        if fs::canonicalize(parent)?.starts_with(fs::canonicalize(&root)?) {
+            return Err(PvError::Transaction(
+                "checkpoint destination must be outside the live workspace".into(),
+            ));
+        }
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        self.bake_to_writer(temporary.as_file_mut())?;
+        temporary.as_file().sync_all()?;
+        if Database::open_prod(temporary.path())?.verification_hash()? != verification_hash {
+            return Err(PvError::Corruption(
+                "checkpoint verification mismatch".into(),
+            ));
+        }
+        temporary
+            .persist_noclobber(destination)
+            .map_err(|error| PvError::Io(error.error))?;
+        sync_directory(parent)?;
+        Ok(crate::SnapshotCheckpoint {
+            sequence,
+            transaction: self.current_tx(),
+            verification_hash,
+        })
+    }
+
+    /// Delete history acknowledged by every host-owned consumer.
+    pub fn prune_changes(&mut self, through: u64) -> Result<()> {
+        if self.in_transaction() {
+            return Err(PvError::Transaction(
+                "cannot prune during a transaction".into(),
+            ));
+        }
+        let root = self.root.as_ref().ok_or_else(|| {
+            PvError::Transaction("change stream requires a filesystem workspace".into())
+        })?;
+        let _lock = acquire_transaction_lock(root)?;
+        crate::journal::prune(root, through)
+    }
+
     /// Open (or create) a development workspace rooted at `path`.
     pub fn open_dev(path: impl AsRef<Path>) -> Result<Self> {
         let root = path.as_ref().to_path_buf();
         fs::create_dir_all(&root)?;
         let recovery_lock = acquire_transaction_lock(&root)?;
         recover_workspace_transaction(&root)?;
+        crate::journal::recover(&root)?;
         drop(recovery_lock);
+        let commit_log = root
+            .join(crate::COMMIT_LOG_DIR)
+            .exists()
+            .then(crate::CommitLogOptions::default);
         let manifest_path = root.join(MANIFEST_FILE);
 
         if manifest_path.exists() {
             let manifest: Manifest = serde_json::from_slice(&fs::read(&manifest_path)?)?;
             check_manifest_version(&manifest)?;
+            let commit_log = commit_log.or_else(|| {
+                manifest
+                    .commit_sequence
+                    .map(|_| crate::CommitLogOptions::default())
+            });
             let dev = DevStore::open(&root, manifest.page_count)?;
             let mut cache = PageCache::new(Backend::Dev(dev), DEFAULT_CACHE_PAGES);
             let cas = CasStore::load_dev(&root, &manifest.cas_hashes)?;
@@ -648,9 +773,17 @@ impl Database {
                 root: Some(root),
                 autocommit: true,
                 durability: Durability::Fast,
-                format_version_floor: manifest.format_version,
+                format_version_floor: if commit_log.is_some() {
+                    manifest
+                        .format_version
+                        .max(crate::FORMAT_VERSION_COMMIT_ANCHOR)
+                } else {
+                    manifest.format_version
+                },
                 manifest_file: RefCell::new(None),
                 active_transaction: None,
+                commit_log,
+                synced: Cell::new(false),
                 #[cfg(feature = "enterprise")]
                 enterprise: crate::enterprise::EnterpriseRuntime::default(),
             })
@@ -668,6 +801,8 @@ impl Database {
                 format_version_floor: FORMAT_VERSION_BASE,
                 manifest_file: RefCell::new(None),
                 active_transaction: None,
+                commit_log: None,
+                synced: Cell::new(false),
                 #[cfg(feature = "enterprise")]
                 enterprise: crate::enterprise::EnterpriseRuntime::default(),
             })
@@ -714,6 +849,8 @@ impl Database {
             format_version_floor: manifest.format_version,
             manifest_file: RefCell::new(None),
             active_transaction: None,
+            commit_log: None,
+            synced: Cell::new(false),
             #[cfg(feature = "enterprise")]
             enterprise: crate::enterprise::EnterpriseRuntime::default(),
         })
@@ -838,6 +975,8 @@ impl Database {
             format_version_floor: manifest.format_version,
             manifest_file: RefCell::new(None),
             active_transaction: None,
+            commit_log: None,
+            synced: Cell::new(false),
             #[cfg(feature = "enterprise")]
             enterprise: crate::enterprise::EnterpriseRuntime::default(),
         })
@@ -864,6 +1003,8 @@ impl Database {
             format_version_floor: FORMAT_VERSION_BASE,
             manifest_file: RefCell::new(None),
             active_transaction: None,
+            commit_log: None,
+            synced: Cell::new(false),
             #[cfg(feature = "enterprise")]
             enterprise: crate::enterprise::EnterpriseRuntime::default(),
         }
@@ -944,6 +1085,8 @@ impl Database {
             format_version_floor: manifest.format_version,
             manifest_file: RefCell::new(None),
             active_transaction: None,
+            commit_log: None,
+            synced: Cell::new(false),
             #[cfg(feature = "enterprise")]
             enterprise: crate::enterprise::EnterpriseRuntime::default(),
         })
@@ -1133,6 +1276,56 @@ impl Database {
         })
     }
 
+    /// Execute one INSERT/UPDATE/DELETE template for all parameter sets in one
+    /// atomic transaction. Returns the total affected rows. An active caller
+    /// transaction is rejected; any row failure rolls the entire batch back.
+    pub fn execute_many(&mut self, sql: &str, rows: &[Vec<Value>]) -> Result<usize> {
+        let prepared = self.prepare(sql)?;
+        let bound =
+            crate::engine::query::bind_params(sql, &vec![Value::Null; prepared.parameter_count])?;
+        if !matches!(
+            parse(&bound)?,
+            Statement::Insert { .. }
+                | Statement::InsertMany { .. }
+                | Statement::InsertSchema { .. }
+                | Statement::Update { .. }
+                | Statement::UpdateDefault { .. }
+                | Statement::Delete { .. }
+        ) {
+            return Err(PvError::Query(
+                "execute_many expects INSERT, UPDATE or DELETE".into(),
+            ));
+        }
+        if self.in_transaction() {
+            return Err(PvError::Transaction(
+                "execute_many owns its transaction; call it outside an active transaction".into(),
+            ));
+        }
+        for row in rows {
+            if row.len() != prepared.parameter_count {
+                return Err(PvError::Schema(format!(
+                    "batch row expects {} parameters, got {}",
+                    prepared.parameter_count,
+                    row.len()
+                )));
+            }
+        }
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        self.transaction(|db| {
+            let mut affected = 0usize;
+            for row in rows {
+                if let QueryResult::Mutated(count) = prepared.execute(db, row)? {
+                    affected = affected.checked_add(count).ok_or_else(|| {
+                        PvError::ResourceLimit("batch affected-row count overflow".into())
+                    })?;
+                }
+            }
+            Ok(affected)
+        })
+    }
+
     /// Run a closure atomically against an in-memory database or development
     /// workspace.
     ///
@@ -1192,7 +1385,9 @@ impl Database {
     /// Nested transactions are rejected. For a development workspace, this
     /// writes and syncs a recovery copy plus a marker before returning.
     pub fn begin_transaction(&mut self) -> Result<()> {
-        self.ensure_writable()?;
+        if !self.cache.borrow().is_writable() {
+            return Err(PvError::ReadOnly);
+        }
         if self.active_transaction.is_some() {
             return Err(PvError::Transaction(
                 "a transaction is already active".into(),
@@ -1204,28 +1399,38 @@ impl Database {
         let (rollback, filesystem_lock) = if let Some(root) = self.root.clone() {
             let lock = acquire_transaction_lock(&root)?;
             self.durability = Durability::Sync;
-            if let Err(error) = self.flush() {
-                self.durability = previous_durability;
-                return Err(error);
+            if !(self.commit_log.is_some() && self.synced.get()) {
+                if let Err(error) = self.flush() {
+                    self.durability = previous_durability;
+                    return Err(error);
+                }
             }
             self.durability = previous_durability;
-            let marker_preexisted = root.join(TRANSACTION_MARKER_FILE).exists();
-            if let Err(prepare_error) = prepare_workspace_transaction(&root) {
-                if marker_preexisted {
-                    // The failed begin did not create this recovery state. It
-                    // may belong to a crashed or independently managed writer,
-                    // so never discard it from this error path.
-                    return Err(prepare_error);
+            if let Some(options) = self.commit_log {
+                match self.cache.borrow().backend() {
+                    Backend::Dev(dev) => dev.begin_journal(options)?,
+                    _ => return Err(PvError::ReadOnly),
                 }
-                let cleanup = abort_workspace_transaction_preparation(&root);
-                return match cleanup {
+                (TransactionRollback::Journal(root), Some(lock))
+            } else {
+                let marker_preexisted = root.join(TRANSACTION_MARKER_FILE).exists();
+                if let Err(prepare_error) = prepare_workspace_transaction(&root) {
+                    if marker_preexisted {
+                        // The failed begin did not create this recovery state. It
+                        // may belong to a crashed or independently managed writer,
+                        // so never discard it from this error path.
+                        return Err(prepare_error);
+                    }
+                    let cleanup = abort_workspace_transaction_preparation(&root);
+                    return match cleanup {
                     Ok(()) => Err(prepare_error),
                     Err(cleanup_error) => Err(PvError::TransactionOutcomeUnknown(format!(
                         "transaction preparation failed ({prepare_error}); recovery-artifact cleanup also failed ({cleanup_error})"
                     ))),
                 };
+                }
+                (TransactionRollback::Filesystem(root), Some(lock))
             }
-            (TransactionRollback::Filesystem(root), Some(lock))
         } else {
             (TransactionRollback::Memory(self.bake_to_bytes()?), None)
         };
@@ -1256,7 +1461,9 @@ impl Database {
         let (filesystem_root, previous_durability) = match self.active_transaction.as_ref() {
             Some(state) => (
                 match &state.rollback {
-                    TransactionRollback::Filesystem(root) => Some(root.clone()),
+                    TransactionRollback::Filesystem(root) | TransactionRollback::Journal(root) => {
+                        Some(root.clone())
+                    }
                     TransactionRollback::Memory(_) => None,
                 },
                 state.previous_durability,
@@ -1273,7 +1480,18 @@ impl Database {
         }
 
         let commit_point_error = if let Some(root) = &filesystem_root {
-            match commit_workspace_transaction(root) {
+            let result = if matches!(
+                self.active_transaction.as_ref().map(|s| &s.rollback),
+                Some(TransactionRollback::Journal(_))
+            ) {
+                match self.cache.borrow().backend() {
+                    Backend::Dev(dev) => dev.commit_journal(),
+                    _ => Err(PvError::ReadOnly),
+                }
+            } else {
+                commit_workspace_transaction(root)
+            };
+            match result {
                 Ok(()) => None,
                 Err(error @ PvError::TransactionOutcomeUnknown(_)) => Some(error),
                 Err(error) => return Err(error),
@@ -1315,12 +1533,14 @@ impl Database {
             return Err(PvError::Transaction("no transaction is active".into()));
         };
 
+        let commit_log = self.commit_log;
         let rollback = (|| -> Result<()> {
             #[cfg(feature = "enterprise")]
             let enterprise = self.enterprise.clone();
             match state.rollback {
                 TransactionRollback::Memory(snapshot) => {
                     let mut restored = Database::import_bytes(&snapshot)?;
+                    restored.commit_log = commit_log;
                     restored.autocommit = state.previous_autocommit;
                     restored.durability = state.previous_durability;
                     #[cfg(feature = "enterprise")]
@@ -1335,15 +1555,32 @@ impl Database {
                     }
                     *self = restored;
                 }
-                TransactionRollback::Filesystem(root) => {
+                TransactionRollback::Filesystem(ref root)
+                | TransactionRollback::Journal(ref root) => {
+                    let root = root.clone();
+                    let journaled = matches!(state.rollback, TransactionRollback::Journal(_));
                     // Drop all cached filesystem handles before replacing live files.
                     *self = Database::open_memory();
-                    restore_workspace_transaction(&root)?;
+                    if journaled {
+                        if !root
+                            .join(crate::COMMIT_LOG_DIR)
+                            .join("active/header")
+                            .is_file()
+                        {
+                            return Err(PvError::TransactionOutcomeUnknown(
+                                "active page journal is missing".into(),
+                            ));
+                        }
+                        crate::journal::recover(&root)?;
+                    } else {
+                        restore_workspace_transaction(&root)?;
+                    }
                     // Recovery is complete and its marker is gone. Release the
                     // transaction lock before the normal open path acquires it for
                     // its own recovery check.
                     drop(state._filesystem_lock.take());
                     let mut restored = Database::open_dev(&root)?;
+                    restored.commit_log = commit_log;
                     restored.autocommit = state.previous_autocommit;
                     restored.durability = state.previous_durability;
                     #[cfg(feature = "enterprise")]
@@ -1444,6 +1681,20 @@ impl Database {
         statement: Statement,
         mut budget: Option<&mut QueryBudget>,
     ) -> Result<QueryResult> {
+        if self.commit_log.is_some()
+            && !self.in_transaction()
+            && !matches!(
+                &statement,
+                Statement::Select { .. }
+                    | Statement::SelectJoin { .. }
+                    | Statement::Explain { .. }
+                    | Statement::Begin
+                    | Statement::Commit
+                    | Statement::Rollback
+            )
+        {
+            return self.transaction(move |database| database.execute_statement(statement, budget));
+        }
         match statement {
             Statement::Explain { statement } => {
                 let result = self.explain_statement(&statement, budget.is_some())?;
@@ -1532,20 +1783,24 @@ impl Database {
                     budget.checkpoint()?;
                 }
                 self.ensure_writable()?;
-                self.validate_insert_values(&table, &values, &[], budget.as_deref_mut())?;
+                self.validate_insert_values(&table, &values, None, budget.as_deref_mut())?;
                 self.insert_validated(&table, values)?;
                 Ok(QueryResult::Mutated(1))
             }
             Statement::InsertMany { table, rows } => {
                 self.ensure_writable()?;
                 let count = rows.len();
-                let mut pending = Vec::with_capacity(count);
+                let mut pending = BTreeMap::new();
                 for values in &rows {
                     if let Some(budget) = budget.as_deref_mut() {
                         budget.materialize(values)?;
                     }
-                    self.validate_insert_values(&table, values, &pending, budget.as_deref_mut())?;
-                    pending.push(values.clone());
+                    self.validate_insert_values(
+                        &table,
+                        values,
+                        Some(&mut pending),
+                        budget.as_deref_mut(),
+                    )?;
                 }
                 if let Some(budget) = budget.as_deref_mut() {
                     budget.checkpoint()?;
@@ -1572,6 +1827,7 @@ impl Database {
                 self.ensure_writable()?;
                 let count = rows.len();
                 let mut normalized = Vec::with_capacity(count);
+                let mut pending = BTreeMap::new();
                 for row in rows {
                     let values =
                         self.normalize_insert_values(&table, target_columns.as_deref(), row)?;
@@ -1581,7 +1837,7 @@ impl Database {
                     self.validate_insert_values(
                         &table,
                         &values,
-                        &normalized,
+                        Some(&mut pending),
                         budget.as_deref_mut(),
                     )?;
                     normalized.push(values);
@@ -1639,6 +1895,19 @@ impl Database {
                 let grouped = !group_by.is_empty()
                     || projection_has_aggregate(&projection)
                     || having.is_some();
+                if grouped && filter.is_none() && having.is_none() {
+                    return self.select_streaming_aggregate(
+                        &table,
+                        before,
+                        projection_to_items(projection)?,
+                        group_by,
+                        order,
+                        distinct,
+                        limit,
+                        offset,
+                        budget.as_deref_mut(),
+                    );
+                }
                 // Fast path: a single-column `ORDER BY` on an indexed column with no
                 // `WHERE`, grouping, aggregate, or `DISTINCT` reads the ordered index
                 // in key order, skipping the sort and (with `LIMIT`) stopping early.
@@ -1837,6 +2106,10 @@ impl Database {
             name.to_string(),
             Table {
                 columns,
+                indexes: unique_columns
+                    .iter()
+                    .map(|column| (column.clone(), SecondaryIndex::new()))
+                    .collect(),
                 unique_columns: unique_columns.into_iter().collect(),
                 not_null_columns: not_null_columns.into_iter().collect(),
                 defaults,
@@ -1848,7 +2121,6 @@ impl Database {
                 cold_pages: 0,
                 compaction_cursor: None,
                 page_ids: RefCell::new(None),
-                indexes: BTreeMap::new(),
             },
         );
         self.maybe_flush()
@@ -1891,6 +2163,7 @@ impl Database {
         column: &str,
         mut budget: Option<&mut QueryBudget>,
     ) -> Result<()> {
+        self.ensure_writable()?;
         let mut index = SecondaryIndex::new();
         {
             let table = self
@@ -1922,7 +2195,7 @@ impl Database {
     /// Insert one row (a new MVCC version under a fresh transaction id).
     pub fn insert(&mut self, table_name: &str, values: Vec<Value>) -> Result<()> {
         self.ensure_writable()?;
-        self.validate_insert_values(table_name, &values, &[], None)?;
+        self.validate_insert_values(table_name, &values, None, None)?;
         self.insert_validated(table_name, values)
     }
 
@@ -1989,7 +2262,7 @@ impl Database {
         &self,
         table_name: &str,
         values: &[Value],
-        pending: &[Vec<Value>],
+        mut pending: Option<&mut BTreeMap<String, BTreeSet<Value>>>,
         mut budget: Option<&mut QueryBudget>,
     ) -> Result<()> {
         self.validate_row_constraints(table_name, values)?;
@@ -2001,20 +2274,19 @@ impl Database {
         for column in &unique_columns {
             let ix = col_pos(&columns, column)?;
             if values[ix] != Value::Null {
-                let mut duplicate_pending = false;
-                for row in pending {
+                if let Some(pending) = pending.as_deref_mut() {
                     if let Some(budget) = budget.as_deref_mut() {
                         budget.scan_row()?;
                     }
-                    if values_equal(&row[ix], &values[ix]) {
-                        duplicate_pending = true;
-                        break;
+                    if !pending
+                        .entry(column.clone())
+                        .or_default()
+                        .insert(join_key(&values[ix]))
+                    {
+                        return Err(PvError::Schema(format!(
+                            "duplicate value for unique column `{column}`"
+                        )));
                     }
-                }
-                if duplicate_pending {
-                    return Err(PvError::Schema(format!(
-                        "duplicate value for unique column `{column}`"
-                    )));
                 }
                 let predicate = Predicate::eq(column, values[ix].clone());
                 let duplicate_existing = !self
@@ -2239,8 +2511,13 @@ impl Database {
         offset: usize,
         mut budget: Option<&mut QueryBudget>,
     ) -> Result<QueryResult> {
-        let (source_columns, mut rows) =
-            self.select_filtered_bounded(&source.name, None, before, budget.as_deref_mut())?;
+        let source_filter = filter.and_then(|pred| source_predicate(pred, source.qualifier()));
+        let (source_columns, mut rows) = self.select_filtered_bounded(
+            &source.name,
+            source_filter.as_ref(),
+            before,
+            budget.as_deref_mut(),
+        )?;
         let mut columns: Vec<String> = source_columns
             .into_iter()
             .map(|column| format!("{}.{}", source.qualifier(), column))
@@ -2956,7 +3233,9 @@ impl Database {
     /// The pass uses the same crash-recoverable whole-workspace transaction as
     /// SQL mutations, so page replacement and catalog metadata publish atomically.
     pub fn compact_step(&mut self, max_pages: usize) -> Result<CompactionReport> {
-        self.ensure_writable()?;
+        if !self.cache.borrow().is_writable() {
+            return Err(PvError::ReadOnly);
+        }
         if self.in_transaction() {
             return Err(PvError::Transaction(
                 "cold-page compaction cannot run inside an active transaction".into(),
@@ -2977,6 +3256,7 @@ impl Database {
     }
 
     fn compact_step_transaction(&mut self, max_pages: usize) -> Result<CompactionReport> {
+        self.synced.set(false);
         let mut report = CompactionReport {
             examined_pages: 0,
             compacted_pages: 0,
@@ -3137,6 +3417,7 @@ impl Database {
     /// while preserving pages, indexes, CAS data, and complete MVCC history.
     /// Used by the format migrator; this does not rewrite or discard rows.
     pub fn upgrade_format_to_latest(&mut self) -> (u16, u16) {
+        self.synced.set(false);
         let before = effective_format_version(&self.tables, self.format_version_floor);
         self.format_version_floor = FORMAT_VERSION;
         (before, FORMAT_VERSION)
@@ -3203,7 +3484,11 @@ impl Database {
     // --- internals ----------------------------------------------------------
 
     fn ensure_writable(&self) -> Result<()> {
+        if self.commit_log.is_some() && !self.in_transaction() {
+            return Err(PvError::Transaction("low-level mutations on a logged workspace require an explicit transaction; SQL queries are atomic automatically".into()));
+        }
         if self.cache.borrow().is_writable() {
+            self.synced.set(false);
             Ok(())
         } else {
             Err(PvError::ReadOnly)
@@ -3243,11 +3528,26 @@ impl Database {
         let Some(root) = self.root.clone() else {
             return Ok(());
         };
-        let manifest = self.build_manifest(false, &IndexPlan::Json)?;
-        let json = serde_json::to_vec_pretty(&manifest)?;
-        if self.durability == Durability::Sync {
-            self.write_manifest_atomic(&root, &json)
+        // Logged workspaces already retain authoritative pages. Persist index
+        // definitions here and rebuild their in-memory maps on open, avoiding
+        // O(index entries) catalog rewrites for each tiny durable mutation.
+        // Baked production images still carry their compact binary indexes.
+        let plan = if self.commit_log.is_some() {
+            IndexPlan::Definitions
         } else {
+            IndexPlan::Json
+        };
+        let manifest = self.build_manifest(false, &plan)?;
+        // The manifest is on the commit path; whitespace multiplies write and
+        // retained-journal bytes without adding information. CLI inspection
+        // handles human-readable formatting separately.
+        let json = serde_json::to_vec(&manifest)?;
+        if self.durability == Durability::Sync {
+            self.write_manifest_atomic(&root, &json)?;
+            self.synced.set(true);
+            Ok(())
+        } else {
+            self.synced.set(false);
             self.write_manifest_fast(&root, &json)
         }
     }
@@ -3303,6 +3603,7 @@ impl Database {
             .iter()
             .map(|(name, t)| {
                 let (indexes, binary_indexes) = match plan {
+                    IndexPlan::Definitions => (Vec::new(), Vec::new()),
                     IndexPlan::Json => (
                         t.indexes
                             .iter()
@@ -3364,7 +3665,7 @@ impl Database {
         let (format_version, index_region) = match plan {
             // JSON indexes predate the binary index region and do not by
             // themselves advance the format version.
-            IndexPlan::Json => (schema_version, None),
+            IndexPlan::Json | IndexPlan::Definitions => (schema_version, None),
             IndexPlan::Binary { offset, len, .. } if *len > 0 => (
                 schema_version.max(FORMAT_VERSION_INDEX),
                 Some((*offset, *len)),
@@ -3374,6 +3675,19 @@ impl Database {
         Ok(Manifest {
             format_version,
             clock: self.txm.current(),
+            commit_sequence: if matches!(plan, IndexPlan::Definitions) {
+                match self.cache.borrow().backend() {
+                    Backend::Dev(dev) => Some(match dev.journal_sequence() {
+                        Some(sequence) => sequence,
+                        None => crate::journal::head(
+                            self.root.as_ref().expect("development workspace"),
+                        )?,
+                    }),
+                    _ => None,
+                }
+            } else {
+                None
+            },
             page_count,
             tables,
             cas_hashes,
@@ -3385,6 +3699,8 @@ impl Database {
 
 /// How a [`Manifest`] should persist secondary indexes.
 enum IndexPlan {
+    /// Authoritative pages rebuild these in-memory indexes at workspace open.
+    Definitions,
     /// JSON `(key, addresses)` pairs inline in the manifest (development
     /// workspaces, which have no monolith region).
     Json,
@@ -3500,7 +3816,23 @@ fn abort_workspace_transaction_preparation(root: &Path) -> Result<()> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn acquire_transaction_lock(root: &Path) -> Result<File> {
+struct TransactionLock(File);
+
+#[cfg(target_arch = "wasm32")]
+type TransactionLock = File;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for TransactionLock {
+    fn drop(&mut self) {
+        // On Unix, fork/dup shares the locked open-file description. Closing
+        // only our descriptor can leave the lock held until a concurrently
+        // spawned child execs. Release it at the end of the protected operation.
+        let _ = FileExt::unlock(&self.0);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn acquire_transaction_lock(root: &Path) -> Result<TransactionLock> {
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
@@ -3512,11 +3844,11 @@ fn acquire_transaction_lock(root: &Path) -> Result<File> {
             "workspace transaction is active in another handle or process: {error}"
         ))
     })?;
-    Ok(lock)
+    Ok(TransactionLock(lock))
 }
 
 #[cfg(target_arch = "wasm32")]
-fn acquire_transaction_lock(root: &Path) -> Result<File> {
+fn acquire_transaction_lock(root: &Path) -> Result<TransactionLock> {
     // Browser databases use the in-memory/OPFS wrapper and never enter this
     // filesystem transaction path. Keep the native API compilable for wasm.
     Ok(OpenOptions::new()
@@ -3950,75 +4282,269 @@ fn cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
 /// (ordered scan), directly or as an `AND` conjunct, never under `OR`. Returns
 /// `None` to fall back to a full scan. Candidates are re-checked against the full
 /// predicate by the caller, so an over-broad set is still correct.
+// Push only predicates explicitly qualified by the driving relation. Keep the
+// original post-join filter to preserve ambiguity errors and outer-join semantics.
+fn source_predicate(pred: &Predicate, qualifier: &str) -> Option<Predicate> {
+    let column = |name: &str| {
+        name.strip_prefix(qualifier)?
+            .strip_prefix('.')
+            .map(str::to_owned)
+    };
+    Some(match pred {
+        Predicate::Compare {
+            column: name,
+            op,
+            value,
+        } => Predicate::Compare {
+            column: column(name)?,
+            op: *op,
+            value: value.clone(),
+        },
+        Predicate::In {
+            column: name,
+            values,
+            negated,
+        } => Predicate::In {
+            column: column(name)?,
+            values: values.clone(),
+            negated: *negated,
+        },
+        Predicate::Between {
+            column: name,
+            low,
+            high,
+            negated,
+        } => Predicate::Between {
+            column: column(name)?,
+            low: low.clone(),
+            high: high.clone(),
+            negated: *negated,
+        },
+        Predicate::IsNull {
+            column: name,
+            negated,
+        } => Predicate::IsNull {
+            column: column(name)?,
+            negated: *negated,
+        },
+        Predicate::And(a, b) => match (
+            source_predicate(a, qualifier),
+            source_predicate(b, qualifier),
+        ) {
+            (Some(a), Some(b)) => Predicate::And(Box::new(a), Box::new(b)),
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            _ => return None,
+        },
+        Predicate::Or(a, b) => Predicate::Or(
+            Box::new(source_predicate(a, qualifier)?),
+            Box::new(source_predicate(b, qualifier)?),
+        ),
+    })
+}
+
+type IndexRange = (std::ops::Bound<Value>, std::ops::Bound<Value>);
+
+fn intersect_range(a: &IndexRange, b: &IndexRange) -> Option<IndexRange> {
+    use std::ops::Bound::{Excluded, Included, Unbounded};
+    fn lower(a: &std::ops::Bound<Value>, b: &std::ops::Bound<Value>) -> std::ops::Bound<Value> {
+        match (a, b) {
+            (Unbounded, _) => b.clone(),
+            (_, Unbounded) => a.clone(),
+            (Included(x) | Excluded(x), Included(y) | Excluded(y)) => {
+                if x > y {
+                    a.clone()
+                } else if y > x {
+                    b.clone()
+                } else if matches!(a, Excluded(_)) {
+                    a.clone()
+                } else {
+                    b.clone()
+                }
+            }
+        }
+    }
+    fn upper(a: &std::ops::Bound<Value>, b: &std::ops::Bound<Value>) -> std::ops::Bound<Value> {
+        match (a, b) {
+            (Unbounded, _) => b.clone(),
+            (_, Unbounded) => a.clone(),
+            (Included(x) | Excluded(x), Included(y) | Excluded(y)) => {
+                if x < y {
+                    a.clone()
+                } else if y < x {
+                    b.clone()
+                } else if matches!(a, Excluded(_)) {
+                    a.clone()
+                } else {
+                    b.clone()
+                }
+            }
+        }
+    }
+    let result = (lower(&a.0, &b.0), upper(&a.1, &b.1));
+    match (&result.0, &result.1) {
+        (Included(x) | Excluded(x), Included(y) | Excluded(y))
+            if x > y
+                || (x == y
+                    && (matches!(result.0, Excluded(_)) || matches!(result.1, Excluded(_)))) =>
+        {
+            None
+        }
+        _ => Some(result),
+    }
+}
+
+// SQL promotes Int/Decimal comparisons, while the persisted B-tree orders
+// variants separately. Search both numeric regions with exact rounded bounds.
+fn comparison_ranges(op: CompareOp, value: &Value) -> Option<Vec<IndexRange>> {
+    use std::ops::Bound::{Excluded, Included, Unbounded};
+    let raw = |v: Value| match op {
+        CompareOp::Eq => Some((Included(v.clone()), Included(v))),
+        CompareOp::Lt => Some((Unbounded, Excluded(v))),
+        CompareOp::Le => Some((Unbounded, Included(v))),
+        CompareOp::Gt => Some((Excluded(v), Unbounded)),
+        CompareOp::Ge => Some((Included(v), Unbounded)),
+        _ => None,
+    };
+    if matches!(value, Value::Null) {
+        return raw(Value::Null).map(|_| Vec::new());
+    }
+    let numeric = match value {
+        Value::Int(n) => Some(promote_int(*n)),
+        Value::Decimal(n) => Some(*n),
+        _ => None,
+    };
+    let Some(n) = numeric else {
+        return raw(value.clone()).map(|r| {
+            intersect_range(&r, &(Excluded(Value::Null), Unbounded))
+                .into_iter()
+                .collect()
+        });
+    };
+    raw(value.clone())?;
+    let mut result = Vec::new();
+    let floor = n.div_euclid(DECIMAL_DEN);
+    let remainder = n.rem_euclid(DECIMAL_DEN);
+    let min = i64::MIN as i128;
+    let max = i64::MAX as i128;
+    let integers = match op {
+        CompareOp::Eq if remainder == 0 && floor >= min && floor <= max => Some((floor, floor)),
+        CompareOp::Eq => None,
+        CompareOp::Lt => Some((min, floor - i128::from(remainder == 0))),
+        CompareOp::Le => Some((min, floor)),
+        CompareOp::Gt => Some((floor + 1, max)),
+        CompareOp::Ge => Some((floor + i128::from(remainder != 0), max)),
+        _ => None,
+    };
+    if let Some((lo, hi)) = integers {
+        let (lo, hi) = (lo.max(min), hi.min(max));
+        if lo <= hi {
+            result.push((
+                Included(Value::Int(lo as i64)),
+                Included(Value::Int(hi as i64)),
+            ));
+        }
+    }
+    if let Some(range) = intersect_range(
+        &raw(Value::Decimal(n))?,
+        &(
+            Included(Value::Decimal(i128::MIN)),
+            Included(Value::Decimal(i128::MAX)),
+        ),
+    ) {
+        result.push(range);
+    }
+    if matches!(op, CompareOp::Gt | CompareOp::Ge) {
+        result.push((Excluded(Value::Decimal(i128::MAX)), Unbounded));
+    }
+    Some(result)
+}
+
 fn index_candidates(
     table: &Table,
     pred: &Predicate,
     mut budget: Option<&mut QueryBudget>,
 ) -> Result<Option<Vec<RecordAddr>>> {
-    use std::ops::Bound::{Excluded, Included, Unbounded};
-    match pred {
-        Predicate::Compare { column, op, value } => {
-            let Some(idx) = table.indexes.get(column) else {
-                return Ok(None);
-            };
-            let v = || value.clone();
-            let candidates = match op {
-                CompareOp::Eq => Some(index_equality_candidates(
-                    idx,
-                    value,
-                    budget.as_deref_mut(),
-                )?),
-                // Value's persisted total order is type-strict, while SQL range
-                // comparisons promote Int/Decimal pairs by magnitude. A raw
-                // BTree range would therefore miss valid mixed-numeric rows.
-                // Bounded callers deliberately fall back to the streaming scan:
-                // SecondaryIndex::range materializes its full result before we
-                // can inspect its length, bypassing the allocation budget.
-                CompareOp::Lt
-                    if budget.is_none() && !matches!(value, Value::Int(_) | Value::Decimal(_)) =>
-                {
-                    Some(idx.range((Unbounded, Excluded(v()))))
-                }
-                CompareOp::Le
-                    if budget.is_none() && !matches!(value, Value::Int(_) | Value::Decimal(_)) =>
-                {
-                    Some(idx.range((Unbounded, Included(v()))))
-                }
-                CompareOp::Gt
-                    if budget.is_none() && !matches!(value, Value::Int(_) | Value::Decimal(_)) =>
-                {
-                    Some(idx.range((Excluded(v()), Unbounded)))
-                }
-                CompareOp::Ge
-                    if budget.is_none() && !matches!(value, Value::Int(_) | Value::Decimal(_)) =>
-                {
-                    Some(idx.range((Included(v()), Unbounded)))
-                }
-                // `!=` and `LIKE`/`NOT LIKE` aren't range-shaped, a scan is no worse.
-                CompareOp::Ne
-                | CompareOp::Lt
-                | CompareOp::Le
-                | CompareOp::Gt
-                | CompareOp::Ge
-                | CompareOp::Like
-                | CompareOp::NotLike => None,
-            };
-            Ok(candidates)
-        }
-        Predicate::And(a, b) => {
-            if let Some(candidates) = index_candidates(table, a, budget.as_deref_mut())? {
-                Ok(Some(candidates))
-            } else {
-                index_candidates(table, b, budget)
+    fn collect<'a>(pred: &'a Predicate, out: &mut Vec<(&'a str, Vec<IndexRange>)>) {
+        match pred {
+            Predicate::And(a, b) => {
+                collect(a, out);
+                collect(b, out);
             }
+            Predicate::Compare { column, op, value } => {
+                if let Some(ranges) = comparison_ranges(*op, value) {
+                    out.push((column, ranges));
+                }
+            }
+            Predicate::Between {
+                column,
+                low,
+                high,
+                negated: false,
+            } => {
+                if let (Some(lo), Some(hi)) = (
+                    comparison_ranges(CompareOp::Ge, low),
+                    comparison_ranges(CompareOp::Le, high),
+                ) {
+                    let ranges = lo
+                        .iter()
+                        .flat_map(|a| hi.iter().filter_map(|b| intersect_range(a, b)))
+                        .collect();
+                    out.push((column, ranges));
+                }
+            }
+            _ => {}
         }
-        // IN / BETWEEN / IS NULL aren't lowered to the index yet: a full scan is
-        // correct (the caller re-checks the full predicate), just not optimized.
-        Predicate::In { .. }
-        | Predicate::Between { .. }
-        | Predicate::IsNull { .. }
-        | Predicate::Or(_, _) => Ok(None),
     }
+    // Preserve the allocation-free counting path for the common single lookup.
+    if let Predicate::Compare {
+        column,
+        op: CompareOp::Eq,
+        value,
+    } = pred
+    {
+        if let Some(index) = table.indexes.get(column) {
+            return Ok(Some(index_equality_candidates(index, value, budget)?));
+        }
+    }
+    let mut conjuncts = Vec::new();
+    collect(pred, &mut conjuncts);
+    let mut by_column: BTreeMap<&str, Vec<IndexRange>> = BTreeMap::new();
+    for (column, ranges) in conjuncts {
+        if !table.indexes.contains_key(column) {
+            continue;
+        }
+        if let Some(existing) = by_column.get_mut(column) {
+            *existing = existing
+                .iter()
+                .flat_map(|a| ranges.iter().filter_map(|b| intersect_range(a, b)))
+                .collect();
+        } else {
+            by_column.insert(column, ranges);
+        }
+    }
+    let mut best = None;
+    for (column, ranges) in by_column {
+        if let Some(budget) = budget.as_deref_mut() {
+            budget.checkpoint()?;
+        }
+        let index = &table.indexes[column];
+        let count: usize = ranges.iter().map(|r| index.range_len(r.clone())).sum();
+        if best.as_ref().is_none_or(|(_, _, old)| count < *old) {
+            best = Some((index, ranges, count));
+        }
+    }
+    let Some((index, ranges, count)) = best else {
+        return Ok(None);
+    };
+    if let Some(budget) = budget {
+        budget.reserve_index_candidates(count)?;
+    }
+    let mut result = Vec::with_capacity(count);
+    for range in ranges {
+        index.append_range(range, &mut result);
+    }
+    Ok(Some(result))
 }
 
 /// Fetch every type representation equal under SQL numeric promotion. The
@@ -5574,20 +6100,38 @@ fn build_tables(
                     SecondaryIndex::from_pairs(pi.pairs.clone()),
                 );
             }
-        } else {
-            for column in &meta.indexed_columns {
-                let table = tables.get(&meta.name).expect("just inserted");
-                let col_ix = column_index(table, column)?;
-                let mut index = SecondaryIndex::new();
+        }
+        {
+            let table = tables.get(&meta.name).expect("just inserted");
+            let mut rebuilt = Vec::new();
+            let mut desired: BTreeSet<_> = meta.indexed_columns.iter().collect();
+            if writable {
+                desired.extend(meta.unique_columns.iter());
+            }
+            for column in desired {
+                if table.indexes.contains_key(column) {
+                    continue;
+                }
+                rebuilt.push((
+                    column.clone(),
+                    column_index(table, column)?,
+                    SecondaryIndex::new(),
+                ));
+            }
+            if !rebuilt.is_empty() {
                 scan(cache, table, cas, |addr, _env, row| {
-                    index.insert(&row[col_ix], addr);
+                    for (_, col_ix, index) in &mut rebuilt {
+                        index.insert(&row[*col_ix], addr);
+                    }
                     Ok(())
                 })?;
+            }
+            for (column, _, index) in rebuilt {
                 tables
                     .get_mut(&meta.name)
                     .expect("just inserted")
                     .indexes
-                    .insert(column.clone(), index);
+                    .insert(column, index);
             }
         }
     }
@@ -5597,6 +6141,23 @@ fn build_tables(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn transaction_lock_drop_releases_duplicated_description() {
+        let temp = tempfile::tempdir().unwrap();
+        let lock = acquire_transaction_lock(temp.path()).unwrap();
+        // A duplicate shares the open-file description, just like an inherited
+        // descriptor in the window between fork and exec on another thread.
+        let inherited = lock.0.try_clone().unwrap();
+        assert!(acquire_transaction_lock(temp.path()).is_err());
+        drop(lock);
+        let next = acquire_transaction_lock(temp.path()).unwrap();
+        drop(inherited);
+        assert!(acquire_transaction_lock(temp.path()).is_err());
+        drop(next);
+        assert!(acquire_transaction_lock(temp.path()).is_ok());
+    }
 
     #[test]
     fn dev_insert_select_and_reopen() {
@@ -6977,9 +7538,8 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, PvError::ResourceLimit(_)));
 
-        // The indexed predicate finds only one UPDATE target. The uniqueness
-        // validation still has to inspect the table, and must share the same
-        // scan budget instead of performing an unmetered second scan.
+        // Automatic constraint indexes keep uniqueness validation inside a
+        // small shared budget, even when the table exceeds that budget.
         let mut unique = Database::open_memory();
         unique
             .query("CREATE TABLE guarded (id PRIMARY KEY, marker)")
@@ -6990,14 +7550,13 @@ mod tests {
                 .unwrap();
         }
         unique.query("CREATE INDEX ON guarded (marker)").unwrap();
-        let error = unique
+        unique
             .query_with_limits(
                 "UPDATE guarded SET id = 100 WHERE marker = 0",
                 &[],
                 QueryLimits::new(3, usize::MAX, usize::MAX, None),
             )
-            .unwrap_err();
-        assert!(matches!(error, PvError::ResourceLimit(_)));
+            .unwrap();
         assert_eq!(unique.row_count("guarded", None).unwrap(), 10);
         assert_eq!(
             unique
@@ -7005,7 +7564,7 @@ mod tests {
                 .unwrap()
                 .rows()
                 .unwrap(),
-            &[vec![Value::Int(0)]]
+            &[vec![Value::Int(100)]]
         );
     }
 }

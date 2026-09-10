@@ -1,0 +1,18 @@
+{
+  "arch": "x86_64",
+  "final_insert_changed_pages": 1,
+  "initial_changed_pages": 24,
+  "platform": "windows",
+  "read_operations": 160,
+  "read_p50_ms": 0.0607,
+  "read_p95_ms": 0.1899,
+  "readers": 4,
+  "rows": 2000,
+  "snapshot_total_ms": 438.4509,
+  "write_operations": 40,
+  "write_p50_ms": 61.0542,
+  "write_p95_ms": 75.3451,
+  "source_commit": "eeb45c025b53f1b764d1e50774d6aaf700e17c77",
+  "version": "2.0.0-rc.2",
+  "evidence_note": "One local native concurrency envelope, not a repeated competitor comparison."
+}

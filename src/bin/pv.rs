@@ -22,6 +22,10 @@ fn main() {
 
 fn run(args: Vec<String>) -> CliResult<()> {
     match args.first().map(String::as_str) {
+        Some("--version") | Some("-V") => {
+            println!("pv {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         Some("query") if args.len() >= 3 => {
             let mut db = open_database(&args[1])?;
             print_result(db.query(&args[2..].join(" "))?)
@@ -53,6 +57,56 @@ fn run(args: Vec<String>) -> CliResult<()> {
         }
         Some("history") if args.len() >= 2 => history_command(&args[1..]),
         Some("diff") => diff_command(&args[1..]),
+        Some("changes") if args.len() == 3 || args.len() == 4 => {
+            let db = open_existing_database(&args[1])?;
+            let after = args[2].parse::<u64>()?;
+            let limit = args
+                .get(3)
+                .map(|s| s.parse::<usize>())
+                .transpose()?
+                .unwrap_or(64);
+            for change in db.changes_since(after, limit)? {
+                println!("{}", serde_json::to_string(&change)?);
+            }
+            Ok(())
+        }
+        Some("log-prune") if args.len() == 3 => {
+            let mut db = open_existing_database(&args[1])?;
+            db.prune_changes(args[2].parse::<u64>()?)?;
+            Ok(())
+        }
+        Some("log-enable") if args.len() == 2 => {
+            let mut db = open_database(&args[1])?;
+            db.enable_commit_log(picovolt::CommitLogOptions::default())?;
+            db.begin_transaction()?;
+            db.commit_transaction()?;
+            println!(
+                "commit log enabled; inspect usage with: pv log-status {}",
+                args[1]
+            );
+            Ok(())
+        }
+        Some("log-status") if args.len() == 2 => {
+            let db = open_existing_database(&args[1])?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&db.commit_log_status()?)?
+            );
+            Ok(())
+        }
+        Some("batch") if args.len() == 4 => {
+            let mut db = open_database(&args[1])?;
+            let rows: Vec<Vec<serde_json::Value>> = serde_json::from_slice(&fs::read(&args[3])?)?;
+            let rows = rows
+                .into_iter()
+                .map(|row| row.iter().map(json_to_value).collect())
+                .collect::<CliResult<Vec<Vec<Value>>>>()?;
+            println!(
+                "{}",
+                serde_json::json!({"mutated":db.execute_many(&args[2],&rows)?})
+            );
+            Ok(())
+        }
         Some("migrate") => migrate_command(&args[1..]),
         Some("compact") => compact_command(&args[1..]),
         Some("bake") if args.len() == 3 || (args.len() == 4 && args[3] == "--resume") => {
@@ -774,6 +828,11 @@ fn print_help() {
     println!("  pv inspect <database> [--json]");
     println!("  pv history <database> [--table name] [--limit transactions]");
     println!("  pv diff <database> <table> --from <tx> --to <tx> [--format csv|jsonl]");
+    println!("  pv changes <workspace> <after-sequence> [limit]");
+    println!("  pv log-prune <workspace> <acknowledged-sequence>");
+    println!("  pv log-enable <workspace>     enable synced physical commit logging");
+    println!("  pv log-status <workspace>     show usage, limits and sequence cursors");
+    println!("  pv batch <workspace> <SQL> <rows.json>  atomic parameterized batch");
     println!(
         "  pv migrate <source.pvdb> <destination.pvdb> [--dry-run] [--backup backup.pvdb] [--json]"
     );

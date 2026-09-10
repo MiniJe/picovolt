@@ -4,7 +4,7 @@ impl Database {
     /// Describe a SELECT's physical execution steps without reading table rows.
     /// The result has `step`, `operation`, and `detail` columns. Bounded query
     /// callers should use `query_with_limits("EXPLAIN ...", ...)` so the plan
-    /// reflects bounded execution's range-index fallback.
+    /// reflects bounded execution and join strategy.
     pub fn explain(&self, sql: &str) -> Result<QueryResult> {
         let statement = parse(sql)?;
         match statement {
@@ -16,7 +16,7 @@ impl Database {
     pub(super) fn explain_statement(
         &self,
         statement: &Statement,
-        bounded: bool,
+        _bounded: bool,
     ) -> Result<QueryResult> {
         let mut steps = Vec::<(&str, String)>::new();
         let (projection, distinct, filter, group_by, having, order, limit, offset, columns) =
@@ -92,7 +92,7 @@ impl Database {
                     }
                     let access = filter
                         .as_ref()
-                        .and_then(|p| index_access(&self.tables[table], p, bounded));
+                        .and_then(|p| index_access(&self.tables[table], p));
                     match access {
                         Some((column, operation)) => steps.push((
                             operation,
@@ -130,10 +130,24 @@ impl Database {
                         "snapshot",
                         format!("transaction {}", before.unwrap_or(self.current_tx())),
                     ));
+                    let pushed = filter
+                        .as_ref()
+                        .and_then(|p| source_predicate(p, source.qualifier()));
+                    let access = pushed
+                        .as_ref()
+                        .and_then(|p| index_access(&self.tables[&source.name], p));
                     steps.push((
-                        "table scan",
+                        access
+                            .map(|(_, operation)| operation)
+                            .unwrap_or("table scan"),
                         format!("{} AS {}", source.name, source.qualifier()),
                     ));
+                    if pushed.is_some() {
+                        steps.push((
+                            "source filter",
+                            "apply driving-relation predicates before joining".into(),
+                        ));
+                    }
                     for join in joins {
                         let right = self
                             .column_names(&join.table.name)?
@@ -340,26 +354,21 @@ fn plan_result(steps: Vec<(&str, String)>) -> QueryResult {
     }
 }
 
-fn index_access<'a>(
-    table: &'a Table,
-    pred: &'a Predicate,
-    bounded: bool,
-) -> Option<(&'a str, &'static str)> {
+fn index_access<'a>(table: &'a Table, pred: &'a Predicate) -> Option<(&'a str, &'static str)> {
     match pred {
-        Predicate::Compare { column, op, value } if table.indexes.contains_key(column) => {
-            match op {
-                CompareOp::Eq => Some((column, "index lookup")),
-                CompareOp::Lt | CompareOp::Le | CompareOp::Gt | CompareOp::Ge
-                    if !bounded && !matches!(value, Value::Int(_) | Value::Decimal(_)) =>
-                {
-                    Some((column, "index range scan"))
-                }
-                _ => None,
+        Predicate::Compare { column, op, .. } if table.indexes.contains_key(column) => match op {
+            CompareOp::Eq => Some((column, "index lookup")),
+            CompareOp::Lt | CompareOp::Le | CompareOp::Gt | CompareOp::Ge => {
+                Some((column, "index range scan"))
             }
-        }
-        Predicate::And(a, b) => {
-            index_access(table, a, bounded).or_else(|| index_access(table, b, bounded))
-        }
+            _ => None,
+        },
+        Predicate::And(a, b) => index_access(table, a).or_else(|| index_access(table, b)),
+        Predicate::Between {
+            column,
+            negated: false,
+            ..
+        } if table.indexes.contains_key(column) => Some((column, "index range scan")),
         _ => None,
     }
 }

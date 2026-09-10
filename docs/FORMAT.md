@@ -1,4 +1,4 @@
-# PicoVolt on-disk format (`FORMAT_VERSION = 5`)
+# PicoVolt on-disk format (`FORMAT_VERSION = 7`)
 
 This document specifies the byte-level layout of PicoVolt's persisted data. It is
 the reference for the **0.11.0 format freeze**: from this version on, a change to
@@ -394,3 +394,91 @@ maintenance metadata.
 
 Every one of these is a structured error, never a panic — see
 `tests/format_robustness.rs` for the corruption-injection coverage.
+
+
+## Format 6 and incremental recovery
+
+Format 6 retains the v5 page, CAS and binary-index layouts. Its version marker
+prevents a 1.x binary from opening a workspace without processing `.pv-log`
+recovery. Enabling the log raises the workspace format before preparing a
+transaction. Baked format-6 images contain committed data and no live log.
+All formats 1–5 remain readable; `pv migrate` upgrades verified images to 7.
+
+The log lives outside the baked image under `.pv-log/`:
+
+- `preparing/`: not active; no mutations may depend on it.
+- `active/header`: sequence, prior MVCC clock and prior allocated page count.
+- `active/before`: complete prior manifest, including the index catalog.
+- `active/undo/<20-digit-page-id>`: original bytes of a page, saved once before
+  its first overwrite. Partial `.tmp` files never permit a write.
+- `active/change`: compact binary physical changes in rc.2, with final pages,
+  new blobs, complete final manifest and before/after MVCC ids. Earlier schema-1
+  JSON records remain readable; the public `ChangeCommit` API remains schema 1.
+- `<20-digit-sequence>/`: a committed transaction, published by renaming
+  `active` after syncing pages, blobs, manifest and change record.
+- `checkpoint`: a little-endian u64 sequence pruned through; its durable atomic
+  replacement precedes history deletion so expired cursors fail explicitly.
+
+Each metadata/page file begins with the 32-byte BLAKE3 digest of its payload.
+Numeric entries have exactly 20 ASCII decimal digits. Readers reject malformed
+sizes, hashes, sequences and symlink entries. Hashes detect corruption; they
+are not authentication against an attacker with workspace write access.
+
+The rc.2 change payload starts with the eight bytes `PVCHG001`, followed by
+little-endian u64 sequence, before clock, after clock and manifest byte length;
+then raw UTF-8 manifest bytes. A u64 page count precedes `(u64 page id, 4096 raw
+bytes)` entries. A u64 blob count precedes `(64 ASCII hex hash bytes, u64 byte
+length, raw blob bytes)` entries. Counts and lengths are checked against the
+remaining payload before allocation; trailing bytes are rejected. The existing
+32-byte checksum prefix wraps this entire payload. The magic distinguishes
+binary payloads from legacy JSON; it does not change the publication boundary.
+RC.1 binaries cannot decode the new binary change records. Use matching rc.2
+binaries for recovery/change consumption; legacy JSON readability is an upgrade
+path, not a promise that earlier candidate binaries can consume newer logs.
+
+Logged workspace manifests in rc.2 retain `indexed_columns` and omit serialized
+index entries. Open rebuilds all these indexes in one scan per table, including
+historical row versions needed by MVCC. Unlogged workspaces still use JSON index
+entries; baked images still use their binary index region. The format-6 floor
+and existing definitions-only reader path preserve compatibility. Opening a
+logged indexed workspace therefore does more work than reading persisted
+indexes, while each commit avoids rewriting all index entries.
+
+Recovery validates all original pages before changing live data, restores them
+and the old manifest, then renames `active` to `discarded` before cleanup.
+Interrupted recovery can be repeated. New pages and blobs can remain unreachable
+after rollback; the manifest defines visibility. Log limits are independent of
+total workspace size and orphan-blob disk usage.
+
+Unix synchronizes directories. Windows synchronizes file contents and relies on
+rename for the process-crash commit boundary; portable Rust lacks the same
+portable directory-fsync power-loss guarantee. Tests exercise abrupt process
+death, not hardware power cuts. See [CONCURRENCY.md](CONCURRENCY.md).
+
+## Format 7: acknowledged commit sequence anchor
+
+Logged rc.3 workspace manifests contain `commit_sequence`, an unsigned 64-bit
+commit cursor. A transaction publishes its new anchor with the manifest before
+renaming the active journal. Until that rename, the checked `active/before`
+manifest supplies the committed anchor. Recovery restores the before-image and
+its anchor together. Earlier candidate binaries reject the format-7 marker.
+
+Open, transaction preparation, log status, change reads and pruning validate
+that every sequence after the checked pruning floor through the anchor exists.
+Losing the tail, a middle directory, the checkpoint or the whole log cannot
+silently lower the head. Expired directories left by interrupted pruning do not
+create gaps. A future change cursor is an error. Restore verified history when
+validation fails; deleting more log files cannot repair an acknowledged cursor.
+
+For an unanchored legacy log, upgrade requires a complete retained sequence
+chain whose final checked change contains the exact live manifest. Empty or
+fully pruned format-6 legacy histories have no verifiable anchor and are refused;
+use a verified backup/base image. This cannot certify data lost before the legacy
+snapshot itself was produced. Unlogged older workspaces remain supported.
+
+Baked images omit the workspace anchor and log: they are independent committed
+images. A host applying physical changes into a writable replica must persist
+the matching cursor/history as part of its own atomic publication. When upstream
+history is not retained, the checked `.pv-log/checkpoint` must equal the applied
+manifest anchor before opening the replica. The offline reconstruction test
+illustrates the representation, not a production replication protocol.

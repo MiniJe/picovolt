@@ -30,6 +30,10 @@ self.addEventListener("message", async ({ data }) => {
         result = { statementId, parameterCount: statement.parameterCount };
         break;
       }
+      case "executeMany":
+        if (!database) throw new Error("open the database first");
+        result = database.executeMany(data.sql, data.rows);
+        break;
       case "execute": {
         const statement = statements.get(data.statementId);
         if (!statement) throw new Error("unknown PicoVolt prepared statement");
