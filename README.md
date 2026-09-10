@@ -15,7 +15,7 @@ for qualification evidence and publication status.
 Start with the [2.0 guide for every maintained interface](docs/QUICKSTART_2_0.md)
 for atomic batches, persistence choices, log diagnostics and error recovery.
 The [standalone review prompt](docs/INDEPENDENT_REVIEW_PROMPT.md) defines an
-independent assessment and the external trials still required before release.
+independent assessment and external trials deferred beyond the 2.0 release.
 
 If PicoVolt is useful to you, consider starring the repository on GitHub. It is
 the simplest way to help others discover the project.

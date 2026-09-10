@@ -118,12 +118,12 @@ high-severity findings, and compatibility evidence. Current observations and
 the final release decision are tracked in the
 [1.9.0 qualification ledger](docs/RELEASE_1_9_SOAK.md).
 
-## 2.0 — A production concurrency contract (release candidate)
+## 2.0 — A production concurrency contract
 
 **Outcome:** PicoVolt can be shared safely by multiple application tasks without
 forcing callers to build their own ownership thread around the database.
 
-Implemented in **2.0.0-rc.1**:
+Implemented in **2.0.0**:
 
 - explicit shared database, read-transaction, and write-transaction handles;
 - concurrent immutable snapshot readers, FIFO writer admission, cancellation,
@@ -132,7 +132,7 @@ Implemented in **2.0.0-rc.1**:
   a durable, ordered physical change stream;
 - byte/count retention limits, explicit acknowledgement/pruning, and errors for
   expired cursors;
-- format-6 identification and first-party verified migration from the complete
+- format-7 commit-sequence anchoring and first-party verified migration from the complete
   1.x golden corpus, including optional exact backups;
 - a host-owned change sink for encrypted transport, replication and auditing.
 
@@ -144,7 +144,7 @@ Full distributed consensus, automatic conflict-free multi-device sync, and a
 hosted control plane are **not** required for 2.0. They can build on the ordered
 change stream later instead of delaying the core concurrency contract.
 
-Release gates:
+Release qualification:
 
 1. an independent security review of the format, recovery path, FFI boundary,
    and network surface;
@@ -152,6 +152,10 @@ Release gates:
 3. documented latency and memory envelopes under contention;
 4. migration rehearsals on real 1.x databases with verified backups;
 5. at least three external applications completing a release-candidate trial.
+
+On 2026-09-10 the maintainer authorized the 2.0.0 release with items 1, 4 and 5
+deferred. They remain follow-up work and are not represented as completed.
+Engineering checks and post-publication registry/provenance gates remain required.
 
 ## Work that runs alongside every release
 

@@ -6,7 +6,7 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
-## [2.0.0] - 2026-09-09
+## [2.0.0] - 2026-09-10
 
 ### Added
 
@@ -37,7 +37,9 @@ All notable changes to PicoVolt are documented here. The format is based on
 - Workspace transaction locks explicitly unlock on drop so forked or duplicated
   file descriptors cannot extend their lifetime and spuriously block reopening.
 
-Qualification, pending independent/external evidence, and publication status are
+Independent review and external migration/trial acceptance are deferred by the
+maintainer's release decision on 2026-09-10; they are not claimed as completed.
+Qualification, deferred independent/external evidence, and publication status are
 recorded in the [release ledger](docs/RELEASE_2_0.md). SQLite ecosystem support
 remains partial; this release does not claim drop-in compatibility or universal
 performance superiority.

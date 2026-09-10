@@ -1,10 +1,18 @@
 # PicoVolt 2.0 release ledger
 
-Current release preparation: **2.0.0**, unpublished, on PR #21.
-No stable tag or registry publication has occurred. The outstanding independent
-review and external-owner evidence below remain uncompleted.
+Current release: **2.0.0**, authorized for publication on 2026-09-10.
+Publication and registry verification are being completed through PR #21 and
+the tagged release workflows.
 
-## Stable preparation — 2026-09-09
+## Maintainer decision â€” 2026-09-10
+
+The maintainer explicitly approved publishing 2.0.0 with independent review and
+external migration/trial acceptance deferred. Those activities remain
+uncompleted follow-up work; this decision does not claim review or external
+acceptance evidence. Engineering checks, exact registry installs, native
+downloads, checksums, SBOMs and provenance remain required release checks.
+
+## Stable preparation â€” 2026-09-09
 
 - Correct the Linux CI lock-lifetime regression found on RC3 documentation
   revision `8720192`. Transaction guards now explicitly unlock their file before
@@ -36,7 +44,7 @@ review and external-owner evidence below remain uncompleted.
 | Performance budgets | [Benchmark smoke and all seven budgets passed](https://github.com/MiniJe/picovolt/actions/runs/34401528348) |
 | Extended fuzz/model/recovery | [All six fuzz shards and 5,000-operation/1,000-crash stress checks passed](https://github.com/MiniJe/picovolt/actions/runs/34401531502) |
 
-The initial hosted npm-package check correctly rejected the Windows-mounted
+For the September 9 preparation package, the initial hosted npm-package check correctly rejected the Windows-mounted
 tarball's executable permission bits. Packing identical contents on a native
 Linux filesystem with regular 0644 files reproduced the hosted checksum exactly:
 
@@ -50,8 +58,19 @@ and the downloaded hosted tarball matches the local tarball byte for byte
 This packaging-only follow-up
 does not change engine or binding contents. Exact registry installs, native
 release bundles, SBOMs and attestations remain post-tag workflow gates. The
-independent review and external-owner gates below have not been completed or
-waived by these engineering checks.
+independent review and external-owner activities below were not completed by
+these engineering checks; their deferral was explicitly authorized separately.
+
+## Final release package
+
+The authorization README update produces this final 2.0.0 npm package:
+
+```text
+sha512-+ZTOep8ANxJcI21WijHIRGlNa7+Dk1eGJhuCjuJVU4cXBM8LZFfGlxNfljDC7jRY0LmusSYkmONFHsrOjRVRQA==
+SHA-256 0b975b152f2c47fdc6f1097ba5347b1cf8a490be720442f5c3ce8b181a77f8f4
+```
+
+The tagged workflow must reproduce this integrity before publishing.
 
 ## RC3 qualification baseline
 
@@ -110,11 +129,11 @@ The [fresh independent follow-up prompt](INDEPENDENT_RC3_FOLLOWUP_PROMPT.md)
 pins RC3 and keeps the deferred review gates explicit. That follow-up has not
 been performed by the implementation agent.
 
-## Remaining stable-release gates
+## Deferred work and publication checks
 
 - Independent security review remains deferred. This correctness/performance
   follow-up does not complete that review.
-- Genuine external owner trials and real legacy database migrations still need
+- Genuine external owner trials and real legacy database migrations are deferred and still need
   provenance and recorded acceptance. Generated demos and third-party package
   compatibility probes do not establish owner adoption.
 - SQLite ecosystem compatibility is partial: the independent probes found
@@ -124,6 +143,7 @@ been performed by the implementation agent.
   verified through the release workflow. Prepared starters now pin 2.0.0 and
   become installable when those exact packages are published.
 
-No stable tag, registry publication or universal competitor-win claim follows
-from these local repairs. See [the interface guide](QUICKSTART_2_0.md) and
+The maintainer's explicit decision authorizes stable publication with the
+documented deferrals; no universal competitor-win claim is made.
+See [the interface guide](QUICKSTART_2_0.md) and
 [format-7 upgrade contract](FORMAT.md#format-7-acknowledged-commit-sequence-anchor).
