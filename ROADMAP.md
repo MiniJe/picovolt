@@ -172,6 +172,12 @@ Engineering checks and post-publication registry/provenance gates remain require
 
 ## Beyond 2.0
 
+The execution order is now detailed in [the Hub roadmap](docs/HUB_ROADMAP.md):
+verified immutable release preparation first, whole-file object-store delivery,
+tenant/entitlement controls and rollback next. The future proprietary release
+boundary and legacy maintenance policy are in [the transition](legal/TRANSITION.md).
+No future version or shipping date is announced by this roadmap.
+
 Candidates include encrypted storage, an object-store backend, managed immutable
 dataset distribution, change-stream replication, offline sync, full-text and
 vector indexes, and additional language adapters. They remain candidates until a

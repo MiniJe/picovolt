@@ -1,5 +1,23 @@
 # Support matrix
 
+## Maintenance transition — 2026-09-10
+
+Voluntary feature work and routine maintenance for published Apache release
+lines through 2.0.0 have ended, subject to existing agreements and mandatory
+obligations. No supported proprietary successor is available yet. Future
+proprietary support requires the applicable license and a separate agreement
+where paid support is offered; accepting terms alone promises no SLA.
+
+A 30-day migration assistance window begins only when that successor and its
+migration guide are available. Dates will be announced then. Existing Apache
+copies do not expire, require registration, send activity reports or lose data
+access. Historical export tools and compatibility fixtures remain available.
+See [the complete transition policy](../legal/TRANSITION.md).
+
+The matrix below records the existing release coverage, not an ongoing support
+commitment. Internal website runtime maintenance has a separate operational
+policy and does not create a public release support promise.
+
 This page states what PicoVolt's automated release and compatibility checks
 cover. A check mark means CI builds and tests that combination on every release;
 it is not a promise that every downstream environment is identical.
@@ -36,7 +54,9 @@ browsers isolate local-file origins; run `npm ci && npm run dev` in
   databases across the maintained bindings. Filesystem transactions currently
   create a complete rollback image, so their start cost scales with workspace
   size. Compound autocommit statements use that same safety boundary after
-  validation. An incremental commit log and savepoints remain 2.0 design goals.
+  validation. The 2.0 shared Rust API additionally provides snapshot readers,
+  writer admission and an incremental commit journal; see
+  [the concurrency contract](CONCURRENCY.md). Savepoints are not implemented.
 - A mutation-phase I/O failure aborts an explicit transaction so a partially
   applied statement cannot later be committed. Validation and resource-limit
   failures happen before mutation and leave the transaction open.

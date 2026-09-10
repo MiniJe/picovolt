@@ -2,7 +2,10 @@
 
 ## Status
 
-PicoVolt is young software with a stable 1.x API and file-format contract. The
+PicoVolt 2.0.0 is the latest published engine. Voluntary legacy maintenance has
+ended; see [the transition policy](legal/TRANSITION.md). Security reports remain
+welcome without registration or acceptance of new terms. Existing agreements
+and mandatory obligations prevail. The
 untrusted-input parsing paths have been hardened, reviewed, and fuzzed (see
 below), but the fuzzing has not run for long soak times and the code has not been
 independently audited or certified. Keep tested backups for data you cannot

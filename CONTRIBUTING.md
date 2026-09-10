@@ -5,6 +5,13 @@ supported APIs, formats and migration boundaries are documented in
 [the support guide](docs/SUPPORT.md). Contributions, bug reports, and questions
 are welcome.
 
+Voluntary legacy maintenance has ended as described in
+[the transition policy](legal/TRANSITION.md). Discuss proposed patches before
+investing in them; submission does not promise acceptance or a new release.
+This checkout remains Apache-2.0. Future proprietary components require an
+explicitly identified licensing scope and contribution agreement; DCO is not a
+copyright assignment.
+
 ## Development
 
 ```sh

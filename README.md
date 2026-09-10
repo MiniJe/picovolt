@@ -18,6 +18,13 @@ independent assessment and external trials deferred beyond the 2.0 release.
 
 ## Quick start
 
+**License and support transition (2026-09-10):** published versions through 2.0.0
+remain Apache-2.0; voluntary legacy maintenance has ended, subject to existing
+commitments and mandatory obligations. Future proprietary lifetime terms and a
+30-day migration assistance window are being prepared. No successor is available
+yet and no migration countdown has started. See [the transition](legal/TRANSITION.md)
+and [Hub priorities](docs/HUB_ROADMAP.md).
+
 ```sh
 cargo add picovolt@2.0.0
 ```
