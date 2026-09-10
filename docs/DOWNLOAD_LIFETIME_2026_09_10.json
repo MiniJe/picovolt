@@ -1,0 +1,41 @@
+{
+  "checked_at": "2026-09-10T13:09:36.838297+00:00",
+  "method": "Browser-visible third-party download viewers found through web search",
+  "reported_total": 6076,
+  "unit": "download events, not unique users",
+  "sources": [
+    {
+      "distribution": "npm",
+      "downloads": 3267,
+      "url": "https://npm-stat.com/charts.html?package=picovolt&from=2026-06-01&to=2026-09-10",
+      "period_start": "2026-06-01",
+      "period_end": "2026-09-10",
+      "package_created_at": "2026-06-22T15:03:31.630Z",
+      "coverage": "Since before package creation through available viewer data"
+    },
+    {
+      "distribution": "PyPI",
+      "downloads": 2345,
+      "url": "https://pepy.tech/projects/picovolt",
+      "coverage": "Explicit package-wide total; CI included; overlapping chart series not summed"
+    },
+    {
+      "distribution": "crates.io",
+      "downloads": 405,
+      "url": "https://img.shields.io/crates/d/picovolt.svg",
+      "coverage": "All-time total-download badge"
+    },
+    {
+      "distribution": "GitHub",
+      "downloads": 59,
+      "url": "https://majestic.bot/tools/github-release-downloads?repo=minije%2Fpicovolt",
+      "coverage": "All 25 current releases, filters disabled; assets only"
+    },
+    {
+      "distribution": "Go",
+      "downloads": null,
+      "url": "https://goproxy.cn/stats",
+      "coverage": "No complete public lifetime count established; v1 and v2 module stats returned 404, not zero"
+    }
+  ]
+}

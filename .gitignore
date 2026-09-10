@@ -32,6 +32,9 @@ dist/
 /.claude/
 
 # Local credentials and secret material
+.env
+.env.*
+!.env.example
 *.credentials
 *.secret
 *.token

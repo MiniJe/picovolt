@@ -1,7 +1,9 @@
 # Contributing to PicoVolt
 
-PicoVolt is a young embedded database engine with a stable 1.x API and file-format
-contract. Contributions, bug reports, and questions are all welcome.
+PicoVolt is an embedded database engine. The current stable release is 2.0;
+supported APIs, formats and migration boundaries are documented in
+[the support guide](docs/SUPPORT.md). Contributions, bug reports, and questions
+are welcome.
 
 ## Development
 
@@ -28,8 +30,8 @@ locally before opening a pull request.
 
 ## Versioning
 
-PicoVolt follows [Semantic Versioning](https://semver.org). While the project is
-stable 1.x, breaking public API or file-format changes require a major-version bump.
+PicoVolt follows [Semantic Versioning](https://semver.org). Breaking public API
+or file-format changes require a major-version bump.
 The daily minor and weekly major trains are release windows, not automatic
 renumbering: compatible value ships in a minor, breaking changes ship in a major,
 and a window is skipped rather than publishing an empty or unqualified release.

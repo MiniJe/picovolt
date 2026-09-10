@@ -3,7 +3,6 @@
 [![CI](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml/badge.svg)](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/picovolt.svg)](https://crates.io/crates/picovolt)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-![Version: 2.0](https://img.shields.io/badge/version-2.0-blue.svg)
 [![GitHub stars](https://img.shields.io/github/stars/MiniJe/picovolt?style=social)](https://github.com/MiniJe/picovolt)
 
 PicoVolt is an embedded database engine written in Rust. **2.0** provides
@@ -17,8 +16,27 @@ for atomic batches, persistence choices, log diagnostics and error recovery.
 The [standalone review prompt](docs/INDEPENDENT_REVIEW_PROMPT.md) defines an
 independent assessment and external trials deferred beyond the 2.0 release.
 
-If PicoVolt is useful to you, consider starring the repository on GitHub. It is
-the simplest way to help others discover the project.
+## Quick start
+
+```sh
+cargo add picovolt@2.0.0
+```
+
+```rust
+use picovolt::Database;
+
+fn main() -> Result<(), picovolt::PvError> {
+    let mut db = Database::open_memory();
+    db.query("CREATE TABLE notes (id, body)")?;
+    db.query("INSERT INTO notes VALUES (1, 'Hello, PicoVolt')")?;
+    println!("{:?}", db.query("SELECT * FROM notes")?);
+    Ok(())
+}
+```
+
+For other languages, see [Install and distribution](#install-and-distribution).
+
+## Storage model
 
 The engine decouples query logic from storage representation through a
 Virtualization Layer Engine (VLE) that shifts between two on-disk shapes:
@@ -37,7 +55,7 @@ MVCC-preserving columnar layout with packed decimal encoding.
 The engine is exercised by Rust unit and integration suites plus doctests
 and maintained-binding integration tests. CI also enforces formatting and
 warning-free Clippy builds on Linux and Windows. Shipped changes are tracked in
-[CHANGELOG.md](CHANGELOG.md), and the remaining work toward 2.0 is tracked in
+[CHANGELOG.md](CHANGELOG.md), and future work is tracked in
 [ROADMAP.md](ROADMAP.md).
 
 ### Module map
@@ -160,30 +178,30 @@ databases.
 Durability is selectable via `Database::set_durability` (`Fast` OS-cache default,
 or crash-safe `Sync` with fsync and an atomic manifest).
 
-Native Rust applications can begin adopting the 2.0 concurrency surface through
+Native Rust applications can use the 2.0 concurrency surface through
 `SharedDatabase`. It is a cloneable, bounded worker-thread coordinator with
 explicit read and write transaction handles, FIFO admission, cooperative
 cancellation, and rollback before failed or abandoned writes release the queue.
-The first slice serializes execution and preserves format v5; use clones of one
-coordinator rather than independently opening the same development workspace.
+Explicit readers execute against independent snapshots while one writer updates
+the workspace. Logged workspaces use format 7 with commit-sequence anchoring;
+use clones of one coordinator for a shared development workspace.
 See [Shared database concurrency](docs/CONCURRENCY.md) for the contract and
 current limits.
 
-Measured results and the methodology are in [BENCHMARKS.md](BENCHMARKS.md). In
-short, PicoVolt is a page-backed engine with O(1) filesystem appends (autocommit
-around 33k rows/s, linear), larger-than-RAM reads through a bounded buffer pool (a
-667-page dataset serves from a 16-page pool), ordered secondary indexes (point
-lookups roughly 6,100 times faster than a scan, plus range predicates), MVCC
-time-travel, opt-in crash-safe durability (`Durability::Sync`), and a fast
-compile-and-publish path (CAS dedup, cooperative columnar compression,
-memory-mappable single-file artifacts). Current limits include full-workspace
-transaction backups rather than an incremental WAL, adaptive index access within
-a left-deep equality-join plan rather than a general SQL planner, and no
-concurrent writers.
+Measured results and the methodology are in [BENCHMARKS.md](BENCHMARKS.md).
+These measurements describe specific workloads and versions, rather than a
+general throughput guarantee. PicoVolt supports bounded page-cache reads,
+ordered secondary indexes, MVCC time travel and single-file publication.
+Shared filesystem transactions use an incremental page journal; the legacy
+unlogged surface retains full rollback images. Current limits include snapshot
+copy costs, a focused SQL planner and a single writer. The [2.0 benchmark
+baseline](benchmarks/COMPETITORS_2_0_RC3.md) records candidate measurements and
+their limits; see [the concurrency contract](docs/CONCURRENCY.md) for current
+resource costs.
 
 ## Maintenance and migration
 
-Cold-page maintenance is explicit in 1.x so the host retains ownership of
+Cold-page maintenance is explicit so the host retains ownership of
 scheduling and threads:
 
 ```sh

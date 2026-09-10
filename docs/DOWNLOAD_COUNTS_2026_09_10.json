@@ -1,0 +1,525 @@
+{
+  "checked_at": "2026-09-10T12:42:10.105539+00:00",
+  "sources": {
+    "crates": {
+      "url": "https://crates.io/api/v1/crates/picovolt",
+      "data": {
+        "downloads": 405,
+        "recent_downloads": 405,
+        "max_stable_version": "2.0.0"
+      }
+    },
+    "npm": {
+      "url": "https://api.npmjs.org/downloads/point/last-month/picovolt",
+      "data": {
+        "downloads": 741,
+        "start": "2026-08-08",
+        "end": "2026-09-06",
+        "package": "picovolt"
+      }
+    },
+    "pypi": {
+      "url": "https://pypistats.org/api/packages/picovolt/recent",
+      "data": {
+        "data": {
+          "last_day": 0,
+          "last_month": 876,
+          "last_week": 876
+        },
+        "package": "picovolt",
+        "type": "recent_downloads"
+      }
+    },
+    "github": {
+      "url": "https://api.github.com/repos/MiniJe/picovolt/releases?per_page=100",
+      "data": {
+        "releases_returned": 25,
+        "complete": true,
+        "releases": [
+          {
+            "tag": "v2.0.0",
+            "downloads": 13,
+            "assets": [
+              {
+                "name": "picovolt-capi-linux-x86_64.tar.gz",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-capi-macos-arm64.tar.gz",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-capi-windows-x86_64.tar.gz",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-linux-x86_64.cdx.json",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-macos-arm64.cdx.json",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-server-linux-x86_64",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-server-macos-arm64",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-server-windows-x86_64.exe",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-windows-x86_64.cdx.json",
+                "downloads": 1
+              },
+              {
+                "name": "pv-linux-x86_64",
+                "downloads": 1
+              },
+              {
+                "name": "pv-macos-arm64",
+                "downloads": 1
+              },
+              {
+                "name": "pv-windows-x86_64.exe",
+                "downloads": 1
+              },
+              {
+                "name": "SHA256SUMS",
+                "downloads": 1
+              }
+            ]
+          },
+          {
+            "tag": "v1.9.0",
+            "downloads": 2,
+            "assets": [
+              {
+                "name": "picovolt-capi-linux-x86_64.tar.gz",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-capi-macos-arm64.tar.gz",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-capi-windows-x86_64.tar.gz",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-linux-x86_64.cdx.json",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-macos-arm64.cdx.json",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-server-linux-x86_64",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-server-macos-arm64",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-server-windows-x86_64.exe",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-windows-x86_64.cdx.json",
+                "downloads": 0
+              },
+              {
+                "name": "pv-linux-x86_64",
+                "downloads": 0
+              },
+              {
+                "name": "pv-macos-arm64",
+                "downloads": 0
+              },
+              {
+                "name": "pv-windows-x86_64.exe",
+                "downloads": 0
+              },
+              {
+                "name": "SHA256SUMS",
+                "downloads": 2
+              }
+            ]
+          },
+          {
+            "tag": "v1.8.1",
+            "downloads": 22,
+            "assets": [
+              {
+                "name": "picovolt-capi-linux-x86_64.tar.gz",
+                "downloads": 3
+              },
+              {
+                "name": "picovolt-capi-macos-arm64.tar.gz",
+                "downloads": 2
+              },
+              {
+                "name": "picovolt-capi-windows-x86_64.tar.gz",
+                "downloads": 2
+              },
+              {
+                "name": "picovolt-linux-x86_64.cdx.json",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-macos-arm64.cdx.json",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-server-linux-x86_64",
+                "downloads": 3
+              },
+              {
+                "name": "picovolt-server-macos-arm64",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-server-windows-x86_64.exe",
+                "downloads": 2
+              },
+              {
+                "name": "picovolt-windows-x86_64.cdx.json",
+                "downloads": 1
+              },
+              {
+                "name": "pv-linux-x86_64",
+                "downloads": 2
+              },
+              {
+                "name": "pv-macos-arm64",
+                "downloads": 2
+              },
+              {
+                "name": "pv-windows-x86_64.exe",
+                "downloads": 2
+              }
+            ]
+          },
+          {
+            "tag": "v1.8.0",
+            "downloads": 9,
+            "assets": [
+              {
+                "name": "picovolt-capi-linux-x86_64.tar.gz",
+                "downloads": 2
+              },
+              {
+                "name": "picovolt-capi-macos-arm64.tar.gz",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-capi-windows-x86_64.tar.gz",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-linux-x86_64.cdx.json",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-macos-arm64.cdx.json",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-server-linux-x86_64",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-server-macos-arm64",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-server-windows-x86_64.exe",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-windows-x86_64.cdx.json",
+                "downloads": 0
+              },
+              {
+                "name": "pv-linux-x86_64",
+                "downloads": 1
+              },
+              {
+                "name": "pv-macos-arm64",
+                "downloads": 0
+              },
+              {
+                "name": "pv-windows-x86_64.exe",
+                "downloads": 1
+              },
+              {
+                "name": "SHA256SUMS",
+                "downloads": 2
+              }
+            ]
+          },
+          {
+            "tag": "v1.7.1",
+            "downloads": 13,
+            "assets": [
+              {
+                "name": "picovolt-capi-linux-x86_64.tar.gz",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-capi-macos-arm64.tar.gz",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-capi-windows-x86_64.tar.gz",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-linux-x86_64.cdx.json",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-macos-arm64.cdx.json",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-server-linux-x86_64",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-server-macos-arm64",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-server-windows-x86_64.exe",
+                "downloads": 1
+              },
+              {
+                "name": "picovolt-windows-x86_64.cdx.json",
+                "downloads": 1
+              },
+              {
+                "name": "pv-linux-x86_64",
+                "downloads": 1
+              },
+              {
+                "name": "pv-macos-arm64",
+                "downloads": 1
+              },
+              {
+                "name": "pv-windows-x86_64.exe",
+                "downloads": 1
+              },
+              {
+                "name": "SHA256SUMS",
+                "downloads": 1
+              }
+            ]
+          },
+          {
+            "tag": "v1.7.0",
+            "downloads": 0,
+            "assets": [
+              {
+                "name": "picovolt-capi-linux-x86_64.tar.gz",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-capi-macos-arm64.tar.gz",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-capi-windows-x86_64.tar.gz",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-linux-x86_64.cdx.json",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-macos-arm64.cdx.json",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-server-linux-x86_64",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-server-macos-arm64",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-server-windows-x86_64.exe",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-windows-x86_64.cdx.json",
+                "downloads": 0
+              },
+              {
+                "name": "pv-linux-x86_64",
+                "downloads": 0
+              },
+              {
+                "name": "pv-macos-arm64",
+                "downloads": 0
+              },
+              {
+                "name": "pv-windows-x86_64.exe",
+                "downloads": 0
+              },
+              {
+                "name": "SHA256SUMS",
+                "downloads": 0
+              }
+            ]
+          },
+          {
+            "tag": "v1.6.0",
+            "downloads": 0,
+            "assets": [
+              {
+                "name": "picovolt-linux-x86_64.cdx.json",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-macos-arm64.cdx.json",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-server-linux-x86_64",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-server-macos-arm64",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-server-windows-x86_64.exe",
+                "downloads": 0
+              },
+              {
+                "name": "picovolt-windows-x86_64.cdx.json",
+                "downloads": 0
+              },
+              {
+                "name": "pv-linux-x86_64",
+                "downloads": 0
+              },
+              {
+                "name": "pv-macos-arm64",
+                "downloads": 0
+              },
+              {
+                "name": "pv-windows-x86_64.exe",
+                "downloads": 0
+              },
+              {
+                "name": "SHA256SUMS",
+                "downloads": 0
+              }
+            ]
+          },
+          {
+            "tag": "v1.5.0",
+            "downloads": 0,
+            "assets": []
+          },
+          {
+            "tag": "v1.3.0",
+            "downloads": 0,
+            "assets": []
+          },
+          {
+            "tag": "v1.2.0",
+            "downloads": 0,
+            "assets": []
+          },
+          {
+            "tag": "v1.1.0",
+            "downloads": 0,
+            "assets": []
+          },
+          {
+            "tag": "v1.0.0",
+            "downloads": 0,
+            "assets": []
+          },
+          {
+            "tag": "v0.12.0",
+            "downloads": 0,
+            "assets": []
+          },
+          {
+            "tag": "v0.11.0",
+            "downloads": 0,
+            "assets": []
+          },
+          {
+            "tag": "v0.10.1",
+            "downloads": 0,
+            "assets": []
+          },
+          {
+            "tag": "v0.10.0",
+            "downloads": 0,
+            "assets": []
+          },
+          {
+            "tag": "v0.9.0",
+            "downloads": 0,
+            "assets": []
+          },
+          {
+            "tag": "v0.8.0",
+            "downloads": 0,
+            "assets": []
+          },
+          {
+            "tag": "v0.7.0",
+            "downloads": 0,
+            "assets": []
+          },
+          {
+            "tag": "v0.6.0",
+            "downloads": 0,
+            "assets": []
+          },
+          {
+            "tag": "v0.5.0",
+            "downloads": 0,
+            "assets": []
+          },
+          {
+            "tag": "v0.4.0",
+            "downloads": 0,
+            "assets": []
+          },
+          {
+            "tag": "v0.3.0",
+            "downloads": 0,
+            "assets": []
+          },
+          {
+            "tag": "v0.2.0",
+            "downloads": 0,
+            "assets": []
+          },
+          {
+            "tag": "v0.1.0",
+            "downloads": 0,
+            "assets": []
+          }
+        ],
+        "asset_downloads": 59
+      }
+    }
+  },
+  "note": "Counters include automation and repeat downloads. Time windows differ; do not add them as unique users. GitHub counts release assets, including checksums and SBOMs, not source clones."
+}
