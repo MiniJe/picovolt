@@ -85,6 +85,28 @@ that narrow feature. Downloads are not evidence of willingness to pay.
 
 ## Next delivery order
 
+Implementation update, 2026-09-11: private Hub 0.5 is deployed on Hetzner with
+isolated native verification, workspace switching, account-bound invitations,
+publisher/reader roles, single-use recovery codes and license acceptance/order
+records. 36 service checks passed on the target host, including a separate
+root-only ownership test. The real workspace and restore drill remain healthy.
+Paid offers/card checkout are not enabled. Independent SMTP notifications and
+encrypted off-host backups are implemented but await production configuration.
+
+An opt-in Rust [full-text preview](FULL_TEXT_PREVIEW.md) now indexes a consistent
+query result, supports updates/removals and bounded BM25 all-term search. Three
+new tests and 22 related schema/data movement/inspection regression tests pass.
+The real 20-guide dataset was exercised. This local development preview has no
+published package, binding API, relevance benchmark or storage-format change.
+The released 2.0 engine and website runtime remain unchanged.
+
+Remaining release order: activate independent alerting and off-host recovery;
+complete a replacement-host restore drill; configure reviewed paid offers and
+payment/invoice/delivery integration; qualify search relevance/performance and
+bindings; then evaluate replication or storage expansion from actual demand.
+
+The original work breakdown below describes the acceptance gates for those areas.
+
 1. **Verifier isolation and failure alerts.** Run untrusted dataset inspection in
    a separate, resource-limited process boundary with no network or access to
    Hub credentials/metadata. Add off-host health and backup-failure notifications

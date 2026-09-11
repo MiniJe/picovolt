@@ -55,6 +55,8 @@ mod cancel;
 #[cfg(not(target_arch = "wasm32"))]
 mod concurrent;
 pub mod core;
+#[cfg(feature = "full-text")]
+pub mod search;
 pub mod engine;
 #[cfg(feature = "enterprise")]
 pub mod enterprise;
