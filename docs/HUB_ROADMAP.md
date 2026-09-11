@@ -67,8 +67,11 @@ controls. Do not put signing keys or customer data in the static website.
 The deployed pilot includes native PicoVolt metadata, private releases, channels,
 backups with restore checks, a redesigned console and verified client activation.
 Tamper, interruption, stale-revision and wrong-key tests pass.
-Next implementation priorities: verifier process isolation, independent failure
-notifications, scoped machine credentials and full account export. These precede
+Hub 0.4 implements project-scoped, expiring delivery credentials with revocation,
+portable workspace exports (original datasets, manifests, channels and activity),
+and cursor-based history beyond the old list limits. These remain within the
+single-node private pilot. Next implementation priorities: verifier process
+isolation, independent failure notifications and documented account recovery. These precede
 public signup, billing and storage expansion. Before paid pilot: verify the licensor record, complete contracts/privacy,
 meter costs and assign incident/restore ownership. Before general
 availability: tenant-isolation review, restore rehearsal, alerts, quotas, abuse
@@ -78,3 +81,26 @@ Interview application teams before expanding. First business gate: one paying
 pilot completing two releases and a rollback. If they only need a one-time file
 download, do not build a fleet platform. If search blocks adoption, prioritize
 that narrow feature. Downloads are not evidence of willingness to pay.
+
+
+## Next delivery order
+
+1. **Verifier isolation and failure alerts.** Run untrusted dataset inspection in
+   a separate, resource-limited process boundary with no network or access to
+   Hub credentials/metadata. Add off-host health and backup-failure notifications
+   with an agreed operator destination. Prove a failing verifier and failed
+   backup cannot quietly pass. This is the next gate before outside uploads.
+2. **Account recovery and team membership.** Verified owner onboarding, recovery,
+   owner/publisher/reader roles, removal and an auditable invitation lifecycle.
+   Machine delivery keys are implemented separately and do not substitute for
+   human identity. Keep private pilots operator-provisioned until this is ready.
+3. **License receipts and billing.** Pin the exact issued artifact, terms digest,
+   contracting party and acceptance record. Then add invoices, cancellation,
+   entitlement checks and a written support scope for the first paid pilot.
+4. **Storage resilience.** Add a private off-host recovery destination on
+   Hetzner, automate restore drills and exercise loss of the application server.
+   Add object storage only when measured delivery/storage demand justifies it.
+5. **Engine features driven by a real dataset.** Full-text search for an actual
+   catalog/docs corpus comes before vector indexes. Encrypted backups precede
+   broader at-rest encryption. Replication/offline sync follow only after gap,
+   recovery, conflict and retention contracts have application tests.
