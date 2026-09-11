@@ -7,6 +7,8 @@ import zipfile
 
 root = Path(__file__).resolve().parents[1]
 out = root / 'artifacts'
+source_archive = out / 'picovolt-2.1.0-private-source.zip'
+subprocess.run(['git', 'archive', '--format=zip', '--output=' + str(source_archive), 'HEAD'], cwd=root, check=True)
 metadata = json.loads(subprocess.check_output(
     ['cargo', 'metadata', '--locked', '--format-version', '1', '--features', 'capi,data-tools,wasm'], cwd=root))
 inventory = []
@@ -48,7 +50,7 @@ with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as output:
     for name, data in notices.items():
         output.writestr(name, data)
     output.writestr('README.txt', 'PicoVolt 2.1.0 private qualification build.\nRead docs/RELEASE_2_1.md and LICENSE before any delivery.\nRun pv.exe --version; see docs/RETRIEVAL_2_1.md for retrieval.\n')
-artifacts = [archive, out / 'picovolt-2.1.0.tgz',
+artifacts = [archive, source_archive, out / 'picovolt-2.1.0.tgz',
              out / 'python-2.1.0/picovolt-2.1.0-py3-none-win_amd64.whl',
              out / 'picovolt-2.1.0-dependencies.json']
 manifest = {'version': '2.1.0', 'availability': 'private qualification; not a public offer',
