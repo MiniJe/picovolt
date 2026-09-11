@@ -37,7 +37,7 @@ archive = out / 'picovolt-2.1.0-private-windows-x86_64.zip'
 files = {
     'pv.exe': 'target/release/pv.exe',
     'picovolt.dll': 'target/release/picovolt.dll',
-    'picovolt.dll.lib': 'target/release/picovolt.dll.lib',
+    'libpicovolt.dll.a': 'target/release/libpicovolt.dll.a',
     'include/picovolt.h': 'include/picovolt.h',
     **{name: name for name in ('LICENSE', 'NOTICE', 'legal/APACHE-2.0-LEGACY.txt',
        'legal/COMPONENT-SCOPE-2.1.md', 'legal/TRANSITION.md',
