@@ -1,11 +1,13 @@
-"""Complete a wasm-pack directory for private 2.1 qualification (never publish)."""
+"""Complete a wasm-pack directory for private qualification (never publish)."""
 from pathlib import Path
 import json
 import shutil
 import sys
+import tomllib
 
 root = Path(__file__).resolve().parents[1]
-directory = root / (sys.argv[1] if len(sys.argv) > 1 else 'artifacts/npm-2.1.0')
+version = tomllib.loads((root / 'Cargo.toml').read_text())['package']['version']
+directory = root / (sys.argv[1] if len(sys.argv) > 1 else 'artifacts/npm-' + version)
 package = json.loads((directory / 'package.json').read_text())
 package.update(private=True, license='LicenseRef-PicoVolt-Proprietary-1.0')
 package['exports'] = {'.': './' + package.get('module', 'picovolt.js'),

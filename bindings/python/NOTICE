@@ -5,7 +5,7 @@ This product includes software developed by the PicoVolt Authors.
 
 PicoVolt releases through 2.0.0 were distributed under Apache License 2.0.
 That license and its continuing grants are preserved in legal/APACHE-2.0-LEGACY.txt.
-The 2.1.0 development line is prepared for proprietary distribution under LICENSE;
+The 2.1.0 and later development line is prepared for proprietary distribution under LICENSE;
 it does not revoke separately obtained rights in earlier Apache components.
 
 This software depends on third-party crates distributed under their own
@@ -13,3 +13,5 @@ licenses, including but not limited to:
 thiserror, blake3, memmap2, serde, serde_json, and wasmi. Their license
 texts are reproduced in the source distributions of those crates; see each
 crate's repository for details.
+
+2.2 encryption/hybrid changes are described in legal/COMPONENT-SCOPE-2.2.md.

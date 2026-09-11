@@ -2,7 +2,7 @@ import pytest
 from picovolt import Database,PicoVoltError,version
 
 def test_retrieval_uses_native_engine_and_preserves_error_contract():
-    assert version()=='2.1.0'
+    assert version()=='2.2.0'
     with Database.open_memory() as db:
         db.query('CREATE TABLE docs(id,body,vector)')
         db.query('INSERT INTO docs VALUES(?,?,?)',[1,'Restore a verified backup','[1,0]'])

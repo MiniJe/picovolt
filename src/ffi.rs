@@ -1,3 +1,4 @@
+// Modified for PicoVolt 2.2.0 encryption/hybrid retrieval; see legal/COMPONENT-SCOPE-2.2.md.
 // Modified for PicoVolt 2.1.0 retrieval, 2026-09-11. See legal/COMPONENT-SCOPE-2.1.md.
 //! C ABI (enabled by the `capi` feature).
 //!
@@ -33,6 +34,10 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
 use crate::{Database, PreparedStatement};
+
+/// Native encrypted vault handles (2.2+).
+#[cfg(all(feature = "encryption", not(target_arch = "wasm32")))]
+pub mod vault;
 
 /// Opaque handle to a PicoVolt database. Allocate with `pv_open_*`, free with
 /// `pv_close`.

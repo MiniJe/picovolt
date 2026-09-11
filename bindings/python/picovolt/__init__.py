@@ -1,3 +1,4 @@
+# Modified for PicoVolt 2.2.0 encryption/hybrid retrieval; see legal/COMPONENT-SCOPE-2.2.md.
 # Modified for PicoVolt 2.1.0 retrieval, 2026-09-11. See legal/COMPONENT-SCOPE-2.1.md.
 """Python bindings for the PicoVolt embedded database engine, via its C ABI.
 
@@ -38,7 +39,7 @@ __all__ = [
     "version",
     "__version__",
 ]
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 
 class PicoVoltError(RuntimeError):

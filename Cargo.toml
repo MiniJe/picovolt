@@ -1,6 +1,6 @@
 [package]
 name = "picovolt"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2021"
 rust-version = "1.86"
 description = "Embedded SQL database with MVCC history and single-file deployment"
@@ -32,7 +32,9 @@ name = "pv"
 path = "src/bin/pv.rs"
 
 [features]
-default = ["full-text", "vector-search"]
+default = ["full-text", "vector-search", "encryption"]
+# Native authenticated snapshot/vault encryption. No plaintext disk staging.
+encryption = ["dep:chacha20poly1305", "dep:argon2", "dep:getrandom", "dep:zeroize"]
 # Application-owned retrieval indexes; no on-disk format change.
 full-text = []
 vector-search = []
@@ -74,6 +76,8 @@ rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"
 ed25519-dalek = { version = "3", optional = true }
 getrandom = { version = "0.4", optional = true }
 zeroize = { version = "1", optional = true }
+chacha20poly1305 = { version = "0.10.1", default-features = false, features = ["alloc"], optional = true }
+argon2 = { version = "0.5.3", default-features = false, features = ["alloc", "zeroize"], optional = true }
 
 [dev-dependencies]
 wat = "1"

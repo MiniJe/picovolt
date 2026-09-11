@@ -6,6 +6,18 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.2.0] - Private qualification, 2026-09-12
+
+- Native XChaCha20-Poly1305 encrypted snapshots and single-writer vaults with
+  atomic ciphertext commits and in-memory transaction candidates.
+- Raw-key generation, fixed-profile Argon2id passwords, key rotation, verified
+  encrypted backups, restore and CLI inspection/verification.
+- Vault access through Rust, C, Python and Go; filtered hybrid text/vector
+  retrieval across existing retrieval interfaces, including JavaScript/WASM.
+- Clear encryption boundaries and private release controls; see
+  [qualification](docs/RELEASE_2_2.md) and [encryption](docs/ENCRYPTION_2_2.md).
+
+
 ## [2.1.0] - Private qualification, 2026-09-11
 
 - Ranked BM25 full-text retrieval and exact cosine/squared-Euclidean vector

@@ -99,6 +99,11 @@ JavaScript/WASM and CLI. See [API and bounds](RETRIEVAL_2_1.md) and the
 [qualification ledger](RELEASE_2_1.md). Indexes are application-owned and rebuilt
 per JSON retrieval call. Production stays on 2.0; 2.1 is not publicly published.
 
+Private 2.2.0 adds [encrypted native vaults](ENCRYPTION_2_2.md), key rotation,
+verified backup/restore and [hybrid retrieval](HYBRID_2_2.md). These are isolated
+engine features; production Hub migration and independent cryptographic review
+remain separate gates. See [qualification](RELEASE_2_2.md).
+
 Remaining release order: activate independent alerting and off-host recovery;
 complete a replacement-host restore drill; configure reviewed paid offers and
 payment/invoice/delivery integration; qualify search relevance/performance at customer scale; then evaluate replication or storage expansion from actual demand.

@@ -1,3 +1,4 @@
+// Modified for PicoVolt 2.2.0 encryption/hybrid retrieval; see legal/COMPONENT-SCOPE-2.2.md.
 // Modified for PicoVolt 2.1.0 retrieval, 2026-09-11. See legal/COMPONENT-SCOPE-2.1.md.
 //! `pv` is the batteries-included PicoVolt command-line interface.
 
@@ -11,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 type CliResult<T> = Result<T, Box<dyn Error>>;
 
+#[cfg(all(feature = "encryption", not(target_arch = "wasm32")))]
+mod crypto;
 #[cfg(all(feature = "data-tools", not(target_arch = "wasm32")))]
 mod data_tools;
 
@@ -23,6 +26,10 @@ fn main() {
 
 fn run(args: Vec<String>) -> CliResult<()> {
     match args.first().map(String::as_str) {
+        #[cfg(all(feature = "encryption", not(target_arch = "wasm32")))]
+        Some("crypto") => crypto::crypto(&args[1..]),
+        #[cfg(all(feature = "encryption", not(target_arch = "wasm32")))]
+        Some("vault") => crypto::vault(&args[1..]),
         Some("--version") | Some("-V") => {
             println!("pv {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -837,6 +844,8 @@ fn print_result(result: QueryResult) -> CliResult<()> {
 }
 
 fn print_help() {
+    #[cfg(all(feature = "encryption", not(target_arch = "wasm32")))]
+    println!("{}\n", crypto::HELP);
     println!("PicoVolt command-line interface\n");
     println!("  pv query <database> <sql>");
     #[cfg(any(feature = "full-text", feature = "vector-search"))]

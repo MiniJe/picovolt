@@ -11,10 +11,11 @@ durable commit log. Independent security review and external application trials
 have not been completed. See the [2.0 release ledger](docs/RELEASE_2_0.md)
 for qualification evidence and publication status.
 
-**This private checkout builds 2.1.0:** bounded full-text ranking, exact vector
-similarity and SELECT-based retrieval in Rust, C, Python, Go and WebAssembly.
-See [the 2.1 guide](docs/RETRIEVAL_2_1.md) and [release evidence](docs/RELEASE_2_1.md).
-It is the first proprietary line, not yet a public download or paid offer.
+**This private checkout builds 2.2.0:** native encrypted snapshots and vaults,
+key rotation, verified backup/restore, and hybrid full-text/vector retrieval.
+See [encrypted storage](docs/ENCRYPTION_2_2.md), [hybrid search](docs/HYBRID_2_2.md)
+and [release evidence](docs/RELEASE_2_2.md). This continues the private proprietary
+line introduced in 2.1; no public download or paid offer is issued here.
 The registry commands and historical guides below still install released 2.0.0.
 
 Start with the [2.0 guide for every maintained interface](docs/QUICKSTART_2_0.md)

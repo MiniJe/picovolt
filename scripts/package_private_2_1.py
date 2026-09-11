@@ -4,8 +4,10 @@ import hashlib
 import json
 import subprocess
 import zipfile
+import tomllib
 
 root = Path(__file__).resolve().parents[1]
+assert tomllib.loads((root / 'Cargo.toml').read_text())['package']['version'] == '2.1.0', 'Use the matching release packager'
 out = root / 'artifacts'
 source_archive = out / 'picovolt-2.1.0-private-source.zip'
 subprocess.run(['git', 'archive', '--format=zip', '--output=' + str(source_archive), 'HEAD'], cwd=root, check=True)

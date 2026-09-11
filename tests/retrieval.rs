@@ -122,7 +122,9 @@ fn retrieval_preserves_large_ids_and_baked_compatibility() {
         .arg("--version")
         .output()
         .unwrap();
-    assert!(String::from_utf8(result.stdout).unwrap().contains("2.1.0"));
+    assert!(String::from_utf8(result.stdout)
+        .unwrap()
+        .contains(env!("CARGO_PKG_VERSION")));
     let request_path = dir.path().join("request.json");
     std::fs::write(&request_path, request.to_string()).unwrap();
     let cli = std::process::Command::new(env!("CARGO_BIN_EXE_pv"))
