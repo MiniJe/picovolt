@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "status": "unissued",
+  "licensor": {"legal_name": "BEYOND SOFTWARE S.R.L.", "country": "Romania", "company_id": "40707869", "service_address": "Str. Fabricii nr. 11, ap. 16, Cluj-Napoca, Cluj, 400620, Romania", "contact_email": "contact@beyond-software.ro"},
+  "product": "PicoVolt",
+  "version": "",
+  "license_id": "LicenseRef-PicoVolt-Proprietary-1.0",
+  "license_sha256": "",
+  "artifact_sha256": "",
+  "covered_components": [],
+  "third_party_notices": [],
+  "rights_inventory_confirmed": false,
+  "customer_scope": "",
+  "one_time_fee": {"amount": null, "currency": "EUR", "tax_treatment": ""},
+  "support_included": "",
+  "acceptance_method": "unchecked clickwrap before delivery; durable terms and receipt",
+  "issued_at": null
+}

@@ -67,7 +67,7 @@ forced format break or retroactive license gate belongs in the current engine.
 
 Until these are ready, do not publish a proprietary engine package or enable its
 download. The website is an explanation and draft review surface, not a contract
-acceptance server. No company identity or price has been invented.
+acceptance server. The owner selected BEYOND SOFTWARE S.R.L., CUI 40707869; see LICENSOR-RECORD.md. No price or proprietary release has been invented.
 
 ## Sources
 

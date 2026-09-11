@@ -1,7 +1,7 @@
 # PicoVolt Hub: build order and acceptance gates
 
-Decision: 2026-09-10. Build a managed release pipeline for immutable `.pvdb`
-datasets. No live hosted service, paying customer, price or SLA is claimed.
+Updated: 2026-09-11. Build a managed release pipeline for immutable `.pvdb`
+datasets. The invite-only service is live on Hetzner. No paying customer, price or SLA is claimed.
 See [the licensing transition](../legal/TRANSITION.md).
 
 ## First customer and smallest useful product
@@ -30,19 +30,17 @@ Start with user-prepared `.pvdb` files and existing `pv bake`, `pv inspect` and
 
 ## First implementation
 
-As of 2026-09-10, the private Hub pilot source also implements operator-issued
-revocable account keys, private projects with pinned publisher keys, bounded
-uploads verified by the real PicoVolt CLI, authorized artifact delivery,
-immutable release identities, revision-checked channel promotion/rollback, and
-release activity. The React console is built. Integration tests cover isolation,
-revocation/expiry, tampering, persistence and stale channel updates.
+As of 2026-09-11, the hosted private pilot implements operator-issued revocable
+account keys, private projects with pinned publisher keys, bounded uploads
+verified by the real PicoVolt CLI, authorized artifact delivery, immutable
+release identities, conditional channel promotion/rollback and release activity.
+Accounts, projects, releases and channels are stored in native PicoVolt 2.0.0.
+The application runs on an approved Hetzner CX33 with private disks and HTTPS.
 
-The public website and React service status page are deployed on Hetzner.
-The PHP status endpoint performs bounded on-demand HTTPS/integrity probes and
-marks stale observations unknown. It is not independent continuous monitoring.
-The hosted Hub API is not launched. It still needs a Hetzner application server,
-private storage, operational ownership, legal onboarding and a deployment review.
-The pilot code is not a claim of general availability or a formal SLA.
+The public PHP status endpoint performs bounded on-request HTTPS/integrity
+probes, including the Hub metadata query, and marks stale observations unknown.
+It is not independent continuous monitoring. Fifteen integration/storage/client
+tests passed on Windows and the Hetzner server. The pilot has no formal SLA.
 
 `scripts/hub_release.py` prepares a local release from an existing signed dataset
 and an independently supplied public key. It verifies the copied image with the
@@ -50,7 +48,7 @@ existing CLI and records SHA-256 transport digests. It does not upload or issue
 entitlements; its unsigned descriptor does not authenticate a publisher.
 See [the preparation guide](HUB_RELEASES.md).
 
-Next: bounded whole-file download and atomic local activation. Keep object storage
+Implemented in the private Hub client: bounded whole-file HTTPS download, signature verification and atomic local activation with retained previous files. Keep object storage
 separate from mutable database persistence. Accept operator-provided files before
 remote ingestion; fetching arbitrary server-side URLs requires SSRF/isolation
 controls. Do not put signing keys or customer data in the static website.
@@ -66,10 +64,13 @@ controls. Do not put signing keys or customer data in the static website.
    rollback. Clients pin expected identity/version, digest and trusted publisher
    key; a valid signature alone does not prevent replay.
 
-First iteration delivers local preparation, license draft and Hub pages. Next
-iteration proves one provider/client path, including tamper and interruption
-tests. Before paid pilot: identify seller, complete contracts/privacy, provision
-API/storage, meter costs and assign incident/restore ownership. Before general
+The deployed pilot includes native PicoVolt metadata, private releases, channels,
+backups with restore checks, a redesigned console and verified client activation.
+Tamper, interruption, stale-revision and wrong-key tests pass.
+Next implementation priorities: verifier process isolation, independent failure
+notifications, scoped machine credentials and full account export. These precede
+public signup, billing and storage expansion. Before paid pilot: verify the licensor record, complete contracts/privacy,
+meter costs and assign incident/restore ownership. Before general
 availability: tenant-isolation review, restore rehearsal, alerts, quotas, abuse
 controls and billing cancellation/export.
 

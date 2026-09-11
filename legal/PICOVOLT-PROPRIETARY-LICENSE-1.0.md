@@ -1,14 +1,17 @@
 # PicoVolt Proprietary Lifetime License 1.0
 
-**Release-candidate terms — 10 September 2026.** This becomes an offer only when
+**Prepared edition 1.0 — 11 September 2026.** This becomes an offer only when
 an official release notice identifies the Licensor, covered release, exact terms
 and fee. No proprietary engine release is currently offered under these terms.
 Previously released Apache-licensed components retain their existing licenses.
 
 ## 1. Parties and acceptance
 
-“Licensor” is the legal person identified with an address and contact channel in
-the official release notice supplied before acceptance. “You” means the accepting
+“Licensor” is **BEYOND SOFTWARE S.R.L.**, a Romanian company, CUI **40707869**,
+with its published registered address at **Str. Fabricii nr. 11, ap. 16,
+Cluj-Napoca, Cluj, 400620, Romania**. Contact: **contact@beyond-software.ro**.
+The release notice must repeat the then-current contracting details before acceptance.
+“You” means the accepting
 individual or the organization they are authorized to represent. “Software” means
 only the proprietary components and exact versions identified in that notice.
 
@@ -64,10 +67,17 @@ granted. Your application code and datasets remain yours.
 
 ## 4. Reserved rights
 
+“Competing Database Product” means a product whose principal customer-facing
+function is providing a general-purpose database engine, database SDK, hosted
+database, or managed distribution of independently supplied database datasets.
+An application does not become a Competing Database Product merely because it
+stores data, offers search, exports user data, serves its own catalogs, or uses
+the Software as one component of a broader product.
+
 Without a separate written agreement, you may not:
 
 1. sell, rent, sublicense, redistribute or offer proprietary Software as a
-   standalone database engine, SDK, database service or substitute for PicoVolt;
+   standalone database engine or SDK, or as a Competing Database Product;
 2. offer third parties a general-purpose hosted database or managed immutable
    dataset-distribution platform built on proprietary Software where that engine
    or platform is the principal product being sold;
@@ -81,6 +91,13 @@ These restrictions do not prohibit independent competing implementations, use
 of your own data, truthful benchmarks, security research, or rights under an
 independently obtained Apache license. They do not restrict reverse engineering
 or interoperability to the extent mandatory law protects those activities.
+
+Operating your own application for customers, including a paid SaaS application,
+is permitted under section 3 when that application is not a Competing Database
+Product. A hosted catalog that serves your application's own users is permitted;
+a general-purpose service that sells database hosting or dataset distribution
+to unrelated application developers requires a separate agreement. No provision
+restricts competition using software independently developed or licensed to you.
 
 ## 5. Ownership and third-party rights
 
@@ -157,15 +174,17 @@ terms continue where legally possible. Non-enforcement is not a permanent waiver
 Mandatory consumer, competition, privacy, accessibility, interoperability and
 statutory update rights prevail. Consumer checkout must supply required
 disclosures, withdrawal information and separate express consents. This document
-does not waive those rights. Applicable law and courts follow applicable
-conflict-of-law rules unless validly agreed otherwise without overriding
-mandatory protections.
+does not waive those rights. Romanian law governs this agreement. For business
+customers, disputes fall within the competent courts of Cluj-Napoca, Romania,
+subject to mandatory jurisdiction rules. Consumers retain the protections of
+mandatory law in their habitual residence and any right to bring proceedings
+before their home courts. Nothing in this choice of law removes those protections.
 
 ## Activation record
 
-Prepared for legal/business review. Before issuing a proprietary release,
-complete the Licensor identity/contact, rights inventory, release manifest,
+This edition is prepared for the owner's release process. Before issuing a proprietary release,
+verify the current Licensor details and complete the rights inventory, release manifest,
 price/customer scope, acceptance/receipt service and statutory disclosures.
-Do not present this draft as an executed license. Legal review must address the
+Do not present unissued terms as an executed license. Qualified legal review should address the
 actual Licensor and markets, particularly commercial restrictions, embedding,
 consumer rights, liability and jurisdiction.
