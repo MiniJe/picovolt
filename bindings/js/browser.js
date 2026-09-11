@@ -1,3 +1,4 @@
+// Modified for PicoVolt 2.1.0 retrieval, 2026-09-11. See legal/COMPONENT-SCOPE-2.1.md.
 // Durable browser helper backed by the Origin Private File System (OPFS).
 import { Db } from "./picovolt.js";
 
@@ -60,6 +61,11 @@ export class PersistentDb {
     const statement = new PersistentStatement(this, sql);
     this._statements.add(statement);
     return statement;
+  }
+
+  retrieve(request) {
+    this._assertOpen();
+    return JSON.parse(this.db.retrieve(JSON.stringify(request)));
   }
 
   executeMany(sql, rows) {

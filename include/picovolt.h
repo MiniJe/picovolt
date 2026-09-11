@@ -1,3 +1,4 @@
+// Modified for PicoVolt 2.1.0 retrieval, 2026-09-11. See legal/COMPONENT-SCOPE-2.1.md.
 /*
  * PicoVolt C ABI.
  *
@@ -58,6 +59,10 @@ PvDb *pv_open_prod(const char *path);
  *   {"columns":[...],"rows":[[...]]} | {"mutated":n} | {"done":true}
  */
 char *pv_query(PvDb *db, const char *sql);
+/* PicoVolt 2.1: full-text/vector retrieval over a bounded SELECT snapshot.
+ * Uses default retrieval features. JSON IDs are strings to preserve 64 bits.
+ * Same ownership/error conventions as pv_query. */
+char *pv_retrieve(PvDb *db, const char *request_json);
 
 /*
  * Like pv_query but binds `?` placeholders to a JSON array of parameters, e.g.

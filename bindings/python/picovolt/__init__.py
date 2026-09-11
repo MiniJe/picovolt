@@ -1,3 +1,4 @@
+# Modified for PicoVolt 2.1.0 retrieval, 2026-09-11. See legal/COMPONENT-SCOPE-2.1.md.
 """Python bindings for the PicoVolt embedded database engine, via its C ABI.
 
 These use ``ctypes`` and load the prebuilt shared library. Released platform
@@ -37,7 +38,7 @@ __all__ = [
     "version",
     "__version__",
 ]
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 
 class PicoVoltError(RuntimeError):
@@ -91,6 +92,9 @@ _lib.pv_open_prod.restype = c_void_p
 _lib.pv_open_prod.argtypes = [c_char_p]
 _lib.pv_query.restype = c_void_p  # char* we own and must free
 _lib.pv_query.argtypes = [c_void_p, c_char_p]
+if hasattr(_lib, 'pv_retrieve'):
+    _lib.pv_retrieve.restype = c_void_p
+    _lib.pv_retrieve.argtypes = [c_void_p, c_char_p]
 _lib.pv_query_params.restype = c_void_p
 _lib.pv_query_params.argtypes = [c_void_p, c_char_p, c_char_p]
 _lib.pv_prepare.restype = c_void_p
@@ -280,6 +284,20 @@ class Database:
         finally:
             _lib.pv_string_free(ptr)
         return json.loads(raw.decode("utf-8"))
+
+    def retrieve(self, request: dict) -> list:
+        """Full-text/vector retrieval over a bounded SELECT snapshot (PicoVolt 2.1).
+
+        Each result ID is an exact decimal string. No SQL mutation is accepted.
+        """
+        if not self._ptr:
+            raise PicoVoltError('database is closed')
+        if not hasattr(_lib, 'pv_retrieve'):
+            raise PicoVoltError('retrieval requires PicoVolt 2.1 with retrieval features')
+        payload = json.dumps(request, allow_nan=False, separators=(',', ':')).encode('utf-8')
+        if len(payload) > 131072:
+            raise PicoVoltError('retrieval request exceeds 128 KiB')
+        return self._json_result(_lib.pv_retrieve(self._ptr, payload))
 
     def prepare(self, sql: str) -> PreparedStatement:
         """Validate and retain a reusable positional-parameter statement.

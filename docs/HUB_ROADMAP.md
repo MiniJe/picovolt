@@ -93,17 +93,15 @@ root-only ownership test. The real workspace and restore drill remain healthy.
 Paid offers/card checkout are not enabled. Independent SMTP notifications and
 encrypted off-host backups are implemented but await production configuration.
 
-An opt-in Rust [full-text preview](FULL_TEXT_PREVIEW.md) now indexes a consistent
-query result, supports updates/removals and bounded BM25 all-term search. Three
-new tests and 22 related schema/data movement/inspection regression tests pass.
-The real 20-guide dataset was exercised. This local development preview has no
-published package, binding API, relevance benchmark or storage-format change.
-The released 2.0 engine and website runtime remain unchanged.
+The private 2.1.0 engine now implements bounded BM25 full-text search, exact
+vector similarity, and SELECT-snapshot retrieval across Rust, C, Python, Go,
+JavaScript/WASM and CLI. See [API and bounds](RETRIEVAL_2_1.md) and the
+[qualification ledger](RELEASE_2_1.md). Indexes are application-owned and rebuilt
+per JSON retrieval call. Production stays on 2.0; 2.1 is not publicly published.
 
 Remaining release order: activate independent alerting and off-host recovery;
 complete a replacement-host restore drill; configure reviewed paid offers and
-payment/invoice/delivery integration; qualify search relevance/performance and
-bindings; then evaluate replication or storage expansion from actual demand.
+payment/invoice/delivery integration; qualify search relevance/performance at customer scale; then evaluate replication or storage expansion from actual demand.
 
 The original work breakdown below describes the acceptance gates for those areas.
 

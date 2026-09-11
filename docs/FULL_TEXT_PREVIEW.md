@@ -1,6 +1,6 @@
-# Full-text search development preview
+# Full-text index in the private 2.1.0 build
 
-This unreleased Rust feature builds an application-owned inverted index from a
+This private 2.1 Rust feature builds an application-owned inverted index from a
 consistent PicoVolt SELECT result. It adds no storage format and does not change
 published PicoVolt 2.0 packages. Enable `full-text` to use `search::SearchIndex`.
 
@@ -22,9 +22,9 @@ Tokens longer than 128 UTF-8 bytes are ignored. Vocabulary admission is
 conservative when replacing a document at the global term cap.
 
 No stemming, accent folding, stop-word list, phrase/prefix/fuzzy search, SQL
-MATCH syntax, persistent full-text index, bindings or public package release is
-claimed. The existing lexical guide search stays on the stable engine until
-the preview's release and binding work is ready.
+MATCH syntax, persistent full-text index or public package release is
+claimed. The existing lexical guide search stays on the stable engine.
+The 2.1 binding APIs are implemented; see [retrieval](RETRIEVAL_2_1.md).
 
 Run it on the real documentation dataset:
 
@@ -33,5 +33,5 @@ cargo run --features full-text --example search_guides -- guides.pvdb transactio
 ```
 
 Before release: representative relevance judgments, memory/latency measurements,
-concurrent rebuild ownership, binding APIs, and the new release's licensing and
+concurrent rebuild ownership, and the new release's licensing and
 distribution checks. Keep this preview separate from the published 2.0 binary.

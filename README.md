@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml/badge.svg)](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/picovolt.svg)](https://crates.io/crates/picovolt)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License: Proprietary](https://img.shields.io/badge/license-Proprietary-blue.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/MiniJe/picovolt?style=social)](https://github.com/MiniJe/picovolt)
 
 PicoVolt is an embedded database engine written in Rust. **2.0** provides
@@ -10,6 +10,12 @@ concurrent snapshot readers, bounded writer scheduling, and an incremental
 durable commit log. Independent security review and external application trials
 have not been completed. See the [2.0 release ledger](docs/RELEASE_2_0.md)
 for qualification evidence and publication status.
+
+**This private checkout builds 2.1.0:** bounded full-text ranking, exact vector
+similarity and SELECT-based retrieval in Rust, C, Python, Go and WebAssembly.
+See [the 2.1 guide](docs/RETRIEVAL_2_1.md) and [release evidence](docs/RELEASE_2_1.md).
+It is the first proprietary line, not yet a public download or paid offer.
+The registry commands and historical guides below still install released 2.0.0.
 
 Start with the [2.0 guide for every maintained interface](docs/QUICKSTART_2_0.md)
 for atomic batches, persistence choices, log diagnostics and error recovery.
@@ -317,10 +323,11 @@ native modules built on the public API. Both are documented in
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE). Third-party
-dependencies are under MIT or Apache-2.0 licenses, and their notices apply to
-redistributions (see [`NOTICE`](NOTICE)).
+The 2.1.0 line is prepared under the [PicoVolt Proprietary Lifetime License](LICENSE).
+Earlier Apache-2.0 components retain their existing grants; the original license
+is preserved [here](legal/APACHE-2.0-LEGACY.txt). Third-party licenses and notices
+continue to apply (see [`NOTICE`](NOTICE)). No automatic public publication is enabled.
 
 The optional [`compliance`](src/engine/compliance.rs) module is not a license
 requirement. It is an opt-in helper for applications that want to enforce their
-own usage policy. Apache-2.0 places no usage restrictions on PicoVolt itself.
+own usage policy. It does not implement license activation or telemetry.

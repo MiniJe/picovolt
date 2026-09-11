@@ -28,10 +28,12 @@ jobs:
           python-version: "3.14"
       - name: Test and enforce the policy
         run: |
+          python scripts/check_public_release.py
           python -m unittest discover -s scripts/tests -v
           python scripts/check_registry_starters.py policy
 
   wheels:
+    needs: starter-policy
     name: wheel (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -118,6 +120,7 @@ jobs:
           path: bindings/python/dist/*.whl
 
   linux-wheel:
+    needs: starter-policy
     name: wheel (manylinux x86-64)
     runs-on: ubuntu-latest
     container:

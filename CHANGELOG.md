@@ -6,6 +6,17 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.1.0] - Private qualification, 2026-09-11
+
+- Ranked BM25 full-text retrieval and exact cosine/squared-Euclidean vector
+  retrieval over bounded, filtered SELECT snapshots.
+- Reusable Rust indexes with validated updates/removals; JSON retrieval through
+  C, Python, Go, JavaScript/WASM and `pv retrieve`.
+- Read-only retrieval validates SQL before execution and preserves 64-bit IDs
+  as decimal strings across JSON interfaces. Existing file formats are unchanged.
+- First proprietary development line. Public publishing is disabled; legacy
+  Apache grants remain intact. See [qualification and availability](docs/RELEASE_2_1.md).
+
 ## [2.0.0] - 2026-09-10
 
 ### Added

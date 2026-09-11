@@ -1,10 +1,11 @@
 [package]
 name = "picovolt"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2021"
 rust-version = "1.86"
 description = "Embedded SQL database with MVCC history and single-file deployment"
-license = "Apache-2.0"
+license-file = "LICENSE"
+publish = false
 repository = "https://github.com/MiniJe/picovolt"
 homepage = "https://github.com/MiniJe/picovolt"
 documentation = "https://docs.rs/picovolt"
@@ -31,8 +32,10 @@ name = "pv"
 path = "src/bin/pv.rs"
 
 [features]
-# Experimental application-owned full-text indexes; no on-disk format change.
+default = ["full-text", "vector-search"]
+# Application-owned retrieval indexes; no on-disk format change.
 full-text = []
+vector-search = []
 # Optional native CLI conversion and signed artifact distribution.
 data-tools = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema", "dep:rusqlite", "dep:ed25519-dalek", "dep:getrandom", "dep:zeroize"]
 # Enable the JavaScript/npm bindings (build for wasm32 with wasm-pack).

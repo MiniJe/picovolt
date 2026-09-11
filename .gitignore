@@ -1,6 +1,9 @@
 # Rust build artifacts
 target/
 
+# Local qualification builds, archives and private package manifests.
+/artifacts/
+
 # PicoVolt also ships binaries and WebAssembly artifacts, so the root lockfile
 # is committed for reproducible releases. Nested example/fuzz lockfiles remain
 # local unless explicitly listed.

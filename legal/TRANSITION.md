@@ -5,8 +5,8 @@ Prepared 2026-09-10 at the owner's request.
 ## Release boundary
 
 Published versions through 2.0.0 remain Apache-2.0. Root LICENSE, Cargo metadata,
-registry artifacts, tags and vendored WASM retain that license. The proposed first
-proprietary engine line is **3.0**, not a replacement 2.0.0 artifact; this is a
+registry artifacts, tags and vendored WASM retain that license. The owner-selected first
+proprietary engine line is **2.1.0**, not a replacement 2.0.0 artifact; this is a
 planning boundary, not a release announcement or date.
 
 The [prepared proprietary lifetime terms](PICOVOLT-PROPRIETARY-LICENSE-1.0.md)

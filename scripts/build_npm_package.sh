@@ -30,5 +30,13 @@ pkg.repository = {
   type: "git",
   url: "git+https://github.com/MiniJe/picovolt.git",
 };
+// The proprietary development line is packaged privately, never npm-published.
+if (fs.readFileSync('Cargo.toml', 'utf8').includes('publish = false')) {
+  pkg.private = true;
+  pkg.license = 'LicenseRef-PicoVolt-Proprietary-1.0';
+  for (const name of ['LICENSE', 'NOTICE']) fs.copyFileSync(name, `${directory}/${name}`);
+  fs.copyFileSync('legal/APACHE-2.0-LEGACY.txt', `${directory}/APACHE-2.0-LEGACY.txt`);
+  pkg.files = Array.from(new Set([...pkg.files, 'LICENSE', 'NOTICE', 'APACHE-2.0-LEGACY.txt']));
+}
 fs.writeFileSync(path, JSON.stringify(pkg, null, 2));
 NODE

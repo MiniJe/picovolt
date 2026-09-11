@@ -50,6 +50,7 @@ jobs:
 
       - name: Tag matches Cargo.toml version
         run: |
+          python scripts/check_public_release.py
           tag="${GITHUB_REF_NAME}"
           cargo_ver="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
           echo "tag=$tag  Cargo.toml=v$cargo_ver"

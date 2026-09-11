@@ -1,3 +1,4 @@
+// Modified for PicoVolt 2.1.0 retrieval, 2026-09-11. See legal/COMPONENT-SCOPE-2.1.md.
 //! `pv` is the batteries-included PicoVolt command-line interface.
 
 use picovolt::{Database, PvError, QueryResult, Value};
@@ -33,6 +34,20 @@ fn run(args: Vec<String>) -> CliResult<()> {
         Some("explain") if args.len() >= 3 => {
             let db = open_existing_database(&args[1])?;
             print_result(db.explain(&args[2..].join(" "))?)
+        }
+        #[cfg(any(feature = "full-text", feature = "vector-search"))]
+        Some("retrieve") if args.len() == 3 => {
+            use std::io::Read;
+            let mut input = String::new();
+            File::open(&args[2])?
+                .take(131073)
+                .read_to_string(&mut input)?;
+            if input.len() > 131072 {
+                return Err("Retrieval request exceeds 128 KiB".into());
+            }
+            let mut db = open_existing_database(&args[1])?;
+            println!("{}", db.retrieve_json(&input)?);
+            Ok(())
         }
         Some("inspect") if args.len() >= 2 => {
             let db = open_existing_database(&args[1])?;
@@ -824,6 +839,8 @@ fn print_result(result: QueryResult) -> CliResult<()> {
 fn print_help() {
     println!("PicoVolt command-line interface\n");
     println!("  pv query <database> <sql>");
+    #[cfg(any(feature = "full-text", feature = "vector-search"))]
+    println!("  pv retrieve <database> <request.json>  # bounded full-text/vector search");
     println!("  pv explain <database> <select-sql>");
     println!("  pv inspect <database> [--json]");
     println!("  pv history <database> [--table name] [--limit transactions]");
