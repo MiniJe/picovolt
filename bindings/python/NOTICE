@@ -5,7 +5,7 @@ This product includes software developed by the PicoVolt Authors.
 
 PicoVolt releases through 2.0.0 were distributed under Apache License 2.0.
 That license and its continuing grants are preserved in legal/APACHE-2.0-LEGACY.txt.
-The 2.1.0 and later development line is prepared for proprietary distribution under LICENSE;
+PicoVolt 2.2.0 is distributed under the source-available proprietary terms in LICENSE;
 it does not revoke separately obtained rights in earlier Apache components.
 
 This software depends on third-party crates distributed under their own

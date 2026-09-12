@@ -5,4 +5,4 @@ edition = "2021"
 publish = false
 
 [dependencies]
-picovolt = "=2.0.0"
+picovolt = "=2.2.0"

@@ -1,3 +1,20 @@
+# Public 2.2.0 release checklist
+
+The owner selected public source and free downloads on 12 September 2026.
+The controlling terms are root LICENSE (PicoVolt Public-Source License 1.1)
+and legal/PUBLIC-RELEASE.json. The unissued 1.0 template is not used for this
+release. Public downloads need no checkout, account, receipt or acceptance server.
+
+- Verify source, native, WASM and binding tests with the release compiler.
+- Verify version parity, license digests, prior Apache notices and dependency notices.
+- Confirm public-registry metadata and exact reproducible npm/Go starter hashes.
+- Run hosted CI and platform builds, then publish immutable versioned artifacts.
+- Verify exact-version clean registry installs before creating the GitHub Release.
+- Report independent audit and platform qualification limits without implying
+  legal clearance or security certification from automated tests.
+
+## Historical private-offer process (unissued edition 1.0)
+
 # Issue a PicoVolt proprietary release
 
 Edition 1.0 is prepared. BEYOND SOFTWARE S.R.L. is identified as the licensor. The covered proprietary

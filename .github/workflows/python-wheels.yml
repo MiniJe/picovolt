@@ -78,6 +78,12 @@ jobs:
           lipo target/release/libpicovolt.dylib -verify_arch arm64 x86_64
           lipo target/release/libpicovolt.dylib -info
 
+      - name: Bundle release terms and dependency notices
+        working-directory: .
+        run: |
+          python scripts/package_notices.py bindings/python
+          python -c "import shutil; [shutil.copyfile('bindings/python/'+n, 'bindings/python/picovolt/'+n) for n in ['PUBLIC-RELEASE.json','dependency-inventory.json']]"
+
       - name: Bundle the library into the package
         shell: bash
         run: |
@@ -114,6 +120,14 @@ jobs:
           print("wheel ok:", version())
           PY
 
+      - name: Test installed wheel retrieval and encrypted vaults
+        shell: bash
+        run: |
+          python -m pip install "pytest==9.0.2"
+          cp test_*.py ../../target/python-wheel-smoke/
+          cd ../../target/python-wheel-smoke
+          python -m pytest -q
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheel-${{ matrix.os }}
@@ -145,6 +159,8 @@ jobs:
 
       - name: Bundle the library and build a portable wheel
         run: |
+          /opt/python/cp310-cp310/bin/python ../../scripts/package_notices.py .
+          cp PUBLIC-RELEASE.json dependency-inventory.json picovolt/
           cp ../../target/release/libpicovolt.so picovolt/
           /opt/python/cp310-cp310/bin/python -m pip install \
             "pip==26.2.1" "build==1.6.0"
@@ -171,6 +187,14 @@ jobs:
           assert __version__ == version()
           print("manylinux wheel ok:", version())
           PY
+
+      - name: Test installed Linux wheel retrieval and encrypted vaults
+        run: |
+          /opt/python/cp310-cp310/bin/python -m pip install "pytest==9.0.2" wheelhouse/*.whl
+          mkdir -p ../../target/python-wheel-tests-linux
+          cp test_*.py ../../target/python-wheel-tests-linux/
+          cd ../../target/python-wheel-tests-linux
+          /opt/python/cp310-cp310/bin/python -m pytest -q
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

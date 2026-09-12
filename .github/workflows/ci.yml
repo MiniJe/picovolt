@@ -168,7 +168,7 @@ jobs:
           cp bindings/js/sqlite.js pkg/sqlite.js
           cp bindings/js/browser.js pkg/browser.js
           cp bindings/js/worker.js pkg/worker.js
-          node --experimental-wasm-modules --test bindings/js/tests/prepared.integration.mjs
+          PICOVOLT_JS_PACKAGE_DIR=pkg node --experimental-wasm-modules --test bindings/js/tests/*.mjs
 
   fuzz-build:
     name: fuzz-build (nightly)

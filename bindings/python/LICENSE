@@ -1,190 +1,152 @@
-# PicoVolt Proprietary Lifetime License 1.0
+# PicoVolt Public-Source License 1.1
 
-**Prepared edition 1.0 — 11 September 2026.** This becomes an offer only when
-an official release notice identifies the Licensor, covered release, exact terms
-and fee. No proprietary engine release is currently offered under these terms.
-Previously released Apache-licensed components retain their existing licenses.
+Effective for PicoVolt 2.2.0 as identified in `legal/PUBLIC-RELEASE.json`.
+Copyright BEYOND SOFTWARE S.R.L. and the respective contributors.
 
-## 1. Parties and acceptance
+## 1. Licensor, scope and free distribution
 
-“Licensor” is **BEYOND SOFTWARE S.R.L.**, a Romanian company, CUI **40707869**,
-with its published registered address at **Str. Fabricii nr. 11, ap. 16,
-Cluj-Napoca, Cluj, 400620, Romania**. Contact: **contact@beyond-software.ro**.
-The release notice must repeat the then-current contracting details before acceptance.
-“You” means the accepting
-individual or the organization they are authorized to represent. “Software” means
-only the proprietary components and exact versions identified in that notice.
+The Licensor is BEYOND SOFTWARE S.R.L., CUI 40707869, Str. Fabricii nr. 11,
+ap. 16, Cluj-Napoca, Cluj, 400620, Romania; contact@beyond-software.ro.
+This license covers only the new proprietary components identified in the
+release notice and rights controlled by the Licensor. Previously distributed
+Apache-2.0 code, independently licensed contributions and dependencies retain
+their own licenses. Their permissions are not narrowed by this document.
 
-You must be able to read and save these terms before delivery. Checking an
-initially unchecked acceptance box and clicking **Accept license and download**
-records acceptance for the identified release. For automated downloads, an
-authorized account administrator may first accept these same identified terms
-and issue scoped credentials. Visiting a page, receiving a file, or downloading
-an old Apache release does not constitute acceptance of this agreement.
+The license fee for the identified release is zero. No account, checkout,
+click-through acceptance, receipt, activation server or license key is required
+to download or exercise the permissions below. These terms accompany the source
+and packages. Exercising rights granted by this license is subject to its
+conditions; mere receipt of a copy is not represented as contract acceptance.
+Rights that mandatory law grants independently are unaffected.
 
-The release notice identifies the legal party, product/version, artifact digest,
-license version/digest, customer category and price including applicable taxes
-(or explicitly zero). No unpublished fee or usage limit applies. Any paid grant
-is subject to the payment conditions disclosed before acceptance. You must
-receive a durable copy of the accepted terms and receipt. If you decline, do not
-obtain or use proprietary releases under this offer; independently held licenses
-and existing Apache rights are unaffected.
+This is a source-available proprietary license, not an open-source license.
 
-## 2. Perpetual license
+## 2. Perpetual permission to use and modify
 
-Subject to these terms and payment of any stated one-time fee, Licensor grants a
-worldwide, non-exclusive, perpetual license to install, run and back up the covered
-Software for personal and internal business purposes and to build and operate
-your own applications. There is no per-query charge, device limit or recurring
-license renewal unless separately negotiated in writing before acceptance.
+The Licensor grants everyone a worldwide, non-exclusive, royalty-free,
+perpetual license to obtain, inspect, run, copy, back up and modify the covered
+Software for personal use, internal business use, and building and operating
+their own applications, subject to this license. There are no per-query,
+device or deployment limits. Permitted use remains available offline and does
+not expire when a subscription, account or support arrangement ends.
 
-“Lifetime” means indefinite use of the covered versions, including if Licensor
-ceases trading, subject only to section 8. It does not mean the lifetime of an
-account, server or subscription. Lawfully obtained copies remain usable offline
-without periodic activation. Ending Hub service does not end this engine grant.
+Employees and contractors may work with the Software on your behalf under
+these terms. Your data, application code and modifications you author remain
+yours; this does not remove the conditions on the underlying Software.
 
-You may modify source supplied to you for permitted use. Employees and contractors
-may act on your behalf under equivalent confidentiality/use restrictions; you
-remain responsible for them. Affiliates are not automatically separate licensees.
-A merger or sale of substantially all the relevant business may transfer this
-license with that business if the successor assumes these obligations and you
-retain no separate right to use transferred copies.
+## 3. Public repositories, registries and mirrors
 
-## 3. Commercial application embedding
+Everyone, including GitHub, crates.io, npm, PyPI, Go module proxies, package
+indexes, caches and public or private mirrors, may reproduce, host, display,
+transmit and redistribute complete unmodified official source and binary
+releases, together with their licenses and notices, without further permission
+or action by the Licensor. Package-format changes, compression, indexing,
+metadata and integrity-signing operations that do not change the Software's
+behavior or applicable terms are permitted for that distribution.
 
-You may distribute object-code copies embedded in applications whose principal
-purpose is other than providing a general-purpose database engine, database SDK,
-or managed database/dataset-distribution platform. Product catalogs, editors,
-games, business analytics and inventory applications are examples. Charging for
-these applications is permitted. Customers may run the embedded engine offline.
+No fee may be charged for the Software itself under this permission. Ordinary
+charges for network transfer, storage, hosting a mirror, package infrastructure
+or media are permitted. Recipients receive this license directly from the
+Licensor; a distributor may not impose additional restrictions on these grants.
+Public inspection, downloading and unchanged mirroring do not themselves make
+a repository, registry or mirror a Competing Database Product.
 
-Retain copyright, license and third-party notices. Supply end-user terms allowing
-operation and backup of the embedded component within your application while
-protecting it from standalone redistribution. End users' rights in lawfully
-distributed copies survive termination of your license unless they independently
-breach applicable terms. No broader standalone engine or source sublicense is
-granted. Your application code and datasets remain yours.
+## 4. Commercial application embedding
 
-## 4. Reserved rights
+You may distribute original or modified object-code copies embedded in your
+own applications, and charge for those applications, provided their principal
+purpose is not a Competing Database Product as defined below. Games, editors,
+product catalogs, inventory systems and business applications are examples of
+permitted applications. Operating such applications as paid SaaS is permitted.
 
-“Competing Database Product” means a product whose principal customer-facing
+Retain the Software's copyright, license and dependency notices. End users
+receive permission to run and back up the embedded Software as part of the
+application, including offline, for an indefinite period. Those permissions
+survive termination of the distributor's license unless an end user separately
+violates applicable conditions. You may choose the license for your independent
+application code. Source changes to covered proprietary components may be shared
+with your employees and contractors for permitted work, or submitted to the
+upstream project for review; acceptance of a contribution does not itself
+transfer its copyright or change its license.
+
+## 5. Reserved uses and attribution
+
+A "Competing Database Product" is a product whose principal customer-facing
 function is providing a general-purpose database engine, database SDK, hosted
-database, or managed distribution of independently supplied database datasets.
-An application does not become a Competing Database Product merely because it
-stores data, offers search, exports user data, serves its own catalogs, or uses
-the Software as one component of a broader product.
+database service, or managed distribution of independently supplied database
+datasets. An application is not such a product merely because it stores or
+searches data, exports user data, or serves its own application datasets.
 
-Without a separate written agreement, you may not:
+Except for the unchanged redistribution expressly permitted by section 3, you
+need a separate written agreement to sell, rent, sublicense or offer covered
+Software as a standalone database/SDK, to distribute modified covered Software
+as a standalone engine or SDK, or to provide a Competing Database Product using
+covered Software. Redistributing modified proprietary source is not permitted
+except for the limited sharing in section 4. You may not remove notices, claim
+ownership of others' work, or imply official endorsement without permission.
 
-1. sell, rent, sublicense, redistribute or offer proprietary Software as a
-   standalone database engine or SDK, or as a Competing Database Product;
-2. offer third parties a general-purpose hosted database or managed immutable
-   dataset-distribution platform built on proprietary Software where that engine
-   or platform is the principal product being sold;
-3. distribute proprietary source or modified proprietary engines, except
-   confidential access by your permitted contractors;
-4. remove ownership notices, claim the Software as your own, or suggest official
-   PicoVolt sponsorship through names/logos without permission; or
-5. bypass delivery controls to obtain proprietary releases without entitlement.
+These restrictions do not prevent independent competing implementations,
+truthful benchmarks, security research, use of independently licensed Apache
+components, or mandatory interoperability and reverse-engineering rights.
+No trademark license is granted beyond truthful identification.
 
-These restrictions do not prohibit independent competing implementations, use
-of your own data, truthful benchmarks, security research, or rights under an
-independently obtained Apache license. They do not restrict reverse engineering
-or interoperability to the extent mandatory law protects those activities.
+## 6. Patents, third-party rights and continuity
 
-Operating your own application for customers, including a paid SaaS application,
-is permitted under section 3 when that application is not a Competing Database
-Product. A hosted catalog that serves your application's own users is permitted;
-a general-purpose service that sells database hosting or dataset distribution
-to unrelated application developers requires a separate agreement. No provision
-restricts competition using software independently developed or licensed to you.
+To the extent controlled by the Licensor, this license includes patent rights
+necessarily infringed by the permitted use of covered Software, excluding
+claims arising only from your additions or combinations. Third-party licenses
+prevail for their respective components, and their required notices must remain.
 
-## 5. Ownership and third-party rights
+The grant covers the release identified with these terms. Later releases may
+use different terms, without changing the terms for copies already obtained.
+No future upgrade, maintenance period, security response time, SLA, warranty
+or hosting is promised. Existing written support commitments and mandatory
+obligations remain applicable. Support and Hub services may have separate
+prices and agreements; they do not change this free engine grant.
 
-Licensor and contributors retain ownership of their Software. You retain your
-data, application code and modifications you author, subject to these terms for
-the underlying Software. No ownership of customer data transfers to Licensor.
+## 7. Privacy and no remote enforcement
 
-To the extent controlled by Licensor, this grant includes patent rights necessarily
-infringed by permitted use of covered Software, excluding claims arising only from
-your additions or combinations. No trademark rights are granted beyond truthful
-component identification. Third-party notices must accompany releases and their
-licenses prevail for their components. Existing Apache grants are not narrowed.
-
-## 6. Updates and support
-
-The perpetual grant covers releases identified in your receipt plus updates
-expressly added to it. It does not promise future major releases, indefinite
-maintenance, an SLA, hosting, bandwidth, storage or support. Later terms may be
-accepted or declined without changing the license for versions already obtained.
-
-Support requires applicable license acceptance and, where specified, a separate
-support agreement. Acceptance alone purchases no SLA. Existing written commitments
-and mandatory obligations prevail. Release notes must explain compatibility and
-migration boundaries. Nothing authorizes disabling older installations, deleting
-user data or preventing export because new terms are declined.
-
-## 7. Hub and privacy
-
-Hub is separately subscribed hosted software. Service, privacy, data processing,
-retention, cancellation and export terms must be provided before activation.
-This license grants no lifetime hosting and is not marketing or analytics consent.
-
-Local engine use requires no telemetry. Entitlement records are limited to what
-is necessary to record the parties, license, artifacts, acceptance and payment;
-purposes and retention must be disclosed before collection. Optional analytics
-require a separate choice where applicable.
+The local engine license requires no telemetry, account or periodic contact.
+It authorizes no surveillance, remote disabling, forced upgrades or interference
+with user data. Hub service privacy and data processing terms are separate.
+Declining a later version's terms does not end rights to earlier copies.
 
 ## 8. Termination
 
-You may terminate by ceasing use and removing proprietary copies, retaining any
-copy mandatory law requires. Licensor may terminate only for a material breach
-uncured 30 days after written notice describing it, or immediately when a court
-order or mandatory law requires. There is no termination for convenience,
-inactivity, subscription cancellation or refusal of later terms.
+You may cease exercising these permissions at any time. The Licensor may
+terminate permissions for a material breach only after written notice describing
+the breach and failure to cure within 30 days, unless mandatory law or a court
+order requires otherwise. There is no termination for convenience, inactivity,
+subscription cancellation or refusal of later terms.
 
-After valid termination, stop using/distributing affected proprietary Software,
-except for a 30-day read/export period solely to recover your own data where
-legally permitted. Existing Apache grants, independent licenses and section 3
-end-user rights survive. No remote interference with systems or data is authorized.
+After a valid termination, cease the affected use and distribution, except for
+a 30-day read/export period to recover your own data where legally permitted.
+Independent licenses, prior Apache grants and lawful downstream end-user grants
+survive. No remote enforcement against installations or data is authorized.
 
 ## 9. Warranties and liability
 
-Except for express written warranties and non-excludable rights, Software is
-supplied as available without warranties of merchantability, fitness for a
-particular purpose or uninterrupted operation. Keep independent backups and
-evaluate suitability for your application.
+Except for express written warranties and rights that cannot be excluded, the
+Software is provided "AS IS", without warranties of merchantability, fitness
+for a particular purpose, or uninterrupted or error-free operation. Evaluate
+its suitability and keep independent backups.
 
 To the extent permitted by law, neither party is liable under this license for
-indirect or consequential losses. Each party's aggregate liability is limited to
-the greater of EUR 500 and all fees paid for the affected Software license.
-These limits do not cover fraud, deliberate misconduct, gross negligence, death
-or personal injury caused by negligence, or liability that cannot lawfully be
-limited. Separate service agreements may allocate service liability without
-reducing mandatory rights.
+indirect or consequential losses; aggregate liability is limited to EUR 500.
+These limitations do not apply to fraud, deliberate misconduct, gross negligence,
+death or personal injury caused by negligence, or liability that cannot lawfully
+be limited. Separate service agreements apply to their own services.
 
-## 10. General and mandatory protections
+## 10. General and mandatory rights
 
-These terms and the accepted release notice form the Software agreement.
-Additional written agreements apply to their identified scope. Changing an
-existing grant requires mutual agreement; posting new website terms is not enough.
-An unenforceable provision is severed only to the extent necessary. Remaining
-terms continue where legally possible. Non-enforcement is not a permanent waiver.
+This license and its release notice describe the grant for the identified
+Software. Website changes cannot retroactively change it. An unenforceable
+provision is severed only to the extent necessary; the remainder continues where
+legally possible. Failure to enforce is not a permanent waiver.
 
-Mandatory consumer, competition, privacy, accessibility, interoperability and
-statutory update rights prevail. Consumer checkout must supply required
-disclosures, withdrawal information and separate express consents. This document
-does not waive those rights. Romanian law governs this agreement. For business
-customers, disputes fall within the competent courts of Cluj-Napoca, Romania,
-subject to mandatory jurisdiction rules. Consumers retain the protections of
-mandatory law in their habitual residence and any right to bring proceedings
-before their home courts. Nothing in this choice of law removes those protections.
-
-## Activation record
-
-This edition is prepared for the owner's release process. Before issuing a proprietary release,
-verify the current Licensor details and complete the rights inventory, release manifest,
-price/customer scope, acceptance/receipt service and statutory disclosures.
-Do not present unissued terms as an executed license. Qualified legal review should address the
-actual Licensor and markets, particularly commercial restrictions, embedding,
-consumer rights, liability and jurisdiction.
+Romanian law governs, subject to mandatory law. For business disputes, the
+competent courts of Cluj-Napoca, Romania have jurisdiction subject to mandatory
+rules. Consumers retain mandatory protections of their habitual residence and
+any right to bring proceedings in their home courts. Mandatory consumer,
+competition, privacy, accessibility, statutory update and interoperability
+rights prevail. No paid consumer sale or consumer checkout is established here.

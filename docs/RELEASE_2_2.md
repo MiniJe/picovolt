@@ -1,8 +1,8 @@
-# PicoVolt 2.2.0 private qualification
+# PicoVolt 2.2.0 release verification
 
-Prepared 12 September 2026. This version continues the private proprietary line
-selected for 2.1.0. It is not a public package or issued customer license offer.
-Production Hub and the public website retain their separately qualified runtime.
+Public release candidate prepared 12 September 2026. The owner authorized public
+source and free registry downloads under PicoVolt Public-Source License 1.1.
+Production Hub and website runtime upgrades remain separate deployments.
 
 ## Implemented
 
@@ -56,11 +56,19 @@ erasure or built-in rollback protection across reopen is claimed. Linux/macOS
 and platform package availability are distinguished in the artifact manifest;
 do not infer support for an unbuilt target.
 
-## Release controls
+## Public distribution controls
 
-Cargo remains `publish=false`; npm packages remain private; public release
-workflows fail the proprietary publication gate. Existing Apache releases keep
-their original grants. Source/artifacts stay outside the website document root.
-No production keys, customer offers, telemetry or forced-upgrade enforcement were
-created. Customer delivery still requires a reviewed offer identifying component
-scope, exact artifact/terms digests, price, acceptance and receipt.
+`legal/PUBLIC-RELEASE.json` binds this version to the exact license digest, zero
+fee, covered components and preservation of existing licenses. Public registry
+publication checks that notice and the license copies in each binding. No account,
+clickwrap service, activation or customer receipt is required for this release.
+
+The current public candidate must pass the hosted matrix and exact registry
+install checks before GitHub Release creation. The private artifact hashes are
+historical qualification evidence; public packages are rebuilt with the revised
+terms, notices and reproducible compiler. Platform claims for public artifacts
+will be recorded from those builds, without extending the private results above.
+
+Independent cryptographic/legal review has not been performed. No automated
+verification result is described as an independent audit. Prior Apache grants
+and dependency licenses remain intact.

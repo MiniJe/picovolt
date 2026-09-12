@@ -86,6 +86,8 @@ jobs:
           }
           console.log(`verified npm integrity ${integrity}`);
           NODE
+      - name: Test the release WASM adapters
+        run: PICOVOLT_JS_PACKAGE_DIR=pkg node --experimental-wasm-modules --test bindings/js/tests/*.mjs
       - name: Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Test
@@ -312,6 +314,9 @@ jobs:
           bundle="picovolt-capi-${{ matrix.label }}"
           mkdir -p "dist/$bundle/include" "dist/$bundle/lib"
           cp include/picovolt.h "dist/$bundle/include/"
+          python scripts/package_notices.py "dist/$bundle"
+          cp LICENSE "dist/LICENSE-${{ matrix.label }}.txt"
+          cp legal/PUBLIC-RELEASE.json "dist/RELEASE-${{ matrix.label }}.json"
           case "$RUNNER_OS" in
             Linux)
               cp target/release/libpicovolt.so "dist/$bundle/lib/"

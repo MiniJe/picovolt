@@ -12,6 +12,7 @@ wasm-pack build --target bundler --release --out-dir "$out_dir" -- --locked --fe
 cp bindings/js/sqlite.js "$out_dir/sqlite.js"
 cp bindings/js/browser.js "$out_dir/browser.js"
 cp bindings/js/worker.js "$out_dir/worker.js"
+python3 scripts/package_notices.py "$out_dir"
 node - "$out_dir" <<'NODE'
 const fs = require("fs");
 const directory = process.argv[2];
@@ -30,13 +31,8 @@ pkg.repository = {
   type: "git",
   url: "git+https://github.com/MiniJe/picovolt.git",
 };
-// The proprietary development line is packaged privately, never npm-published.
-if (fs.readFileSync('Cargo.toml', 'utf8').includes('publish = false')) {
-  pkg.private = true;
-  pkg.license = 'LicenseRef-PicoVolt-Proprietary-1.0';
-  for (const name of ['LICENSE', 'NOTICE']) fs.copyFileSync(name, `${directory}/${name}`);
-  fs.copyFileSync('legal/APACHE-2.0-LEGACY.txt', `${directory}/APACHE-2.0-LEGACY.txt`);
-  pkg.files = Array.from(new Set([...pkg.files, 'LICENSE', 'NOTICE', 'APACHE-2.0-LEGACY.txt']));
-}
+pkg.private = fs.readFileSync('Cargo.toml', 'utf8').includes('publish = false');
+pkg.license = 'SEE LICENSE IN LICENSE';
+pkg.files = Array.from(new Set([...pkg.files, 'LICENSE', 'NOTICE', 'APACHE-2.0-LEGACY.txt', 'PUBLIC-RELEASE.json', 'dependency-inventory.json', 'third-party-notices']));
 fs.writeFileSync(path, JSON.stringify(pkg, null, 2));
 NODE
