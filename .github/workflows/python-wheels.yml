@@ -94,10 +94,15 @@ jobs:
 
       - name: Build the wheel
         env:
-          PICOVOLT_WHEEL_PLATFORM: ${{ runner.os == 'macOS' && 'macosx_10_9_universal2' || '' }}
+          PICOVOLT_WHEEL_PLATFORM: ${{ runner.os == 'macOS' && 'macosx_10_12_universal2' || '' }}
         run: |
           python -m pip install "pip==26.2.1" "build==1.6.0"
           python -m build --wheel
+
+      - name: Verify universal2 minimum OS metadata
+        if: runner.os == 'macOS'
+        shell: bash
+        run: python ../../scripts/check_macos_wheel.py dist/*.whl
 
       - name: Smoke test the wheel
         shell: bash
