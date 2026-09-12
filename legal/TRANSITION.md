@@ -1,79 +1,33 @@
-# Proprietary release transition
+# PicoVolt license and support transition
 
-Prepared 2026-09-10 at the owner's request.
+## Free public 2.2.0 distribution
 
-## Release boundary
+On 12 September 2026 the owner selected public source and free registry downloads
+under [PicoVolt Public-Source License 1.1](../LICENSE). The versioned release
+notice is [PUBLIC-RELEASE.json](PUBLIC-RELEASE.json). This replaces the unissued
+1.0 plan for click-through acceptance and private delivery. No account, receipt,
+license key, telemetry or activation is required for the engine. Lifetime means
+perpetual permitted use of the obtained version, with future support and hosted
+services handled separately. Unchanged public registry/mirror distribution is
+expressly permitted. Competing database uses remain restricted as stated in the
+license; independent implementations and earlier Apache permissions are unaffected.
 
-Published versions through 2.0.0 remain Apache-2.0. Root LICENSE, Cargo metadata,
-registry artifacts, tags and vendored WASM retain that license. The proposed first
-proprietary engine line is **3.0**, not a replacement 2.0.0 artifact; this is a
-planning boundary, not a release announcement or date.
+## Earlier releases and support
 
-The [prepared proprietary lifetime terms](PICOVOLT-PROPRIETARY-LICENSE-1.0.md)
-allow commercial application embedding and reserve competing engine/platform
-commercialization. This is not an OSI open-source license. Drafting terms does
-not relicense source. New proprietary components need explicit file/package scope
-and preserved third-party notices. The 109 existing commits inspected list one
-author identity, but git authorship and DCO do not prove ownership of every input.
+Releases through 2.0.0 keep their Apache-2.0 grants. Users may keep, modify and
+redistribute those versions under those terms. No upgrade, account or acceptance
+of later terms is forced, and no installation or data is disabled or monitored.
+Voluntary legacy maintenance ended on 10 September 2026, subject to existing
+contracts and mandatory obligations. Security reports remain welcome.
 
-## Legacy support
+The earlier proposed migration-assistance countdown is not enforced by software.
+Any support window must be separately announced with actual capacity and scope;
+these documents do not promise indefinite maintenance or an uptime SLA.
 
-Voluntary feature work and routine maintenance for Apache release lines end on
-2026-09-10, subject to existing contracts and mandatory obligations. No replacement
-supported proprietary engine is available yet. Private security reports remain
-welcome without license acceptance. Future proprietary support requires the
-applicable license and any separately purchased support agreement.
+## Services
 
-No old executable, package or database is disabled. Historical compatibility
-fixtures, documentation and export/migration tools remain available. Refusing new
-terms cannot revoke old Apache rights or existing contractual/statutory support.
-
-Provide a **30-day assisted migration window starting when a usable proprietary
-successor and migration guide are available**, with the exact opening/closing
-dates announced then. This is a transition assistance window, not a timer that
-expires existing copies. No countdown starts while there is nothing to migrate
-to. Existing data remains readable/exportable and users may keep Apache copies.
-
-Future proprietary downloads and Hub may require accounts with disclosed
-entitlement/access records. Legacy users are not forced to register, and the
-engine does not collect their SQL, file contents, local activity or competitor
-intent. No covert tracking or inferred competitor scoring is part of the product.
-
-## Download and lifetime policy
-
-Display saveable exact terms, an unchecked checkbox and an explicit acceptance
-action before delivery; provide a durable receipt. Do not count crawlers, mirrors,
-raw URLs or old downloads as acceptance. CI uses credentials issued after an
-authorized administrator accepts. A browser-local checkbox is not an entitlement.
-
-Lifetime means perpetual offline use of accepted versions, excluding future
-releases and hosted/support subscriptions. No expiration timer, startup phone-home,
-forced format break or retroactive license gate belongs in the current engine.
-
-## Required activation facts and services
-
-1. Legal Licensor name, service address, contact and target customer markets.
-2. Rights inventory for contributions, dependencies, copied/generated code and
-   assets; authority for every new proprietary component.
-3. Legal review covering actual jurisdictions, consumer obligations, liability,
-   reserved commercial rights and embedding.
-4. Immutable artifact/terms digests, explicit fee/currency/taxes or zero fee,
-   customer scope and reproducible release evidence.
-5. Server-verified acceptance, authenticated entitlements, durable receipts,
-   private artifact storage and short-lived delivery credentials. Never protect
-   a public executable URL solely with JavaScript.
-6. Separate Hub service/privacy/processing terms, retention/export policy and
-   payment integration before selling access.
-
-Until these are ready, do not publish a proprietary engine package or enable its
-download. The website is an explanation and draft review surface, not a contract
-acceptance server. The owner selected BEYOND SOFTWARE S.R.L., CUI 40707869; see LICENSOR-RECORD.md. No price or proprietary release has been invented.
-
-## Sources
-
-- [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0): continuing grants,
-  redistribution notices and trademarks.
-- [EU contract information](https://europa.eu/youreurope/citizens/consumers/shopping/contract-information/index_en.htm):
-  understandable disclosures and durable confirmation.
-- [Open Source Definition](https://opensource.org/osd): commercial restrictions
-  distinguish the proposed license from open source.
+Hub access, hosting, support subscriptions and optional analytics require their
+own applicable terms. The free engine license does not purchase those services
+or consent to collection of application data. Paid or individually negotiated
+offers may use a separate reviewed commercial agreement. The old 1.0 template
+is retained as history, not as the terms governing this free public release.

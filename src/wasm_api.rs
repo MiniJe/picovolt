@@ -1,3 +1,4 @@
+// Modified for PicoVolt 2.1.0 retrieval, 2026-09-11. See legal/COMPONENT-SCOPE-2.1.md.
 //! WebAssembly / npm bindings (enabled by the `wasm` feature).
 //!
 //! Exposes an **in-memory** PicoVolt database to JavaScript via `wasm-bindgen`.
@@ -70,6 +71,14 @@ impl Db {
         }
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
         result_to_string(&result)
+    }
+
+    /// Bounded full-text/vector retrieval over a SELECT snapshot. Request/result are JSON.
+    #[cfg(any(feature = "full-text", feature = "vector-search"))]
+    pub fn retrieve(&mut self, request: &str) -> Result<String, JsValue> {
+        self.inner
+            .retrieve_json(request)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Validate and retain a reusable SQL template. Preparation verifies the

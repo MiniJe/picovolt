@@ -2,14 +2,25 @@
 
 [![CI](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml/badge.svg)](https://github.com/MiniJe/picovolt/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/picovolt.svg)](https://crates.io/crates/picovolt)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License: Proprietary](https://img.shields.io/badge/license-Proprietary-blue.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/MiniJe/picovolt?style=social)](https://github.com/MiniJe/picovolt)
 
-PicoVolt is an embedded database engine written in Rust. **2.0** provides
-concurrent snapshot readers, bounded writer scheduling, and an incremental
-durable commit log. Independent security review and external application trials
-have not been completed. See the [2.0 release ledger](docs/RELEASE_2_0.md)
-for qualification evidence and publication status.
+PicoVolt is an embedded SQL database with queryable history. **2.2.0** adds
+native encrypted snapshots and vaults, key/password rotation, verified encrypted
+backup/restore and hybrid full-text/vector retrieval. It builds on the snapshot
+readers, bounded writer scheduling and durable commit logs introduced in 2.0.
+
+The source and official packages are available without a license fee under the
+[PicoVolt Public-Source License 1.1](LICENSE). This proprietary license permits
+commercial application embedding and unchanged registry/mirror distribution;
+standalone competing database products require a separate agreement. This is
+source-available, not open source. Earlier Apache grants remain unchanged.
+No account, activation, telemetry or pre-download acceptance is required.
+
+Read [encrypted storage](docs/ENCRYPTION_2_2.md), [hybrid search](docs/HYBRID_2_2.md)
+and [release evidence](docs/RELEASE_2_2.md). Native vault encryption is not offered
+in WASM. Independent security/cryptographic review and external application
+trials have not been completed; automated verification is not such an audit.
 
 Start with the [2.0 guide for every maintained interface](docs/QUICKSTART_2_0.md)
 for atomic batches, persistence choices, log diagnostics and error recovery.
@@ -18,15 +29,12 @@ independent assessment and external trials deferred beyond the 2.0 release.
 
 ## Quick start
 
-**License and support transition (2026-09-10):** published versions through 2.0.0
-remain Apache-2.0; voluntary legacy maintenance has ended, subject to existing
-commitments and mandatory obligations. Future proprietary lifetime terms and a
-30-day migration assistance window are being prepared. No successor is available
-yet and no migration countdown has started. See [the transition](legal/TRANSITION.md)
-and [Hub priorities](docs/HUB_ROADMAP.md).
+The 2.2.0 release is free to download and use within its [license](LICENSE).
+Historical 2.0 documentation below remains useful for unchanged APIs. See the
+[transition policy](legal/TRANSITION.md) for continuing Apache rights and support.
 
 ```sh
-cargo add picovolt@2.0.0
+cargo add picovolt@2.2.0
 ```
 
 ```rust
@@ -238,7 +246,7 @@ See [Migration and compaction](docs/MIGRATION.md).
 | **Rust** (crates.io) | `cargo add picovolt` |
 | **JavaScript / npm** (WebAssembly, browser and Node) | `npm install picovolt` |
 | **Python** (native wheels) | `python -m pip install picovolt` |
-| **Go** (`database/sql` and direct API) | `go get github.com/MiniJe/picovolt/bindings/go/v2@v2.0.0`, then provide the matching native C ABI library described in [`bindings/go/`](bindings/go) |
+| **Go** (`database/sql` and direct API) | `go get github.com/MiniJe/picovolt/bindings/go/v2@v2.2.0`, then provide the matching native C ABI library described in [`bindings/go/`](bindings/go) |
 | **C** | Download the matching `picovolt-capi-*` bundle from the [latest release](https://github.com/MiniJe/picovolt/releases/latest), or run `cargo build --release --features capi` |
 | **In-memory** (native, no filesystem) | `Database::open_memory()`, export with `bake_to_bytes()` |
 
@@ -317,10 +325,11 @@ native modules built on the public API. Both are documented in
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE). Third-party
-dependencies are under MIT or Apache-2.0 licenses, and their notices apply to
-redistributions (see [`NOTICE`](NOTICE)).
+The 2.1.0 line is prepared under the [PicoVolt Proprietary Lifetime License](LICENSE).
+Earlier Apache-2.0 components retain their existing grants; the original license
+is preserved [here](legal/APACHE-2.0-LEGACY.txt). Third-party licenses and notices
+continue to apply (see [`NOTICE`](NOTICE)). No automatic public publication is enabled.
 
 The optional [`compliance`](src/engine/compliance.rs) module is not a license
 requirement. It is an opt-in helper for applications that want to enforce their
-own usage policy. Apache-2.0 places no usage restrictions on PicoVolt itself.
+own usage policy. It does not implement license activation or telemetry.

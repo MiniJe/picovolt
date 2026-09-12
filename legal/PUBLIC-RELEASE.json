@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "version": "2.2.0",
+  "distribution": "public-source-free",
+  "license_id": "LicenseRef-PicoVolt-Public-Source-1.1",
+  "license_file": "LICENSE",
+  "license_sha256": "fea338d875dfc9e115342e6d802742126b57ba1c5ebef7a54cde9cf26c1984ff",
+  "fee": {
+    "amount": 0,
+    "currency": "EUR"
+  },
+  "account_required": false,
+  "licensor": {
+    "legal_name": "BEYOND SOFTWARE S.R.L.",
+    "company_id": "40707869",
+    "country": "Romania",
+    "address": "Str. Fabricii nr. 11, ap. 16, Cluj-Napoca, Cluj, 400620, Romania",
+    "email": "contact@beyond-software.ro"
+  },
+  "covered_components": [
+    "New vector, retrieval and encryption modules introduced after 2.0.0",
+    "New retrieval and vault interfaces in CLI, C, WASM, Python, Go and JavaScript",
+    "New tests and documentation accompanying those proprietary additions"
+  ],
+  "preserved_licenses": [
+    "Previously Apache-2.0 components and full-text implementation retain their existing notices",
+    "Third-party components retain their own licenses"
+  ],
+  "authorization": "Owner selected public source and free registry downloads under revised proprietary terms on 2026-09-12",
+  "independent_legal_review": false,
+  "independent_security_audit": false
+}

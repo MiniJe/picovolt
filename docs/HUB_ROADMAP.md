@@ -85,6 +85,31 @@ that narrow feature. Downloads are not evidence of willingness to pay.
 
 ## Next delivery order
 
+Implementation update, 2026-09-11: private Hub 0.5 is deployed on Hetzner with
+isolated native verification, workspace switching, account-bound invitations,
+publisher/reader roles, single-use recovery codes and license acceptance/order
+records. 36 service checks passed on the target host, including a separate
+root-only ownership test. The real workspace and restore drill remain healthy.
+Paid offers/card checkout are not enabled. Independent SMTP notifications and
+encrypted off-host backups are implemented but await production configuration.
+
+The private 2.1.0 engine now implements bounded BM25 full-text search, exact
+vector similarity, and SELECT-snapshot retrieval across Rust, C, Python, Go,
+JavaScript/WASM and CLI. See [API and bounds](RETRIEVAL_2_1.md) and the
+[qualification ledger](RELEASE_2_1.md). Indexes are application-owned and rebuilt
+per JSON retrieval call. Production stays on 2.0; 2.1 is not publicly published.
+
+Private 2.2.0 adds [encrypted native vaults](ENCRYPTION_2_2.md), key rotation,
+verified backup/restore and [hybrid retrieval](HYBRID_2_2.md). These are isolated
+engine features; production Hub migration and independent cryptographic review
+remain separate gates. See [qualification](RELEASE_2_2.md).
+
+Remaining release order: activate independent alerting and off-host recovery;
+complete a replacement-host restore drill; configure reviewed paid offers and
+payment/invoice/delivery integration; qualify search relevance/performance at customer scale; then evaluate replication or storage expansion from actual demand.
+
+The original work breakdown below describes the acceptance gates for those areas.
+
 1. **Verifier isolation and failure alerts.** Run untrusted dataset inspection in
    a separate, resource-limited process boundary with no network or access to
    Hub credentials/metadata. Add off-host health and backup-failure notifications

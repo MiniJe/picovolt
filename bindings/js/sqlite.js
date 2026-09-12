@@ -1,3 +1,4 @@
+// Modified for PicoVolt 2.1.0 retrieval, 2026-09-11. See legal/COMPONENT-SCOPE-2.1.md.
 // A better-sqlite3-inspired synchronous API over PicoVolt's WebAssembly engine.
 // It follows the familiar prepare/run/get/all shape while retaining PicoVolt's
 // focused SQL surface:
@@ -92,6 +93,12 @@ class Database {
 
   prepare(sql) {
     return new Statement(this, sql);
+  }
+
+  retrieve(request) {
+    this._assertOpen();
+    if (typeof this._db.retrieve !== 'function') throw new Error('Retrieval requires PicoVolt 2.1');
+    return JSON.parse(this._db.retrieve(JSON.stringify(request)));
   }
 
   executeMany(sql, rows) {

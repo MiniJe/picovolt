@@ -1,3 +1,5 @@
+// Modified for PicoVolt 2.2.0 encryption/hybrid retrieval; see legal/COMPONENT-SCOPE-2.2.md.
+// Modified for PicoVolt 2.1.0 retrieval, 2026-09-11. See legal/COMPONENT-SCOPE-2.1.md.
 //! C ABI (enabled by the `capi` feature).
 //!
 //! A thin, stable, panic-safe C-callable surface over the in-process engine, so
@@ -32,6 +34,10 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
 use crate::{Database, PreparedStatement};
+
+/// Native encrypted vault handles (2.2+).
+#[cfg(all(feature = "encryption", not(target_arch = "wasm32")))]
+pub mod vault;
 
 /// Opaque handle to a PicoVolt database. Allocate with `pv_open_*`, free with
 /// `pv_close`.
@@ -261,6 +267,30 @@ pub unsafe extern "C" fn pv_query_params(
             },
             Err(e) => {
                 set_last_error(e.to_string());
+                ptr::null_mut()
+            }
+        }
+    })
+}
+
+#[cfg(any(feature = "full-text", feature = "vector-search"))]
+/// Execute a bounded SELECT retrieval request. Free the result with pv_string_free.
+///
+/// # Safety
+/// `db` is a live handle and `request` points to a NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn pv_retrieve(db: *mut PvDb, request: *const c_char) -> *mut c_char {
+    guard(ptr::null_mut(), || {
+        clear_last_error();
+        let (Some(db), Some(request)) = (unsafe { db.as_mut() }, unsafe { cstr_to_str(request) })
+        else {
+            set_last_error("pv_retrieve: invalid handle or request");
+            return ptr::null_mut();
+        };
+        match db.inner.retrieve_json(request) {
+            Ok(result) => string_to_c(result),
+            Err(error) => {
+                set_last_error(error.to_string());
                 ptr::null_mut()
             }
         }

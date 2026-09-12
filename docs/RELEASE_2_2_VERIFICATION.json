@@ -1,0 +1,58 @@
+{
+  "version": "2.2.0",
+  "verified_at": "2026-09-12T10:14:50.919578+00:00",
+  "engine_commit": "b29b08ea85b8a8f9f4f70192a0f45726961babd3",
+  "compiler": "Rust 1.98.1",
+  "windows_rust_tests": 354,
+  "native_checks": [
+    {
+      "check": "rust-tests",
+      "exit_code": 0,
+      "seconds": 173.5
+    },
+    {
+      "check": "clippy",
+      "exit_code": 0,
+      "seconds": 50.8
+    },
+    {
+      "check": "doctests",
+      "exit_code": 0,
+      "seconds": 39.8
+    }
+  ],
+  "binding_checks": [
+    {
+      "check": "crypto-interop",
+      "exit_code": 0
+    },
+    {
+      "check": "go-vet",
+      "exit_code": 0
+    },
+    {
+      "check": "audit",
+      "exit_code": 0
+    },
+    {
+      "check": "format",
+      "exit_code": 0
+    },
+    {
+      "check": "python-binding",
+      "exit_code": 0
+    },
+    {
+      "check": "go-tests",
+      "exit_code": 0
+    }
+  ],
+  "python_tests": 11,
+  "wasm_tests": 6,
+  "release_policy_tests": 32,
+  "npm_integrity": "sha512-RFnjQzlzGnUfmWIuZzI7o7k8dZFok51W30pLZjIcJwKiAoy5gAT1gemH53am4P9IZ2XM0fgzPczevC+FXbs9ng==",
+  "hosted_matrix": "pending",
+  "registry_publication": "pending",
+  "independent_security_audit": false,
+  "independent_legal_review": false
+}

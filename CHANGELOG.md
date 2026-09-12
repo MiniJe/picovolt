@@ -6,6 +6,32 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-12
+
+- Native XChaCha20-Poly1305 encrypted snapshots and single-writer vaults with
+  atomic ciphertext commits and in-memory transaction candidates.
+- Raw-key generation, fixed-profile Argon2id passwords, key rotation, verified
+  encrypted backups, restore and CLI inspection/verification.
+- Vault access through Rust, C, Python and Go; filtered hybrid text/vector
+  retrieval across existing retrieval interfaces, including JavaScript/WASM.
+- Public source and free registry packages under PicoVolt Public-Source License
+  1.1. No account or pre-download clickwrap; unchanged registry mirrors allowed.
+  Previous Apache grants remain intact.
+- Explicit encryption and qualification boundaries; see
+  [qualification](docs/RELEASE_2_2.md) and [encryption](docs/ENCRYPTION_2_2.md).
+
+
+## [2.1.0] - Private qualification, 2026-09-11
+
+- Ranked BM25 full-text retrieval and exact cosine/squared-Euclidean vector
+  retrieval over bounded, filtered SELECT snapshots.
+- Reusable Rust indexes with validated updates/removals; JSON retrieval through
+  C, Python, Go, JavaScript/WASM and `pv retrieve`.
+- Read-only retrieval validates SQL before execution and preserves 64-bit IDs
+  as decimal strings across JSON interfaces. Existing file formats are unchanged.
+- First proprietary development line. Public publishing is disabled; legacy
+  Apache grants remain intact. See [qualification and availability](docs/RELEASE_2_1.md).
+
 ## [2.0.0] - 2026-09-10
 
 ### Added
@@ -420,7 +446,7 @@ Compact, binary persisted indexes.
   plus the region's `(offset, length)`. The region is roughly half the size of the
   JSON form and far faster to parse, so an indexed file is smaller and a streamed
   open fetches less. The new self-contained value codec carries no CAS references,
-  so an index reconstructs from the region bytes alone. See `docs/FORMAT.md` §6.1.
+  so an index reconstructs from the region bytes alone. See `docs/FORMAT.md` Â§6.1.
 
 ### Changed
 - **`FORMAT_VERSION` is now 2.** A 1.3 build reads versions 1 and 2; a file is
@@ -444,7 +470,7 @@ The performance release.
   (and dev-workspace) manifest and loaded on open, instead of rebuilt by a full
   table scan. So a database opens with its indexes intact without re-reading the
   pages (a streamed open stays cheap), and an indexed `ORDER BY col ... LIMIT k`
-  — including a `BEFORE tx` time-travel query — reads about k records instead of
+  â€” including a `BEFORE tx` time-travel query â€” reads about k records instead of
   the whole table. On the 213k-row benchmark the top-50 scrub query drops from
   ~220 ms to ~8 ms with an index on the sort column. The manifest field is additive
   (`serde(default)`): older files without it transparently fall back to rebuilding
@@ -484,7 +510,7 @@ backward-incompatible way, and a file written by any 1.x build opens in any late
 1.x build.
 
 This release makes no functional code changes beyond the version itself; it is the
-commitment to the surface built over 0.1–0.12 — a page-backed MVCC engine with
+commitment to the surface built over 0.1â€“0.12 â€” a page-backed MVCC engine with
 time-travel queries, a versioned and per-page-checksummed single-file format (see
 [docs/FORMAT.md](docs/FORMAT.md)), a SQL front-end (see the README), an optional
 HTTP/JSON server, and bindings for Rust, JavaScript/WASM, Go, Python, and C.
@@ -505,18 +531,18 @@ backups.
 ## [0.12.0] - 2026-06-25
 
 **Richer SQL.** A batch of the most-missed query features, plus a correctness fix
-for comparing and aggregating decimals. No on-disk format change — 0.11.0 files
+for comparing and aggregating decimals. No on-disk format change â€” 0.11.0 files
 open unchanged.
 
 ### Added
-- **`AS` column aliases** — `SELECT col AS name`, `COUNT(*) AS n`.
-- **`SELECT DISTINCT`** — drop duplicate output rows.
-- **More `WHERE` predicates** — `col [NOT] IN (...)`, `col [NOT] BETWEEN a AND b`
+- **`AS` column aliases** â€” `SELECT col AS name`, `COUNT(*) AS n`.
+- **`SELECT DISTINCT`** â€” drop duplicate output rows.
+- **More `WHERE` predicates** â€” `col [NOT] IN (...)`, `col [NOT] BETWEEN a AND b`
   (inclusive), `col IS [NOT] NULL`, and `NOT LIKE`. NULL follows SQL three-valued
   logic (a null column, or a null in an `IN` list, makes the row neither match nor
   not-match).
-- **Multi-column `ORDER BY`** — `ORDER BY a ASC, b DESC`.
-- **`HAVING`** — filter grouped rows on a group column, an alias, or an aggregate.
+- **Multi-column `ORDER BY`** â€” `ORDER BY a ASC, b DESC`.
+- **`HAVING`** â€” filter grouped rows on a group column, an alias, or an aggregate.
   The aggregate is computed per group, so `HAVING` can filter on one that is not in
   the `SELECT` list (e.g. `... GROUP BY city HAVING SUM(amount) > 1000`).
 
@@ -526,13 +552,13 @@ open unchanged.
   (a pure-integer `SUM` stays an integer; mixed integer/decimal columns are
   handled), and an overflowing sum is a clean error rather than a panic.
 - **Cross-type numeric comparison.** A comparison or equality between an integer
-  and a decimal — e.g. `WHERE price > 16` on a decimal column, or `HAVING
-  AVG(x) > 16` — now compares by magnitude. Previously it compared by value-kind,
+  and a decimal â€” e.g. `WHERE price > 16` on a decimal column, or `HAVING
+  AVG(x) > 16` â€” now compares by magnitude. Previously it compared by value-kind,
   which made every such predicate silently return the wrong rows.
 
 ### Notes
 - The new keywords are contextual, not reserved, so existing identifiers keep
-  working — with two refinements: a clause keyword (e.g. `from`, `where`) may no
+  working â€” with two refinements: a clause keyword (e.g. `from`, `where`) may no
   longer be used as a bare `AS` alias, and `DISTINCT` is only treated as a keyword
   when it leads a projection (a column literally named `distinct` still parses).
 - `ORDER BY`, `GROUP BY`, and `DISTINCT` keep a type-strict total order (so an
@@ -552,12 +578,12 @@ road to 1.0.
 
 ### Added
 - **Per-page integrity checksums.** Every page carries a 32-bit checksum (a
-  truncated BLAKE3 over the page, reusing the existing dependency — no new crate,
+  truncated BLAKE3 over the page, reusing the existing dependency â€” no new crate,
   wasm-clean). It is stamped when a page is written back and verified when a page
   is faulted into the buffer pool or loaded as a table tail, so torn writes and
   bit-rot surface as a clean [`PvError::Corruption`] at read time instead of a
   wrong answer. The page header grew from 24 to 28 bytes to hold it.
-- **`docs/FORMAT.md`** — a complete byte-layout specification (file header, pages,
+- **`docs/FORMAT.md`** â€” a complete byte-layout specification (file header, pages,
   records, MVCC envelope, columnar blocks, CAS pool, manifest, dev workspace),
   plus the versioning/compatibility policy and the durability model.
 - **Golden-file compatibility corpus.** A committed `.pvdb` fixture

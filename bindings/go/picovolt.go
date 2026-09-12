@@ -1,3 +1,4 @@
+// Modified for PicoVolt 2.1.0 retrieval, 2026-09-11. See legal/COMPONENT-SCOPE-2.1.md.
 // Package picovolt provides Go bindings for the PicoVolt embedded database
 // engine via its C ABI (cgo).
 //
@@ -23,12 +24,37 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"unsafe"
 )
 
 // DB is a handle to a PicoVolt database.
 type DB struct {
 	ptr *C.PvDb
+}
+
+// Retrieve runs a bounded SELECT-based full-text/vector request. Result IDs are
+// decimal strings, preserving 64-bit IDs when the JSON reaches a browser.
+func (db *DB) Retrieve(request string) (string, error) {
+	if db.ptr == nil {
+		return "", errors.New("picovolt: database is closed")
+	}
+	if len(request) > 131072 {
+		return "", errors.New("picovolt: retrieval request exceeds 128 KiB")
+	}
+	if strings.ContainsRune(request, 0) {
+		return "", errors.New("picovolt: retrieval request contains NUL")
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	cRequest := C.CString(request)
+	defer C.free(unsafe.Pointer(cRequest))
+	result := C.pv_retrieve(db.ptr, cRequest)
+	if result == nil {
+		return "", lastError()
+	}
+	defer C.pv_string_free(result)
+	return C.GoString(result), nil
 }
 
 // CommitLogOptions bounds disk retention. Zero selects the default per field.

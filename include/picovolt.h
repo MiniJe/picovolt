@@ -1,3 +1,5 @@
+// Modified for PicoVolt 2.2.0 encryption/hybrid retrieval; see legal/COMPONENT-SCOPE-2.2.md.
+// Modified for PicoVolt 2.1.0 retrieval, 2026-09-11. See legal/COMPONENT-SCOPE-2.1.md.
 /*
  * PicoVolt C ABI.
  *
@@ -58,6 +60,10 @@ PvDb *pv_open_prod(const char *path);
  *   {"columns":[...],"rows":[[...]]} | {"mutated":n} | {"done":true}
  */
 char *pv_query(PvDb *db, const char *sql);
+/* PicoVolt 2.1: full-text/vector retrieval over a bounded SELECT snapshot.
+ * Uses default retrieval features. JSON IDs are strings to preserve 64 bits.
+ * Same ownership/error conventions as pv_query. */
+char *pv_retrieve(PvDb *db, const char *request_json);
 
 /*
  * Like pv_query but binds `?` placeholders to a JSON array of parameters, e.g.
@@ -131,6 +137,17 @@ void pv_bytes_free(uint8_t *ptr, size_t len);
 
 /* Close and free a database handle. NULL is ignored. */
 void pv_close(PvDb *db);
+
+/* Native encryption feature, PicoVolt 2.2+. Secret: raw 32-byte key (password=0)
+ * or exact 12..1024 password bytes (password=1). No shared concurrent handle use.
+ * create=1 refuses overwrite; create=0 opens an existing vault. NULL on error. */
+typedef struct PvVault PvVault;
+PvVault *pv_vault_open(const char *path, const uint8_t *secret, size_t secret_len,
+                      int32_t password, int32_t create);
+/* JSON actions: query, batch, inspect, backup, retrieve. Free with pv_string_free. */
+char *pv_vault_request(PvVault *vault, const char *request);
+int32_t pv_vault_rotate(PvVault *vault, const uint8_t *secret, size_t secret_len, int32_t password);
+void pv_vault_close(PvVault *vault);
 
 #ifdef __cplusplus
 } /* extern "C" */

@@ -1,3 +1,5 @@
+// Modified for PicoVolt 2.2.0 encryption/hybrid retrieval; see legal/COMPONENT-SCOPE-2.2.md.
+// Modified for PicoVolt 2.1.0 retrieval, 2026-09-11. See legal/COMPONENT-SCOPE-2.1.md.
 //! # PicoVolt (PVDB)
 //!
 //! A compact embedded SQL database with page-backed storage and MVCC history.
@@ -55,11 +57,20 @@ mod cancel;
 #[cfg(not(target_arch = "wasm32"))]
 mod concurrent;
 pub mod core;
+/// Native authenticated snapshots and encrypted single-writer vaults.
+#[cfg(all(feature = "encryption", not(target_arch = "wasm32")))]
+pub mod encryption;
 pub mod engine;
 #[cfg(feature = "enterprise")]
 pub mod enterprise;
 pub mod journal;
+#[cfg(any(feature = "full-text", feature = "vector-search"))]
+pub mod retrieval;
+#[cfg(feature = "full-text")]
+pub mod search;
 pub mod storage;
+#[cfg(feature = "vector-search")]
+pub mod vector;
 pub use journal::{
     BlobChange, ChangeCommit, ChangeSink, CommitLogOptions, CommitLogStatus, PageChange,
     SnapshotCheckpoint, COMMIT_LOG_DIR,
