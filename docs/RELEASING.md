@@ -1,3 +1,13 @@
+# Current distribution policy
+
+PicoVolt 2.2.0 uses free public-source proprietary terms, not Apache-2.0.
+Run `python scripts/check_public_release.py` before publishing. The gate checks
+`legal/PUBLIC-RELEASE.json`, its version, zero fee, terms digest and binding copies.
+No engine account or clickwrap service is required. Binary packages must carry
+licenses, dependency notices and the release notice; the macOS wheel metadata
+must pass `scripts/check_macos_wheel.py`. Earlier Apache grants remain intact.
+See [2.2 verification](RELEASE_2_2.md) for the completed release evidence.
+
 # Release cadence
 
 PicoVolt runs a fast release train: one backward-compatible minor-release window

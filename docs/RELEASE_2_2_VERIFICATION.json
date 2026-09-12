@@ -1,6 +1,6 @@
 {
   "version": "2.2.0",
-  "verified_at": "2026-09-12T10:14:50.919578+00:00",
+  "verified_at": "2026-09-12T10:41:46.164056+00:00",
   "engine_commit": "b29b08ea85b8a8f9f4f70192a0f45726961babd3",
   "compiler": "Rust 1.98.1",
   "windows_rust_tests": 354,
@@ -51,8 +51,162 @@
   "wasm_tests": 6,
   "release_policy_tests": 32,
   "npm_integrity": "sha512-RFnjQzlzGnUfmWIuZzI7o7k8dZFok51W30pLZjIcJwKiAoy5gAT1gemH53am4P9IZ2XM0fgzPczevC+FXbs9ng==",
-  "hosted_matrix": "pending",
-  "registry_publication": "pending",
+  "hosted_matrix": "passed",
+  "registry_publication": "passed; regional Go .info negative caching observed",
   "independent_security_audit": false,
-  "independent_legal_review": false
+  "independent_legal_review": false,
+  "status": "published",
+  "release_commit": "bf9038536c84f8903f8bf25b555299ac8583e83b",
+  "tag": "v2.2.0",
+  "published_at": "2026-09-12T10:37:01Z",
+  "workflows": {
+    "ci": 34688185848,
+    "platform_wheels": 34688183832,
+    "fuzz_model_recovery": 34687960709,
+    "performance_npm_reproducibility": 34687974209,
+    "release": 34688473775,
+    "python_go_publication": 34688473827
+  },
+  "registries": {
+    "npm": {
+      "version": "2.2.0",
+      "integrity": "sha512-RFnjQzlzGnUfmWIuZzI7o7k8dZFok51W30pLZjIcJwKiAoy5gAT1gemH53am4P9IZ2XM0fgzPczevC+FXbs9ng==",
+      "sha256": "562b9799087ef51fe31f5e85c77d63da4b13498991f66f0d240e0dcd5bc69ca2"
+    },
+    "crates_io": {
+      "version": "2.2.0",
+      "sha256": "90faead70dab59cabdea98e1839b5c59688574f89d01a37e963ace28725f3aa4"
+    },
+    "go": {
+      "version": "v2.2.0",
+      "origin": {
+        "VCS": "git",
+        "URL": "https://github.com/MiniJe/picovolt",
+        "Subdir": "bindings/go",
+        "Hash": "bf9038536c84f8903f8bf25b555299ac8583e83b",
+        "Ref": "refs/tags/bindings/go/v2.2.0"
+      },
+      "sum": "h1:igqZsalBCofKfjPYQlrjRl9rcB8PA5tqJV03tguLRqI=",
+      "exact_info_cache": "regional negative cache pending expiry; latest and zip verified"
+    }
+  },
+  "pypi": {
+    "version": "2.2.0",
+    "license_expression": "LicenseRef-PicoVolt-Public-Source-1.1",
+    "files": [
+      {
+        "filename": "picovolt-2.2.0-py3-none-macosx_10_12_universal2.whl",
+        "sha256": "9f1adf6753223bec5febdf80d30890e522042d444786032562bfaf3a979ac607",
+        "url": "https://files.pythonhosted.org/packages/b4/09/5832a94c51cf4a9dac3a452b7b82875e4591e2c57ac09d24fa411113c10a/picovolt-2.2.0-py3-none-macosx_10_12_universal2.whl"
+      },
+      {
+        "filename": "picovolt-2.2.0-py3-none-manylinux_2_28_x86_64.whl",
+        "sha256": "4835be473bda2ba5072edcfc1fd8710550f040b0718347242b1fd5d09a26d659",
+        "url": "https://files.pythonhosted.org/packages/1b/ec/d3845a6a9fc36c18df3eedeaa3c001ab699f19536fea7becb20ff24228b0/picovolt-2.2.0-py3-none-manylinux_2_28_x86_64.whl"
+      },
+      {
+        "filename": "picovolt-2.2.0-py3-none-win_amd64.whl",
+        "sha256": "3f32562a8ec578e9a9ac18bff3c82c87ab485e2c7f1440675bdf2de7155294cd",
+        "url": "https://files.pythonhosted.org/packages/58/96/17f0dba27af9fd2a2d5286be4ae97a63a587e28fa5ddd53e66086775d252/picovolt-2.2.0-py3-none-win_amd64.whl"
+      }
+    ]
+  },
+  "native_assets": [
+    {
+      "file": "LICENSE-linux-x86_64.txt",
+      "sha256": "fea338d875dfc9e115342e6d802742126b57ba1c5ebef7a54cde9cf26c1984ff",
+      "provenance_verified": true
+    },
+    {
+      "file": "LICENSE-macos-arm64.txt",
+      "sha256": "fea338d875dfc9e115342e6d802742126b57ba1c5ebef7a54cde9cf26c1984ff",
+      "provenance_verified": true
+    },
+    {
+      "file": "LICENSE-windows-x86_64.txt",
+      "sha256": "fea338d875dfc9e115342e6d802742126b57ba1c5ebef7a54cde9cf26c1984ff",
+      "provenance_verified": true
+    },
+    {
+      "file": "RELEASE-linux-x86_64.json",
+      "sha256": "f5449dda478f1f04a01a8a367b64ed5583a2e102ed09f72dd24b93df574a5f2c",
+      "provenance_verified": true
+    },
+    {
+      "file": "RELEASE-macos-arm64.json",
+      "sha256": "f5449dda478f1f04a01a8a367b64ed5583a2e102ed09f72dd24b93df574a5f2c",
+      "provenance_verified": true
+    },
+    {
+      "file": "RELEASE-windows-x86_64.json",
+      "sha256": "f5449dda478f1f04a01a8a367b64ed5583a2e102ed09f72dd24b93df574a5f2c",
+      "provenance_verified": true
+    },
+    {
+      "file": "picovolt-capi-linux-x86_64.tar.gz",
+      "sha256": "07c0feb48ba74a3b05e0aa295910341aa11615b84f8262b15b749aeec51c730d",
+      "provenance_verified": true
+    },
+    {
+      "file": "picovolt-capi-macos-arm64.tar.gz",
+      "sha256": "ca53130badce61f39fa939a90e120617e5438326cea9b26bb01611957c70df79",
+      "provenance_verified": true
+    },
+    {
+      "file": "picovolt-capi-windows-x86_64.tar.gz",
+      "sha256": "e93ceedb2469ec13f259a4132fab2f499d7998e137218fad2fffebd105c985fc",
+      "provenance_verified": true
+    },
+    {
+      "file": "picovolt-linux-x86_64.cdx.json",
+      "sha256": "18bdbde3a7d8c7cc84dc80af3c6e18dbd790f4ad90069d5ac41176d265d82970",
+      "provenance_verified": true
+    },
+    {
+      "file": "picovolt-macos-arm64.cdx.json",
+      "sha256": "04d8695957a5d2b0d80e46748b5d6491c756f749832ebd309bd631ae4d5a012e",
+      "provenance_verified": true
+    },
+    {
+      "file": "picovolt-server-linux-x86_64",
+      "sha256": "e83bc88373a9c4b5629857d888b2c09d48fd5c5b72418cb8106354be0eac2fbb",
+      "provenance_verified": true
+    },
+    {
+      "file": "picovolt-server-macos-arm64",
+      "sha256": "4de52569499dd1c0e05e0ec9f864ecd1526aec528c75102dfdaf3e93c5cab344",
+      "provenance_verified": true
+    },
+    {
+      "file": "picovolt-server-windows-x86_64.exe",
+      "sha256": "12080a8582b04f24f25df72fb71b48ca886ed37e73be466a6ea7208cb1cdcacc",
+      "provenance_verified": true
+    },
+    {
+      "file": "picovolt-windows-x86_64.cdx.json",
+      "sha256": "ce0eb357329487b33552cb4cde0e9c3b8140d82e23493bebe918bbfd790fe8cf",
+      "provenance_verified": true
+    },
+    {
+      "file": "pv-linux-x86_64",
+      "sha256": "209c2b5f7b8f0cbc49f0fc716c6f8cb4fed78bbb978864f08cea2282af996f74",
+      "provenance_verified": true
+    },
+    {
+      "file": "pv-macos-arm64",
+      "sha256": "934029524a48d7bf5e2c9d94b77f71fc6acd992afa2331e21ffbbf3028371629",
+      "provenance_verified": true
+    },
+    {
+      "file": "pv-windows-x86_64.exe",
+      "sha256": "b8103f471622b8783e2789f97075e0e9277e0c1dbd9f9ff5f9252faf698fc769",
+      "provenance_verified": true
+    }
+  ],
+  "published_native_probes": {
+    "windows_cli": "pv 2.2.0",
+    "linux_cli": "pv 2.2.0",
+    "windows_cli_libsodium_interoperability": "passed"
+  },
+  "go_registry_clean_install": "passed through proxy.golang.org in the tagged Python/Go workflow"
 }

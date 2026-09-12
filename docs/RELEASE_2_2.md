@@ -1,8 +1,33 @@
 # PicoVolt 2.2.0 release verification
 
-Public release candidate prepared 12 September 2026. The owner authorized public
-source and free registry downloads under PicoVolt Public-Source License 1.1.
-Production Hub and website runtime upgrades remain separate deployments.
+Published 12 September 2026 at 10:37 UTC as
+[v2.2.0](https://github.com/MiniJe/picovolt/releases/tag/v2.2.0), commit
+`bf9038536c84f8903f8bf25b555299ac8583e83b`. Public source and free registry downloads
+use PicoVolt Public-Source License 1.1. Production Hub and browser runtime upgrades
+remain separate deployments.
+
+## Public verification
+
+- [Cross-platform CI](https://github.com/MiniJe/picovolt/actions/runs/34688185848): passed.
+- [Fuzz and model/recovery shards](https://github.com/MiniJe/picovolt/actions/runs/34687960709): passed.
+- [Performance budgets and reproducible npm archive](https://github.com/MiniJe/picovolt/actions/runs/34687974209): passed.
+- [Tagged release](https://github.com/MiniJe/picovolt/actions/runs/34688473775): passed, including exact Cargo/npm registry installs and all native builds.
+- [Tagged Python/Go workflow](https://github.com/MiniJe/picovolt/actions/runs/34688473827): passed, including installed wheel tests and clean Python/Go registry installs.
+- All 18 native assets match SHA256SUMS and have verified signed provenance for
+  the exact release workflow, tag and source commit. Published Windows/Linux CLI
+  version probes and Windows CLI/libsodium interoperability passed.
+- Public npm bytes match the locally verified and independently hosted build.
+  Public crate, Python wheel and Go module hashes are recorded in the
+  [machine-readable verification record](RELEASE_2_2_VERIFICATION.json).
+
+Public Python wheels cover Windows x86-64, manylinux 2.28 x86-64 and macOS
+universal2 (Intel macOS 10.12+; Apple Silicon macOS 11+). Native CLI/server/C ABI
+bundles cover Linux x86-64, macOS arm64 and Windows x86-64. The corrected macOS
+wheel tag is checked against both Mach-O slices. No Linux ARM binary is supplied.
+
+Some regional Go `.info` responses retained a negative cache while `@latest`,
+the exact module archive and hosted clean installs already succeeded. An observed
+regional cache expires at 10:57:36 UTC on publication day; tags were not moved.
 
 ## Implemented
 
@@ -18,7 +43,7 @@ Read [the encryption contract](ENCRYPTION_2_2.md) and [hybrid search](HYBRID_2_2
 before using these APIs. Full-image vault commits are intended for bounded
 databases, not an unmeasured replacement for page-level I/O on large stores.
 
-## Qualification record
+## Earlier private qualification record
 
 The final artifact manifest records the exact source commit, package hashes and
 completed checks. Tests cover authentication, invalid inputs, history, failed
@@ -63,8 +88,8 @@ fee, covered components and preservation of existing licenses. Public registry
 publication checks that notice and the license copies in each binding. No account,
 clickwrap service, activation or customer receipt is required for this release.
 
-The current public candidate must pass the hosted matrix and exact registry
-install checks before GitHub Release creation. The private artifact hashes are
+The public release passed the hosted matrix and exact registry install checks
+before GitHub Release creation. The private artifact hashes are
 historical qualification evidence; public packages are rebuilt with the revised
 terms, notices and reproducible compiler. Platform claims for public artifacts
 will be recorded from those builds, without extending the private results above.
