@@ -1,5 +1,6 @@
-"""PV-2.3-M-001: narrow hosted qualification fixes, asserted before writes."""
+"""PV-2.3-M-001: strict lint fixes and one-time golden fixture generation."""
 from pathlib import Path
+import subprocess
 
 changes = {}
 def replace(path, old, new):
@@ -10,30 +11,22 @@ def replace(path, old, new):
         raise SystemExit(f'Unexpected source anchor in {path}: {old[:100]}')
     changes[path] = value.replace(old, new, 1)
 
-replace('tests/persistent_retrieval.rs', 'error.contains("offset"),', 'error.contains("offset") || (error.contains("line ") && error.contains("column ")),')
-replace('tests/persistent_retrieval_corruption.rs', '#![cfg(all(feature = "full-text", feature = "vector-search")))]', '#![cfg(all(feature = "full-text", feature = "vector-search"))]')
-replace('tests/persistent_retrieval_corruption.rs', 'root.join("pv_manifest.json")', 'root.join(picovolt::MANIFEST_FILE)')
-
-replace('src/db.rs', '    commit_sequence: Option<u64>,\n    page_count:', '    commit_sequence: Option<u64>,\n    /// Version 8 separates format capability from workspace logging state.\n    #[serde(default, skip_serializing_if = "Option::is_none")]\n    logged_workspace: Option<bool>,\n    page_count:')
-replace('src/db.rs', '    persistent::validate_manifest(m)?;', '''    persistent::validate_manifest(m)?;
-    if m.format_version >= crate::FORMAT_VERSION_RETRIEVAL
-        && m.logged_workspace != Some(m.commit_sequence.is_some()) {
-        return Err(PvError::Corruption("format-8 logging marker/sequence anchor mismatch".into()));
-    }''')
-replace('src/db.rs', '            retrieval_indexes: self.retrieval_descriptors()?,', '''            retrieval_indexes: self.retrieval_descriptors()?,
-            logged_workspace: (format_version >= crate::FORMAT_VERSION_RETRIEVAL)
-                .then_some(matches!(plan, IndexPlan::Definitions)),''')
-replace('src/journal.rs', '    commit_sequence: Option<u64>,\n    clock:', '    commit_sequence: Option<u64>,\n    #[serde(default)]\n    logged_workspace: Option<bool>,\n    clock:')
-replace('src/journal.rs', '    let surviving_head = commits.last().copied().unwrap_or(0).max(floor);', '''    let surviving_head = commits.last().copied().unwrap_or(0).max(floor);
-    if let Some(meta) = manifest.as_ref().filter(|m| m.format_version >= crate::FORMAT_VERSION_RETRIEVAL) {
-        if meta.logged_workspace != Some(meta.commit_sequence.is_some())
-            || (meta.logged_workspace == Some(false) && surviving_head != 0) {
-            return Err(PvError::Corruption("format-8 logging marker/sequence anchor mismatch".into()));
-        }
-    }''')
-replace('src/journal.rs', '.is_some_and(|m| m.format_version >= crate::FORMAT_VERSION_COMMIT_LOG)', '''.is_some_and(|m| m.format_version >= crate::FORMAT_VERSION_COMMIT_LOG
-                        && !(m.format_version >= crate::FORMAT_VERSION_RETRIEVAL && m.logged_workspace == Some(false)))''')
-
+replace('src/persistent.rs', "impl<'de> serde::de::Visitor<'de> for Identifier", "impl serde::de::Visitor<'_> for Identifier")
+replace('src/vector.rs', 'allowed.map_or(true, |ids| ids.contains(id))', 'allowed.is_none_or(|ids| ids.contains(id))')
+replace('src/db.rs', 'validate_check_shape(check, columns, 1, &mut nodes).map_err(&invalid)?;', 'validate_check_shape(check, columns, 1, &mut nodes).map_err(invalid)?;')
+path = 'src/engine/query.rs'
+value = Path(path).read_text()
+function = value.index('fn parse_retrieval_index(')
+tests = value.index('#[cfg(test)]\nmod tests')
+if function > tests:
+    value = value[:tests] + value[function:] + '\n\n' + value[tests:function]
+    changes[path] = value
 for path, content in changes.items():
     Path(path).write_text(content)
     print('PATCHED', path)
+
+fixture = Path('tests/fixtures/format_v8.pvdb')
+if not fixture.exists():
+    subprocess.run(['cargo', 'run', '--locked', '--example', 'persistent_retrieval_envelope', '--', '--fixture'], check=True)
+else:
+    print('Keeping existing immutable format-8 golden fixture')
