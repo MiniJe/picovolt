@@ -113,6 +113,9 @@ struct Manifest {
     clock: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     commit_sequence: Option<u64>,
+    /// Version 8 separates format capability from workspace logging state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    logged_workspace: Option<bool>,
     page_count: u64,
     tables: Vec<TableMeta>,
     cas_hashes: Vec<String>,
@@ -137,6 +140,13 @@ struct Manifest {
 /// only version gate for development workspaces, which have no file header.
 fn check_manifest_version(m: &Manifest) -> Result<()> {
     persistent::validate_manifest(m)?;
+    if m.format_version >= crate::FORMAT_VERSION_RETRIEVAL
+        && m.logged_workspace != Some(m.commit_sequence.is_some())
+    {
+        return Err(PvError::Corruption(
+            "format-8 logging marker/sequence anchor mismatch".into(),
+        ));
+    }
     if m.format_version == 0 || m.format_version > FORMAT_VERSION {
         return Err(PvError::Corruption(format!(
             "unsupported workspace format version {}; this build reads up to {FORMAT_VERSION}",
@@ -3796,6 +3806,8 @@ impl Database {
             cas_dir,
             index_region,
             retrieval_indexes: self.retrieval_descriptors()?,
+            logged_workspace: (format_version >= crate::FORMAT_VERSION_RETRIEVAL)
+                .then_some(matches!(plan, IndexPlan::Definitions)),
         })
     }
 

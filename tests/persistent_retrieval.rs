@@ -81,7 +81,7 @@ fn malformed_ddl_is_positioned_and_does_not_register_a_definition() {
         "CREATE INDEX x ON docs USING UNKNOWN (title) WITH (id_column='id')",
     ] {
         let error = db.query(sql).unwrap_err().to_string();
-        assert!(error.contains("byte") || error.contains("position") || error.contains("offset"), "unpositioned error: {error}");
+        assert!(error.contains("byte") || error.contains("position") || error.contains("offset") || (error.contains("line ") && error.contains("column ")), "unpositioned error: {error}");
         assert!(db.retrieval_indexes().is_empty());
     }
 }

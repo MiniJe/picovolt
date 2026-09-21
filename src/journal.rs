@@ -149,6 +149,18 @@ fn inventory(root: &Path) -> Result<(u64, u64, Vec<u64>)> {
         )));
     }
     let surviving_head = commits.last().copied().unwrap_or(0).max(floor);
+    if let Some(meta) = manifest
+        .as_ref()
+        .filter(|m| m.format_version >= crate::FORMAT_VERSION_RETRIEVAL)
+    {
+        if meta.logged_workspace != Some(meta.commit_sequence.is_some())
+            || (meta.logged_workspace == Some(false) && surviving_head != 0)
+        {
+            return Err(PvError::Corruption(
+                "format-8 logging marker/sequence anchor mismatch".into(),
+            ));
+        }
+    }
     let head = match manifest.as_ref().and_then(|m| m.commit_sequence) {
         Some(anchor) => anchor,
         None => {
@@ -163,9 +175,11 @@ fn inventory(root: &Path) -> Result<(u64, u64, Vec<u64>)> {
                     return Err(PvError::Corruption("legacy commit history does not match the database; restore a verified backup".into()));
                 }
             } else if floor > 0
-                || manifest
-                    .as_ref()
-                    .is_some_and(|m| m.format_version >= crate::FORMAT_VERSION_COMMIT_LOG)
+                || manifest.as_ref().is_some_and(|m| {
+                    m.format_version >= crate::FORMAT_VERSION_COMMIT_LOG
+                        && !(m.format_version >= crate::FORMAT_VERSION_RETRIEVAL
+                            && m.logged_workspace == Some(false))
+                })
             {
                 return Err(PvError::Corruption("legacy commit history has no verifiable sequence anchor; restore a verified backup".into()));
             }
@@ -210,6 +224,8 @@ struct ManifestMeta {
     format_version: u16,
     #[serde(default)]
     commit_sequence: Option<u64>,
+    #[serde(default)]
+    logged_workspace: Option<bool>,
     clock: u64,
     page_count: u64,
     cas_hashes: Vec<String>,
