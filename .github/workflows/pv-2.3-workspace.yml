@@ -1,0 +1,64 @@
+name: PV-2.3 isolated verification workspace
+
+on:
+  push:
+    branches: [codex/2.3-persistent-retrieval]
+    paths: [.github/workflows/pv-2.3-workspace.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  workspace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Archive only tracked repository source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pv23-export"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/pv23-export/source.tar.gz"
+          git rev-parse HEAD > "$RUNNER_TEMP/pv23-export/source-sha.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pv23-source
+          retention-days: 2
+          path: |
+            ${{ runner.temp }}/pv23-export/source.tar.gz
+            ${{ runner.temp }}/pv23-export/source-sha.txt
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.86.0
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - name: Export locked dependency sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.86.0 vendor --locked --versioned-dirs "$RUNNER_TEMP/pv23-vendor/vendor" > "$RUNNER_TEMP/pv23-export/vendor-config.toml"
+          tar -C "$RUNNER_TEMP/pv23-vendor" -czf "$RUNNER_TEMP/pv23-export/vendor.tar.gz" vendor
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pv23-vendor
+          retention-days: 2
+          path: ${{ runner.temp }}/pv23-export/vendor.tar.gz
+      - name: Export standalone verification toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain="$(rustup run 1.86.0 rustc --print sysroot)"
+          tar -C "$toolchain" --exclude=share/doc -czf "$RUNNER_TEMP/pv23-export/rust-1.86.tar.gz" bin lib share
+          rustc +1.86.0 -Vv > "$RUNNER_TEMP/pv23-export/rust-version.txt"
+          sha256sum "$RUNNER_TEMP/pv23-export/"*.tar.gz > "$RUNNER_TEMP/pv23-export/SHA256SUMS"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pv23-toolchain
+          retention-days: 2
+          path: |
+            ${{ runner.temp }}/pv23-export/rust-1.86.tar.gz
+            ${{ runner.temp }}/pv23-export/rust-version.txt
+            ${{ runner.temp }}/pv23-export/SHA256SUMS
