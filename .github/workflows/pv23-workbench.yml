@@ -9,16 +9,14 @@ on:
 
 permissions:
   contents: write
-
 concurrency:
   group: pv23-implementation-workbench
   cancel-in-progress: false
-
 jobs:
   workbench:
     if: github.repository == 'MiniJe/picovolt' && github.ref == 'refs/heads/codex/2.3-persistent-retrieval-m001'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -29,28 +27,17 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
-      - name: Record source and function map
-        shell: bash
+        with:
+          cache-on-failure: true
+      - name: Record build provenance
         run: |
-          set -euo pipefail
           git rev-parse HEAD
           rustc -Vv
-          python3 - <<'PY'
-          import pathlib, re
-          for name in ('src/db.rs', 'src/engine/query.rs', 'src/storage/cas.rs', 'src/journal.rs', 'src/storage/vle.rs', 'src/lib.rs'):
-              print('SOURCE_MAP', name)
-              for number, line in enumerate(pathlib.Path(name).read_text().splitlines(), 1):
-                  if re.search(r'\bfn (?:flush|maybe_flush|.*manifest.*|insert.*|delete.*|update.*|drop_table|create_index.*|.*journal.*|inspect|verification_hash|parse_drop|put|get|pack|.*format.*)\b', line):
-                      print(number, line.strip())
-          PY
       - name: Apply deterministic mandate patch
-        if: hashFiles('scripts/pv23_workbench.py') != ''
         run: python3 scripts/pv23_workbench.py
       - name: Format implementation
-        if: hashFiles('scripts/pv23_workbench.py') != ''
         run: cargo fmt --all
       - name: Commit only authorized source changes
-        if: hashFiles('scripts/pv23_workbench.py') != ''
         shell: bash
         run: |
           set -euo pipefail
@@ -60,6 +47,7 @@ jobs:
               'src/db.rs', 'src/db/persistent.rs', 'src/core/types.rs', 'src/lib.rs',
               'src/engine/query.rs', 'src/search.rs', 'src/vector.rs', 'src/retrieval.rs',
               'src/persistent.rs', 'src/bin/pv.rs', 'src/migrate.rs', 'src/ffi.rs', 'src/wasm_api.rs',
+              'src/journal.rs', 'src/concurrent.rs',
               'tests/persistent_retrieval.rs', 'tests/persistent_retrieval_crash.rs',
               'tests/persistent_retrieval_corruption.rs', 'tests/persistent_retrieval_model.rs',
               'tests/persistent_retrieval_bindings.rs', 'tests/fixtures/format_v8.pvdb',
@@ -78,15 +66,15 @@ jobs:
               subprocess.run(['git', 'add', '--', *sorted(changed)], check=True)
           PY
           if ! git diff --cached --quiet; then
-            git -c user.name='PicoVolt implementation automation' -c user.email='picovolt-automation@users.noreply.github.com' commit -s -m 'feat(retrieval): apply reviewed PV-2.3-M-001 implementation patch'
+            git -c user.name='PicoVolt implementation automation' -c user.email='picovolt-automation@users.noreply.github.com' commit -s -m 'fix(retrieval): apply reviewed PV-2.3-M-001 qualification patch'
             git push origin HEAD:refs/heads/codex/2.3-persistent-retrieval-m001
           fi
           git rev-parse HEAD
-          git diff HEAD^ --stat || true
       - name: Compile all features on MSRV
         run: cargo check --locked --all-features
-      - name: Focused persistent retrieval tests
-        if: hashFiles('tests/persistent_retrieval.rs') != ''
-        run: cargo test --locked --all-features --test persistent_retrieval -- --nocapture
-      - name: Test feature-disabled library
+      - name: Persistent retrieval behavior, corruption and crash tests
+        run: cargo test --locked --all-features --test persistent_retrieval --test persistent_retrieval_corruption --test persistent_retrieval_crash -- --nocapture
+      - name: Feature-disabled library
         run: cargo check --locked --no-default-features --lib
+      - name: Lint all features
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
