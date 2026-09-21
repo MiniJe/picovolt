@@ -54,7 +54,11 @@ pub const MAGIC_BYTES: [u8; 4] = [0x50, 0x56, 0x44, 0x42];
 ///   recovery. Page and baked-region encodings remain compatible with v5, but
 ///   1.x readers must reject this version instead of skipping recovery.
 /// - Version 7: anchors the committed change sequence in the workspace manifest.
-pub const FORMAT_VERSION: u16 = 7;
+/// - Version 8: named, validated persistent retrieval descriptors and CAS payloads.
+pub const FORMAT_VERSION: u16 = 8;
+
+/// Minimum format for named persistent retrieval catalog objects.
+pub const FORMAT_VERSION_RETRIEVAL: u16 = 8;
 
 /// Minimum format for a persisted monotonic commit-sequence anchor.
 pub const FORMAT_VERSION_COMMIT_ANCHOR: u16 = 7;

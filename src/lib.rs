@@ -64,6 +64,8 @@ pub mod engine;
 #[cfg(feature = "enterprise")]
 pub mod enterprise;
 pub mod journal;
+/// Named persistent retrieval catalog and bounded binary codecs.
+pub mod persistent;
 #[cfg(any(feature = "full-text", feature = "vector-search"))]
 pub mod retrieval;
 #[cfg(feature = "full-text")]

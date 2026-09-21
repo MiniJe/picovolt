@@ -26,6 +26,8 @@ use std::time::Instant;
 
 mod aggregate;
 mod explain;
+// PV23 storage integration: derived CAS state shares the table commit boundary.
+mod persistent;
 
 #[cfg(not(target_arch = "wasm32"))]
 use fs2::FileExt;
@@ -122,12 +124,19 @@ struct Manifest {
     /// `pairs` instead).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     index_region: Option<(u64, u64)>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::persistent::descriptors"
+    )]
+    retrieval_indexes: Vec<crate::persistent::Descriptor>,
 }
 
 /// Reject a manifest whose format version this build cannot read: `0` (a
 /// pre-freeze workspace) or any value newer than [`FORMAT_VERSION`]. This is the
 /// only version gate for development workspaces, which have no file header.
 fn check_manifest_version(m: &Manifest) -> Result<()> {
+    persistent::validate_manifest(m)?;
     if m.format_version == 0 || m.format_version > FORMAT_VERSION {
         return Err(PvError::Corruption(format!(
             "unsupported workspace format version {}; this build reads up to {FORMAT_VERSION}",
@@ -187,6 +196,9 @@ fn required_manifest_version(manifest: &Manifest) -> u16 {
         .any(|table| table.cold_pages > 0 || table.compaction_cursor.is_some())
     {
         required = required.max(FORMAT_VERSION_COLUMNAR);
+    }
+    if !manifest.retrieval_indexes.is_empty() {
+        required = required.max(crate::FORMAT_VERSION_RETRIEVAL);
     }
     required
 }
@@ -316,6 +328,8 @@ pub struct DatabaseStats {
     pub cas: CasStats,
     /// Table inventories in catalog order.
     pub tables: Vec<TableStats>,
+    /// Named retrieval index health and last persisted generation.
+    pub retrieval_indexes: Vec<crate::persistent::RetrievalIndexInfo>,
 }
 
 /// Buffer-pool counters included in [`DatabaseStats`].
@@ -613,6 +627,7 @@ pub struct Database {
     cas: CasStore,
     txm: TxManager,
     tables: BTreeMap<String, Table>,
+    retrieval_indexes: BTreeMap<String, crate::persistent::CatalogEntry>,
     compliance: ComplianceMonitor,
     root: Option<PathBuf>,
     autocommit: bool,
@@ -761,14 +776,17 @@ impl Database {
             });
             let dev = DevStore::open(&root, manifest.page_count)?;
             let mut cache = PageCache::new(Backend::Dev(dev), DEFAULT_CACHE_PAGES);
+            persistent::preflight_dev(&root, &manifest)?;
             let cas = CasStore::load_dev(&root, &manifest.cas_hashes)?;
             // Development workspaces persist indexes as JSON pairs, not a region.
             let tables = build_tables(&mut cache, &cas, &manifest, true, &[])?;
+            let retrieval_indexes = persistent::load_catalog(&mut cache, &cas, &tables, &manifest)?;
             Ok(Self {
                 cache: RefCell::new(cache),
                 cas,
                 txm: TxManager::with_clock(manifest.clock),
                 tables,
+                retrieval_indexes,
                 compliance: ComplianceMonitor::new(),
                 root: Some(root),
                 autocommit: true,
@@ -794,6 +812,7 @@ impl Database {
                 cas: CasStore::new_dev(&root),
                 txm: TxManager::new(),
                 tables: BTreeMap::new(),
+                retrieval_indexes: BTreeMap::new(),
                 compliance: ComplianceMonitor::new(),
                 root: Some(root),
                 autocommit: true,
@@ -837,11 +856,13 @@ impl Database {
         )?;
         let mut cache = PageCache::new(Backend::Prod(mono), DEFAULT_CACHE_PAGES);
         let tables = build_tables(&mut cache, &cas, &manifest, false, region)?;
+        let retrieval_indexes = persistent::load_catalog(&mut cache, &cas, &tables, &manifest)?;
         Ok(Self {
             cache: RefCell::new(cache),
             cas,
             txm: TxManager::with_clock(manifest.clock),
             tables,
+            retrieval_indexes,
             compliance: ComplianceMonitor::new(),
             root: None,
             autocommit: false,
@@ -963,11 +984,13 @@ impl Database {
         let backend = Backend::Remote(RemoteStore::new(reader, page_count));
         let mut cache = PageCache::new(backend, DEFAULT_CACHE_PAGES);
         let tables = build_tables(&mut cache, &cas, &manifest, false, region)?;
+        let retrieval_indexes = persistent::load_catalog(&mut cache, &cas, &tables, &manifest)?;
         Ok(Self {
             cache: RefCell::new(cache),
             cas,
             txm: TxManager::with_clock(manifest.clock),
             tables,
+            retrieval_indexes,
             compliance: ComplianceMonitor::new(),
             root: None,
             autocommit: false,
@@ -996,6 +1019,7 @@ impl Database {
             cas: CasStore::new_memory(),
             txm: TxManager::new(),
             tables: BTreeMap::new(),
+            retrieval_indexes: BTreeMap::new(),
             compliance: ComplianceMonitor::new(),
             root: None,
             autocommit: false,
@@ -1073,11 +1097,13 @@ impl Database {
         let region = slice_index_region(bytes, &manifest, cas_offset as u64, manifest_offset)?;
         let mut cache = PageCache::new(Backend::Mem(mem), DEFAULT_CACHE_PAGES);
         let tables = build_tables(&mut cache, &cas, &manifest, true, region)?;
+        let retrieval_indexes = persistent::load_catalog(&mut cache, &cas, &tables, &manifest)?;
         Ok(Self {
             cache: RefCell::new(cache),
             cas,
             txm: TxManager::with_clock(manifest.clock),
             tables,
+            retrieval_indexes,
             compliance: ComplianceMonitor::new(),
             root: None,
             autocommit: false,
@@ -1634,11 +1660,13 @@ impl Database {
         match operation(self) {
             Ok(value) => Ok(value),
             Err(error) => {
-                self.rollback_transaction().map_err(|rollback_error| {
+                if self.in_transaction() {
+                    self.rollback_transaction().map_err(|rollback_error| {
                     PvError::TransactionOutcomeUnknown(format!(
                         "statement failed ({error}); transaction rollback also failed ({rollback_error})"
                     ))
                 })?;
+                }
                 Err(error)
             }
         }
@@ -1755,6 +1783,25 @@ impl Database {
             } => {
                 if !if_not_exists || !self.tables.contains_key(&name) {
                     self.create_table_schema(&name, columns, checks)?;
+                }
+                Ok(QueryResult::Done)
+            }
+            Statement::CreateRetrievalIndex {
+                definition,
+                if_not_exists,
+            } => {
+                if let Some(existing) = self.retrieval_indexes.get(&definition.name) {
+                    if !if_not_exists || existing.definition != definition {
+                        return Err(PvError::Schema("conflicting named retrieval index".into()));
+                    }
+                } else {
+                    self.create_retrieval_index(definition)?;
+                }
+                Ok(QueryResult::Done)
+            }
+            Statement::DropRetrievalIndex { name, if_exists } => {
+                if !if_exists || self.retrieval_indexes.contains_key(&name) {
+                    self.drop_retrieval_index(&name)?;
                 }
                 Ok(QueryResult::Done)
             }
@@ -2342,6 +2389,17 @@ impl Database {
     }
 
     fn insert_validated(&mut self, table_name: &str, values: Vec<Value>) -> Result<()> {
+        if !self.has_retrieval_indexes(table_name) {
+            return self.insert_validated_base(table_name, values);
+        }
+        self.atomic_mutation(move |database| {
+            database.insert_validated_base(table_name, values.clone())?;
+            database.maintain_retrieval(table_name, &[], &[values])?;
+            database.maybe_flush()
+        })
+    }
+
+    fn insert_validated_base(&mut self, table_name: &str, values: Vec<Value>) -> Result<()> {
         // Keep this internal boundary defensive: rich INSERT statements call it
         // directly after batch validation, and production handles must never get
         // as far as allocating a transaction or touching the CAS.
@@ -2413,6 +2471,23 @@ impl Database {
     }
 
     fn apply_deletes(&mut self, table_name: &str, matches: &[(RecordAddr, Row)]) -> Result<usize> {
+        if !self.has_retrieval_indexes(table_name) {
+            return self.apply_deletes_base(table_name, matches);
+        }
+        self.atomic_mutation(|database| {
+            let count = database.apply_deletes_base(table_name, matches)?;
+            let removed: Vec<_> = matches.iter().map(|(_, row)| row.clone()).collect();
+            database.maintain_retrieval(table_name, &removed, &[])?;
+            database.maybe_flush()?;
+            Ok(count)
+        })
+    }
+
+    fn apply_deletes_base(
+        &mut self,
+        table_name: &str,
+        matches: &[(RecordAddr, Row)],
+    ) -> Result<usize> {
         let tx = self.txm.begin_write();
 
         let table = self.tables.get_mut(table_name).expect("existence checked");
@@ -3012,10 +3087,20 @@ impl Database {
                     patch_delete_at(&mut cache, table, *addr, del_tx)?;
                 }
             }
+            let indexed = database.has_retrieval_indexes(&table_name);
+            let mut removed = Vec::new();
+            let mut added = Vec::new();
             for (_, mut row) in matches {
+                if indexed {
+                    removed.push(row.clone());
+                }
                 row[set_ix] = set_value.clone();
-                database.insert_validated(&table_name, row)?;
+                if indexed {
+                    added.push(row.clone());
+                }
+                database.insert_validated_base(&table_name, row)?;
             }
+            database.maintain_retrieval(&table_name, &removed, &added)?;
             database.maybe_flush()?;
             Ok(count)
         })
@@ -3024,10 +3109,19 @@ impl Database {
     /// Drop a table from the catalog. (Its pages are orphaned until a future
     /// vacuum reclaims them.)
     pub fn drop_table(&mut self, name: &str) -> Result<()> {
+        if self.has_retrieval_indexes(name) {
+            return self.atomic_mutation(|database| database.drop_table_base(name));
+        }
+        self.drop_table_base(name)
+    }
+
+    fn drop_table_base(&mut self, name: &str) -> Result<()> {
         self.ensure_writable()?;
         if self.tables.remove(name).is_none() {
             return Err(PvError::TableNotFound(name.into()));
         }
+        self.retrieval_indexes
+            .retain(|_, entry| entry.definition.table != name);
         self.maybe_flush()
     }
 
@@ -3205,7 +3299,7 @@ impl Database {
 
         let cache = self.cache.borrow();
         Ok(DatabaseStats {
-            format_version: effective_format_version(&self.tables, self.format_version_floor),
+            format_version: effective_format_version(&self.tables, self.retrieval_format_floor()),
             current_transaction: self.current_tx(),
             storage_mode,
             writable: cache.is_writable(),
@@ -3222,6 +3316,7 @@ impl Database {
                 stored_bytes: cas_bytes,
             },
             tables,
+            retrieval_indexes: self.retrieval_indexes(),
         })
     }
 
@@ -3418,7 +3513,7 @@ impl Database {
     /// Used by the format migrator; this does not rewrite or discard rows.
     pub fn upgrade_format_to_latest(&mut self) -> (u16, u16) {
         self.synced.set(false);
-        let before = effective_format_version(&self.tables, self.format_version_floor);
+        let before = effective_format_version(&self.tables, self.retrieval_format_floor());
         self.format_version_floor = FORMAT_VERSION;
         (before, FORMAT_VERSION)
     }
@@ -3447,6 +3542,10 @@ impl Database {
                 hash_len_prefixed(&mut hasher, column.as_bytes());
                 hash_len_prefixed(&mut hasher, &index.encode_binary());
             }
+        }
+        for entry in self.retrieval_indexes.values() {
+            hasher.update(b"persistent-retrieval-v1\0");
+            hash_len_prefixed(&mut hasher, &entry.encode()?);
         }
         Ok(hasher.finalize().to_hex().to_string())
     }
@@ -3507,6 +3606,9 @@ impl Database {
         if !self.cache.borrow().is_writable() {
             return Ok(()); // production / read-only: nothing to flush
         }
+        // Encode before page/manifest publication; a private transaction owns
+        // every indexed mutation and restores both catalogs on failure.
+        self.persist_retrieval()?;
         // fsync only makes sense for a filesystem-backed (dev) database.
         let durable = self.durability == Durability::Sync && self.root.is_some();
         {
@@ -3661,7 +3763,7 @@ impl Database {
         if has_cold_pages {
             schema_version = schema_version.max(FORMAT_VERSION_COLUMNAR);
         }
-        schema_version = schema_version.max(self.format_version_floor);
+        schema_version = schema_version.max(self.retrieval_format_floor());
         let (format_version, index_region) = match plan {
             // JSON indexes predate the binary index region and do not by
             // themselves advance the format version.
@@ -3693,7 +3795,17 @@ impl Database {
             cas_hashes,
             cas_dir,
             index_region,
+            retrieval_indexes: self.retrieval_descriptors()?,
         })
+    }
+
+    fn retrieval_format_floor(&self) -> u16 {
+        self.format_version_floor
+            .max(if self.retrieval_indexes.is_empty() {
+                FORMAT_VERSION_BASE
+            } else {
+                crate::FORMAT_VERSION_RETRIEVAL
+            })
     }
 }
 

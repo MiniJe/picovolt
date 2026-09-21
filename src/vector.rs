@@ -74,6 +74,14 @@ impl VectorIndex {
         self.documents.remove(&id).is_some()
     }
     pub fn search(&self, query: &[f32], limit: usize) -> Result<Vec<VectorHit>, VectorError> {
+        self.search_matching(query, limit, None)
+    }
+    fn search_matching(
+        &self,
+        query: &[f32],
+        limit: usize,
+        allowed: Option<&std::collections::BTreeSet<i64>>,
+    ) -> Result<Vec<VectorHit>, VectorError> {
         self.validate(query)?;
         if limit > 100 {
             return Err(VectorError::Limit);
@@ -84,6 +92,7 @@ impl VectorIndex {
         let mut hits: Vec<_> = self
             .documents
             .iter()
+            .filter(|(id, _)| allowed.map_or(true, |ids| ids.contains(id)))
             .map(|(id, vector)| {
                 let distance = match self.metric {
                     Metric::SquaredEuclidean => vector
@@ -113,5 +122,95 @@ impl VectorIndex {
         });
         hits.truncate(limit);
         Ok(hits)
+    }
+}
+
+// PV23 binary codec and exact filtered candidate execution.
+impl VectorIndex {
+    pub(crate) fn search_filtered(
+        &self,
+        query: &[f32],
+        limit: usize,
+        ids: &std::collections::BTreeSet<i64>,
+    ) -> Result<Vec<VectorHit>, VectorError> {
+        if ids.len() > 10_000 || ids.iter().any(|id| !self.documents.contains_key(id)) {
+            return Err(VectorError::InvalidVector);
+        }
+        self.search_matching(query, limit, Some(ids))
+    }
+    pub(crate) fn encode_persistent(&self) -> crate::Result<Vec<u8>> {
+        let mut out = crate::persistent::Encoder::new();
+        out.count(self.dimensions)?;
+        out.count(self.len())?;
+        let metric = match self.metric {
+            Metric::Cosine => 1,
+            Metric::SquaredEuclidean => 2,
+        };
+        out.put(&[metric, 0, 0, 0])?;
+        for (id, vector) in &self.documents {
+            out.put(&id.to_le_bytes())?;
+            for value in vector {
+                out.put(&value.to_le_bytes())?;
+            }
+        }
+        Ok(out.finish())
+    }
+    pub(crate) fn decode_persistent(
+        bytes: &[u8],
+        dimensions: usize,
+        metric: Metric,
+    ) -> crate::Result<Self> {
+        use crate::persistent::{corrupt, Decoder};
+        let mut input = Decoder::new(bytes)?;
+        let actual_dimensions = input.count(4096)?;
+        let count = input.count(10_000)?;
+        let actual_metric = input.u8()?;
+        let expected_metric = match metric {
+            Metric::Cosine => 1,
+            Metric::SquaredEuclidean => 2,
+        };
+        if actual_dimensions == 0
+            || actual_dimensions != dimensions
+            || actual_metric != expected_metric
+            || input.take(3)? != [0, 0, 0]
+        {
+            return Err(corrupt("vector header/definition mismatch"));
+        }
+        let scalars = count
+            .checked_mul(dimensions)
+            .filter(|count| *count <= 4_194_304)
+            .ok_or_else(|| corrupt("vector scalar budget"))?;
+        let expected_bytes = scalars
+            .checked_mul(4)
+            .and_then(|value| value.checked_add(count * 8))
+            .and_then(|value| value.checked_add(12))
+            .ok_or_else(|| corrupt("vector extent overflow"))?;
+        if expected_bytes != bytes.len() {
+            return Err(corrupt("vector extent/count mismatch"));
+        }
+        let mut index =
+            Self::new(dimensions, metric).map_err(|error| corrupt(error.to_string()))?;
+        let mut last_id = None;
+        for _ in 0..count {
+            let id = input.i64()?;
+            if last_id.is_some_and(|previous| previous >= id) {
+                return Err(corrupt("vector IDs are not strictly ordered"));
+            }
+            last_id = Some(id);
+            let mut vector = Vec::with_capacity(dimensions);
+            for _ in 0..dimensions {
+                vector.push(f32::from_le_bytes(
+                    input
+                        .take(4)?
+                        .try_into()
+                        .map_err(|_| corrupt("vector scalar"))?,
+                ));
+            }
+            index
+                .upsert(id, &vector)
+                .map_err(|error| corrupt(error.to_string()))?;
+        }
+        input.finish()?;
+        Ok(index)
     }
 }
