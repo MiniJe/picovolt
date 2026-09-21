@@ -1,4 +1,4 @@
-name: Dispatch PicoVolt 2.3.0 release
+name: Halt PicoVolt 2.3.0 Python publication
 
 on:
   push:
@@ -11,16 +11,14 @@ permissions:
   contents: read
 
 jobs:
-  dispatch:
+  halt:
     if: github.repository == 'MiniJe/picovolt'
     runs-on: ubuntu-latest
     steps:
-      - name: Dispatch exact immutable tag publication workflows
+      - name: Cancel the in-flight Python publication before registry upload
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
           set -euo pipefail
-          gh workflow run python-wheels.yml             --repo "$GITHUB_REPOSITORY"             --ref v2.3.0
-          gh workflow run release.yml             --repo "$GITHUB_REPOSITORY"             --ref main             --field tag=v2.3.0
-          echo "Dispatched Python wheels at v2.3.0 and release recovery for v2.3.0"
+          gh run cancel 35645219470 --repo "$GITHUB_REPOSITORY" || true
+          echo "Requested cancellation of Python wheels run 35645219470"
