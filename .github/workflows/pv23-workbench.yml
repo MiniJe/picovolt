@@ -5,76 +5,36 @@ on:
     branches: [codex/2.3-persistent-retrieval-m001]
     paths:
       - .github/workflows/pv23-workbench.yml
-      - scripts/pv23_workbench.py
 
 permissions:
-  contents: write
+  contents: read
+
 concurrency:
   group: pv23-implementation-workbench
   cancel-in-progress: false
+
 jobs:
-  workbench:
+  source-export:
     if: github.repository == 'MiniJe/picovolt' && github.ref == 'refs/heads/codex/2.3-persistent-retrieval-m001'
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
-        with:
-          toolchain: 1.86.0
-          components: rustfmt, clippy
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
-        with:
-          cache-on-failure: true
-      - name: Record build provenance
-        run: |
-          git rev-parse HEAD
-          rustc -Vv
-      - name: Apply deterministic mandate patch
-        run: python3 scripts/pv23_workbench.py
-      - name: Format implementation
-        run: cargo fmt --all
-      - name: Commit only authorized source changes
+          persist-credentials: false
+      - name: Export only tracked implementation source
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import subprocess
-          allowed = {
-              'src/db.rs', 'src/db/persistent.rs', 'src/core/types.rs', 'src/lib.rs',
-              'src/engine/query.rs', 'src/search.rs', 'src/vector.rs', 'src/retrieval.rs',
-              'src/persistent.rs', 'src/bin/pv.rs', 'src/migrate.rs', 'src/ffi.rs', 'src/wasm_api.rs',
-              'src/journal.rs', 'src/concurrent.rs',
-              'tests/persistent_retrieval.rs', 'tests/persistent_retrieval_crash.rs',
-              'tests/persistent_retrieval_corruption.rs', 'tests/persistent_retrieval_model.rs',
-              'tests/persistent_retrieval_bindings.rs', 'tests/fixtures/format_v8.pvdb',
-              'examples/persistent_retrieval_envelope.rs', 'fuzz/Cargo.toml', 'fuzz/Cargo.lock',
-              'fuzz/fuzz_targets/retrieval_index.rs', 'fuzz/fuzz_targets/retrieval_ddl.rs',
-              'Cargo.toml', 'Cargo.lock', 'include/picovolt.h',
-              'docs/PERSISTENT_RETRIEVAL_2_3.md', 'docs/RELEASE_2_3.md', 'docs/FORMAT.md',
-              'ROADMAP.md', 'CHANGELOG.md', 'README.md', 'SECURITY.md',
-              'legal/COMPONENT-SCOPE-2.3.md', 'benchmarks/persistent-retrieval-v2.3.json',
-          }
-          changed = set(subprocess.check_output(['git', 'diff', '--name-only', '-z']).decode().split('\0')) - {''}
-          changed |= set(subprocess.check_output(['git', 'ls-files', '--others', '--exclude-standard', '-z']).decode().split('\0')) - {''}
-          if changed - allowed:
-              raise SystemExit('Refusing changes outside the mandate workbench allowlist: ' + repr(sorted(changed - allowed)))
-          if changed:
-              subprocess.run(['git', 'add', '--', *sorted(changed)], check=True)
-          PY
-          if ! git diff --cached --quiet; then
-            git -c user.name='PicoVolt implementation automation' -c user.email='picovolt-automation@users.noreply.github.com' commit -s -m 'fix(retrieval): apply reviewed PV-2.3-M-001 qualification patch'
-            git push origin HEAD:refs/heads/codex/2.3-persistent-retrieval-m001
-          fi
-          git rev-parse HEAD
-      - name: Compile all features on MSRV
-        run: cargo check --locked --all-features
-      - name: Persistent retrieval behavior, corruption and crash tests
-        run: cargo test --locked --all-features --test persistent_retrieval --test persistent_retrieval_corruption --test persistent_retrieval_crash -- --nocapture
-      - name: Feature-disabled library
-        run: cargo check --locked --no-default-features --lib
-      - name: Lint all features
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+          mkdir -p "$RUNNER_TEMP/pv23-source"
+          git rev-parse HEAD > "$RUNNER_TEMP/pv23-source/source-sha.txt"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/pv23-source/source.tar.gz"
+          cd "$RUNNER_TEMP/pv23-source"
+          sha256sum source.tar.gz > SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pv23-continuation-source
+          path: ${{ runner.temp }}/pv23-source/
+          retention-days: 2
+          if-no-files-found: error
