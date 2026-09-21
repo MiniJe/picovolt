@@ -1,15 +1,16 @@
-# PicoVolt 2.3 qualification ledger — publication pending
+# PicoVolt 2.3 qualification ledger
 
 **Mandate:** PV-2.3-M-001. **Candidate:** 2.3.0. **PR:** [#33](https://github.com/MiniJe/picovolt/pull/33).
 **Base:** `main` at `b13ab962aad21f003e1ae37a70b963876c9b72f4`.
 **Branch:** `codex/2.3-persistent-retrieval-m001`.
 **Runtime-qualified source:** `489c734341ee35ecd1a23e1e4505532db403e03d`.
 
-This record qualifies an implementation candidate, not a published release.
-The follow-up recording this ledger and benchmark archive changes no runtime,
-bindings, dependency, version, or workflow source. The PR records its final head
-and final-head check results; a green ancestor is not permission to ignore a
-failing current check. Integration and publication require founder approval.
+This record qualifies the 2.3.0 release candidate. The founder explicitly
+authorized merge, tag and public publication on 2026-09-21 after final-head
+qualification passed. The follow-up recording this ledger and benchmark archive
+changes no runtime, bindings, dependency, version, or workflow source. Release
+publication must still pass the tag-triggered registry, artifact, provenance and
+clean-install gates before the GitHub Release is considered complete.
 
 ## Implemented scope and semantics
 
@@ -171,6 +172,8 @@ encryption. Use a retained read transaction to amortize shared snapshot admissio
 No 50,000–100,000-document qualification, independent audit, production-at-scale
 claim, or changed license terms is asserted.
 
-The implementation is a founder-review candidate. Its final PR-head CI remains
-the integration gate. **No merge, tag, registry publication, GitHub Release or
-Hub deployment is authorized or performed by this mandate.**
+The implementation passed founder review and publication was explicitly
+authorized on 2026-09-21. Tag-triggered release automation remains responsible
+for immutable registry publication, clean-install smoke tests, native artifacts,
+SBOMs, checksums, attestations and the final GitHub Release. Hub deployment
+remains out of scope.

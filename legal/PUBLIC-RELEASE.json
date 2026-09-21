@@ -30,6 +30,6 @@
   "authorization": "Owner selected public source and free registry downloads under revised proprietary terms on 2026-09-12",
   "independent_legal_review": false,
   "independent_security_audit": false,
-  "candidate_authority": "PV-2.3-M-001: implementation and review under unchanged existing terms; no merge, tag or publication authorized",
-  "publication_status": "pending-founder-approval"
+  "candidate_authority": "Founder explicitly authorized merge, tag and public publication of PicoVolt 2.3.0 on 2026-09-21",
+  "publication_status": "authorized-for-publication"
 }

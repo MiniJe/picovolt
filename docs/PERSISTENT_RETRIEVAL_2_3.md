@@ -1,9 +1,9 @@
 # PicoVolt 2.3 — Persistent Retrieval
 
-This is the implementation-branch guide for release target **2.3.0**. It does not
-announce a published release. See [qualification](RELEASE_2_3.md) for the exact
-candidate and remaining gates. No Hub service, account, network call, telemetry,
-embedding provider, or ANN dependency is involved.
+This is the release guide for **PicoVolt 2.3.0**. See
+[qualification](RELEASE_2_3.md) for exact candidate, verification and publication
+evidence. No Hub service, account, network call, telemetry, embedding provider,
+or ANN dependency is involved.
 
 ## Create and use named indexes
 

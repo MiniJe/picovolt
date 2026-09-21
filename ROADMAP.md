@@ -5,7 +5,7 @@ a release only when its correctness work, documentation, compatibility tests, an
 upgrade path are ready. Shipped work is recorded in [CHANGELOG.md](CHANGELOG.md).
 The business model hypothesis lives in [docs/MONETIZATION.md](docs/MONETIZATION.md).
 
-## 2.3 — Persistent Retrieval (implementation / founder review)
+## 2.3 — Persistent Retrieval (released 2026-09-21)
 
 **Outcome:** named opt-in BM25 and exact vector indexes survive storage lifecycle
 transitions and remain coherent with committed source rows. The implementation
@@ -13,20 +13,21 @@ adds conditional format 8, filtered-corpus-equivalent and historical-safe
 retrieval, hybrid compatibility, inspection and bounded validation.
 
 The [2.3 guide](docs/PERSISTENT_RETRIEVAL_2_3.md) states the delivered behavior and
-costs; the [qualification ledger](docs/RELEASE_2_3.md) distinguishes implemented,
-verified and still-pending gates. It is not shipped until separately approved and
-published. ANN, broader language search, Hub services and later replication/pager
-work are outside this release. Earlier roadmap sections below remain history.
+costs; the [qualification ledger](docs/RELEASE_2_3.md) records the exact verification
+and publication evidence. ANN, broader language search, Hub services and later
+replication/pager work are outside this release. Earlier roadmap sections below
+remain history.
 
 ## Where PicoVolt is now
 
-The **2.0.0 release** adds concurrent native snapshots, bounded writer admission,
-format-7 commit-sequence anchoring, durable change streams and atomic batches.
-It builds on the stabilization and verified upgrades in 1.9. The engine
-includes page-backed storage, MVCC time-travel queries, persisted secondary
-indexes, readable legacy 1.x images, Rust/JavaScript/Python/Go/C bindings, a CLI,
-an optional bounded HTTP server, and a durable browser path using OPFS and a Web
-Worker.
+The **2.3.0 release** adds named persistent BM25 full-text and exact vector
+retrieval indexes with conditional format 8, transactional maintenance, filtered
+corpus correctness, historical fallback, and cross-interface lifecycle coverage.
+It builds on 2.0 concurrency/change-stream foundations and 2.2 encrypted storage.
+The engine includes page-backed storage, MVCC time-travel queries, persisted
+secondary and retrieval indexes, readable legacy images, Rust/JavaScript/Python/
+Go/C bindings, a CLI, an optional bounded HTTP server, and a durable browser path
+using OPFS and a Web Worker.
 
 PicoVolt is still deliberately narrow:
 

@@ -259,7 +259,7 @@ See [Migration and compaction](docs/MIGRATION.md).
 | **Rust** (crates.io) | `cargo add picovolt` |
 | **JavaScript / npm** (WebAssembly, browser and Node) | `npm install picovolt` |
 | **Python** (native wheels) | `python -m pip install picovolt` |
-| **Go** (`database/sql` and direct API) | `go get github.com/MiniJe/picovolt/bindings/go/v2@v2.2.0`, then provide the matching native C ABI library described in [`bindings/go/`](bindings/go) |
+| **Go** (`database/sql` and direct API) | `go get github.com/MiniJe/picovolt/bindings/go/v2@v2.3.0`, then provide the matching native C ABI library described in [`bindings/go/`](bindings/go) |
 | **C** | Download the matching `picovolt-capi-*` bundle from the [latest release](https://github.com/MiniJe/picovolt/releases/latest), or run `cargo build --release --features capi` |
 | **In-memory** (native, no filesystem) | `Database::open_memory()`, export with `bake_to_bytes()` |
 
@@ -338,10 +338,11 @@ native modules built on the public API. Both are documented in
 
 ## License
 
-The 2.1.0 line is prepared under the [PicoVolt Proprietary Lifetime License](LICENSE).
+PicoVolt 2.3.0 is distributed under the [PicoVolt Proprietary Lifetime License](LICENSE)
+and the public-release authorization recorded in [legal/PUBLIC-RELEASE.json](legal/PUBLIC-RELEASE.json).
 Earlier Apache-2.0 components retain their existing grants; the original license
 is preserved [here](legal/APACHE-2.0-LEGACY.txt). Third-party licenses and notices
-continue to apply (see [`NOTICE`](NOTICE)). No automatic public publication is enabled.
+continue to apply (see [`NOTICE`](NOTICE)).
 
 The optional [`compliance`](src/engine/compliance.rs) module is not a license
 requirement. It is an opt-in helper for applications that want to enforce their
