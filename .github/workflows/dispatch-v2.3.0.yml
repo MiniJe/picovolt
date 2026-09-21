@@ -38,7 +38,9 @@ jobs:
           check_absent() {
             name="$1"
             url="$2"
-            code="$(curl --silent --show-error --location --max-time 30               --output "$RUNNER_TEMP/$name.json" --write-out '%{http_code}' "$url" || true)"
+            code="$(curl --silent --show-error --location --max-time 30 \
+              --user-agent "picovolt-release-finalizer/2.3.0" \
+              --output "$RUNNER_TEMP/$name.json" --write-out '%{http_code}' "$url" || true)"
             case "$code" in
               404) echo "$name: absent as required" ;;
               200) echo "::error::$name already contains PicoVolt 2.3.0; refusing to move the tag"; exit 1 ;;
