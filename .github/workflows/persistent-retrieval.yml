@@ -1,0 +1,179 @@
+name: Persistent retrieval qualification
+
+on:
+  pull_request:
+  push:
+    branches: [main, codex/2.3-persistent-retrieval-m001]
+    paths:
+      - .github/workflows/persistent-retrieval.yml
+      - src/**
+      - tests/**
+      - examples/persistent_retrieval_envelope.rs
+      - fuzz/**
+      - Cargo.toml
+      - Cargo.lock
+
+permissions:
+  contents: read
+
+concurrency:
+  group: persistent-retrieval-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUSTFLAGS: -Dwarnings
+  CARGO_TERM_COLOR: always
+
+jobs:
+  all-features:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Source and toolchain provenance
+        run: |
+          git rev-parse HEAD
+          rustc -Vv
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Strict all-feature lint
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: All-feature test suite
+        run: cargo test --locked --all-targets --all-features
+      - name: Documentation tests
+        run: cargo test --locked --doc
+      - name: WASM retrieval compile
+        run: cargo check --locked --target wasm32-unknown-unknown --features wasm --lib
+      - name: Build maintained Python C ABI
+        run: cargo build --locked --all-features --lib
+      - name: Python binding lifecycle tests
+        shell: bash
+        env:
+          PICOVOLT_LIB: ${{ github.workspace }}/target/debug/libpicovolt.so
+          PYTHONPATH: ${{ github.workspace }}/bindings/python
+        run: |
+          python3 -m venv "$RUNNER_TEMP/pv23-python"
+          "$RUNNER_TEMP/pv23-python/bin/pip" install pytest
+          "$RUNNER_TEMP/pv23-python/bin/python" -m pytest -q bindings/python/test_*.py
+      - name: Workflow lint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+
+  feature-isolation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - ''
+          - full-text
+          - vector-search
+          - full-text,vector-search
+          - encryption,full-text,vector-search
+          - capi,full-text,vector-search
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.86.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Isolated feature behavior on MSRV
+        env:
+          FEATURES: ${{ matrix.features }}
+        run: cargo test --locked --no-default-features --features "$FEATURES" --test persistent_retrieval
+
+  envelope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.86.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Measure persistent versus ephemeral on one host
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/pv23-evidence
+          git rev-parse HEAD > target/pv23-evidence/revision.txt
+          rustc -Vv > target/pv23-evidence/toolchain.txt
+          uname -a > target/pv23-evidence/host.txt
+          lscpu >> target/pv23-evidence/host.txt
+          PV_BENCH_REVISION="$(git rev-parse HEAD)" cargo run --release --locked --example persistent_retrieval_envelope -- --bench > target/pv23-evidence/persistent-retrieval.json
+          cat target/pv23-evidence/persistent-retrieval.json
+      - name: Check measured medium-corpus acceptance
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('target/pv23-evidence/persistent-retrieval.json').read_text())
+          medium = next(c for c in report['corpora'] if c['documents'] == 10_000)
+          if medium['vector_dimensions'] < 128:
+              raise SystemExit('Missing required 128-dimensional qualification')
+          for query in medium['queries']:
+              if query['persistent_mean_ms'] >= query['ephemeral_mean_ms']:
+                  raise SystemExit(f'Persistent path did not improve over the same-run reference: {query}')
+          print('Every measured medium-corpus persistent path improved over its same-run ephemeral reference.')
+          print('Magnitude and maintenance/reopen/storage tradeoffs require review of the retained measurements; these are not SLAs.')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: persistent-retrieval-envelope-${{ github.run_id }}
+          path: target/pv23-evidence/
+          if-no-files-found: error
+
+  decoder-fuzz:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: fuzz -> target
+      - name: Install fuzz runner
+        run: cargo install cargo-fuzz --locked
+      - name: Seed both retrieval binary kinds and DDL
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, struct
+          image = pathlib.Path('tests/fixtures/format_v8.pvdb').read_bytes()
+          manifest = json.loads(image[struct.unpack_from('<Q', image, 8)[0]:])
+          cas = struct.unpack_from('<Q', image, 16)[0]
+          target = pathlib.Path('fuzz/corpus/retrieval_index'); target.mkdir(parents=True, exist_ok=True)
+          for descriptor in manifest['retrieval_indexes']:
+              offset, length = manifest['cas_dir'][descriptor['cas_id']]
+              (target / descriptor['definition']['name']).write_bytes(image[cas+offset:cas+offset+length])
+          target = pathlib.Path('fuzz/corpus/retrieval_ddl'); target.mkdir(parents=True, exist_ok=True)
+          (target / 'text').write_text("CREATE INDEX ft ON docs USING FULLTEXT (body) WITH (id_column='id')")
+          (target / 'vector').write_text("CREATE INDEX vx ON docs USING VECTOR (embedding) WITH (id_column='id',metric='cosine',dimensions=128)")
+          PY
+      - name: Build decoder and grammar targets
+        run: |
+          cargo fuzz build retrieval_index
+          cargo fuzz build retrieval_ddl
+      - name: Bounded decoder fuzz smoke
+        run: cargo fuzz run retrieval_index -- -max_total_time=30 -max_len=262144 -rss_limit_mb=1024
+      - name: Bounded grammar fuzz smoke
+        run: cargo fuzz run retrieval_ddl -- -max_total_time=30 -max_len=65536 -rss_limit_mb=1024

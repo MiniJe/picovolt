@@ -11,7 +11,7 @@
     "preview": "vite preview --open"
   },
   "dependencies": {
-    "picovolt": "2.2.0"
+    "picovolt": "2.3.0"
   },
   "devDependencies": {
     "vite": "^8.2.2",

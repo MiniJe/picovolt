@@ -6,6 +6,20 @@ All notable changes to PicoVolt are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-09-21
+
+- Optional named full-text BM25 and exact vector indexes, SQL create/drop,
+  transactional maintenance and bounded binary CAS persistence.
+- Conditional format 8, golden fixture, source-coherence validation on open,
+  deterministic corruption failure and explicit inspection/rebuild APIs.
+- Named full-text/vector/hybrid retrieval preserving filtered-corpus ranking,
+  legacy JSON and historical fallback; pinned native read-session retrieval.
+- Differential, model, crash, corruption, fuzz, binding and benchmark coverage.
+- Full open-time source verification and retained CAS generations are explicit
+  costs. No ANN, embedding provider, or Hub change is included.
+- See [the guide](docs/PERSISTENT_RETRIEVAL_2_3.md) and
+  [qualification](docs/RELEASE_2_3.md) for exact semantics, costs, and evidence.
+
 ## [2.2.0] - 2026-09-12
 
 - Native XChaCha20-Poly1305 encrypted snapshots and single-writer vaults with
@@ -862,7 +876,8 @@ runs both natively and in the browser through WebAssembly.
   test plus a `cargo-fuzz` crate), and `cargo audit` blocks vulnerability
   advisories. Both run in CI; non-blocking audit warnings are reviewed separately.
 
-[Unreleased]: https://github.com/MiniJe/picovolt/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/MiniJe/picovolt/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/MiniJe/picovolt/compare/v2.2.0...v2.3.0
 [1.9.0]: https://github.com/MiniJe/picovolt/compare/v1.8.1...v1.9.0
 [1.8.1]: https://github.com/MiniJe/picovolt/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/MiniJe/picovolt/compare/v1.7.1...v1.8.0

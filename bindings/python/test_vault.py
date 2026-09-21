@@ -4,7 +4,7 @@ from picovolt import PicoVoltError, version
 from picovolt.vault import Vault
 
 def test_vault_persistence_atomic_errors_rotation_and_restore(tmp_path):
-    assert version() == '2.2.0'
+    assert version() == '2.3.0'
     path = tmp_path / 'vault.pve'
     key = b'\x31' * 32
     new_key = b'\x32' * 32

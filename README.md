@@ -27,6 +27,19 @@ for atomic batches, persistence choices, log diagnostics and error recovery.
 The [standalone review prompt](docs/INDEPENDENT_REVIEW_PROMPT.md) defines an
 independent assessment and external trials deferred beyond the 2.0 release.
 
+## 2.3 implementation branch: persistent retrieval
+
+This branch prepares **2.3.0**, adding optional named persistent BM25/full-text
+and exact vector indexes. DDL, current-snapshot filtered retrieval, hybrid,
+transactional maintenance, format-8 persistence and inspection are implemented.
+Historical/transformed queries preserve correctness through the legacy fallback.
+Open performs source verification; commits may rewrite affected index envelopes
+and retain older CAS generations. Read the [2.3 guide](docs/PERSISTENT_RETRIEVAL_2_3.md)
+and [qualification ledger](docs/RELEASE_2_3.md) before evaluating this candidate.
+
+This PR does not publish 2.3 packages. The published 2.2 quick start below is
+preserved rather than presenting an unavailable registry install as verified.
+
 ## Quick start
 
 The 2.2.0 release is free to download and use within its [license](LICENSE).
@@ -246,7 +259,7 @@ See [Migration and compaction](docs/MIGRATION.md).
 | **Rust** (crates.io) | `cargo add picovolt` |
 | **JavaScript / npm** (WebAssembly, browser and Node) | `npm install picovolt` |
 | **Python** (native wheels) | `python -m pip install picovolt` |
-| **Go** (`database/sql` and direct API) | `go get github.com/MiniJe/picovolt/bindings/go/v2@v2.2.0`, then provide the matching native C ABI library described in [`bindings/go/`](bindings/go) |
+| **Go** (`database/sql` and direct API) | `go get github.com/MiniJe/picovolt/bindings/go/v2@v2.3.0`, then provide the matching native C ABI library described in [`bindings/go/`](bindings/go) |
 | **C** | Download the matching `picovolt-capi-*` bundle from the [latest release](https://github.com/MiniJe/picovolt/releases/latest), or run `cargo build --release --features capi` |
 | **In-memory** (native, no filesystem) | `Database::open_memory()`, export with `bake_to_bytes()` |
 
@@ -325,10 +338,11 @@ native modules built on the public API. Both are documented in
 
 ## License
 
-The 2.1.0 line is prepared under the [PicoVolt Proprietary Lifetime License](LICENSE).
+PicoVolt 2.3.0 is distributed under the [PicoVolt Proprietary Lifetime License](LICENSE)
+and the public-release authorization recorded in [legal/PUBLIC-RELEASE.json](legal/PUBLIC-RELEASE.json).
 Earlier Apache-2.0 components retain their existing grants; the original license
 is preserved [here](legal/APACHE-2.0-LEGACY.txt). Third-party licenses and notices
-continue to apply (see [`NOTICE`](NOTICE)). No automatic public publication is enabled.
+continue to apply (see [`NOTICE`](NOTICE)).
 
 The optional [`compliance`](src/engine/compliance.rs) module is not a license
 requirement. It is an opt-in helper for applications that want to enforce their

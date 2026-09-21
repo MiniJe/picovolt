@@ -182,3 +182,16 @@ Format 7 anchors the committed cursor in the manifest and validates unpruned
 history on open and before further writes. A missing-history error requires a
 verified backup/history, not resetting the cursor. See [format 7](FORMAT.md#format-7-acknowledged-commit-sequence-anchor)
 for legacy log upgrade and host-owned replica publication requirements.
+
+
+## 2.3 named retrieval snapshots
+
+`SharedDatabase::retrieve_json` admits a private read snapshot;
+`ReadTransaction::retrieve_json` reuses the reader's pinned table/catalog/index
+image. Later writers do not replace that reader's index generation. Request
+size, inherited SELECT limits, cancellation and deadlines remain checked;
+ranking is bounded but not preemptible at every token/distance operation.
+Snapshot construction includes persistent-index source verification. Retain a
+reader for repeated queries when its intentionally fixed snapshot is suitable.
+Catalog/index bytes share existing transaction and journal publication, not a
+separately synchronized sidecar. See [the 2.3 contract](PERSISTENT_RETRIEVAL_2_3.md).

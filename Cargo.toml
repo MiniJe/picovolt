@@ -1,6 +1,6 @@
 [package]
 name = "picovolt"
-version = "2.2.0"
+version = "2.3.0"
 edition = "2021"
 rust-version = "1.86"
 description = "Embedded SQL database with MVCC history and single-file deployment"
@@ -35,7 +35,7 @@ path = "src/bin/pv.rs"
 default = ["full-text", "vector-search", "encryption"]
 # Native authenticated snapshot/vault encryption. No plaintext disk staging.
 encryption = ["dep:chacha20poly1305", "dep:argon2", "dep:getrandom", "dep:zeroize"]
-# Application-owned retrieval indexes; no on-disk format change.
+# Optional ephemeral and named persistent retrieval (format 8 only when used).
 full-text = []
 vector-search = []
 # Optional native CLI conversion and signed artifact distribution.
