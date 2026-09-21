@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 tempfile = "3"
+blake3 = "1"
 
 [dependencies.picovolt]
 path = ".."
@@ -53,6 +54,20 @@ bench = false
 [[bin]]
 name = "decode_index"
 path = "fuzz_targets/decode_index.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "retrieval_index"
+path = "fuzz_targets/retrieval_index.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "retrieval_ddl"
+path = "fuzz_targets/retrieval_ddl.rs"
 test = false
 doc = false
 bench = false
