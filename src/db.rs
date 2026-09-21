@@ -4803,7 +4803,7 @@ fn validate_schema_metadata(
     }
     let mut nodes = 0usize;
     for check in checks {
-        validate_check_shape(check, columns, 1, &mut nodes).map_err(&invalid)?;
+        validate_check_shape(check, columns, 1, &mut nodes).map_err(invalid)?;
     }
     Ok(())
 }

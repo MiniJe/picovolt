@@ -74,7 +74,7 @@ fn valid_identifier(value: &str) -> bool {
 
 fn identifier<'de, D: Deserializer<'de>>(deserializer: D) -> std::result::Result<String, D::Error> {
     struct Identifier;
-    impl<'de> serde::de::Visitor<'de> for Identifier {
+    impl serde::de::Visitor<'_> for Identifier {
         type Value = String;
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_str("a nonempty identifier of at most 256 UTF-8 bytes")

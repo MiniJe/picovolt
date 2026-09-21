@@ -92,7 +92,7 @@ impl VectorIndex {
         let mut hits: Vec<_> = self
             .documents
             .iter()
-            .filter(|(id, _)| allowed.map_or(true, |ids| ids.contains(id)))
+            .filter(|(id, _)| allowed.is_none_or(|ids| ids.contains(id)))
             .map(|(id, vector)| {
                 let distance = match self.metric {
                     Metric::SquaredEuclidean => vector

@@ -2261,6 +2261,105 @@ fn parse_delete(cur: &mut Cursor) -> Result<Statement> {
     Ok(Statement::Delete { table, filter })
 }
 
+fn parse_retrieval_index(cur: &mut Cursor) -> Result<Statement> {
+    use crate::persistent::{RetrievalIndexDefinition, RetrievalIndexKind, RetrievalMetric};
+    let at = cur.here();
+    let if_not_exists = if peek_kw(cur, "if") {
+        cur.next()?;
+        cur.keyword("not")?;
+        cur.keyword("exists")?;
+        true
+    } else {
+        false
+    };
+    let name = cur.ident()?;
+    cur.keyword("on")?;
+    let table = cur.ident()?;
+    cur.keyword("using")?;
+    let kind_at = cur.here();
+    let kind = cur.ident()?;
+    if !kind.eq_ignore_ascii_case("fulltext") && !kind.eq_ignore_ascii_case("vector") {
+        return Err(cur.err_at(kind_at, "expected FULLTEXT or VECTOR index kind"));
+    }
+    cur.expect(Tok::LParen)?;
+    let mut columns = Vec::new();
+    loop {
+        if columns.len() >= 16 {
+            return Err(cur.err("at most 16 retrieval columns"));
+        }
+        columns.push(cur.ident()?);
+        match cur.next()? {
+            Tok::RParen => break,
+            Tok::Comma => {}
+            other => return Err(cur.err(format!("expected `,` or `)`, found {other:?}"))),
+        }
+    }
+    cur.keyword("with")?;
+    cur.expect(Tok::LParen)?;
+    let mut options = std::collections::BTreeMap::new();
+    loop {
+        let option_at = cur.here();
+        let key = cur.ident()?.to_ascii_lowercase();
+        if !matches!(key.as_str(), "id_column" | "metric" | "dimensions") {
+            return Err(cur.err_at(option_at, format!("unknown retrieval option `{key}`")));
+        }
+        cur.expect(Tok::Eq)?;
+        let value = cur.value()?;
+        if options.insert(key.clone(), value).is_some() {
+            return Err(cur.err_at(option_at, format!("duplicate retrieval option `{key}`")));
+        }
+        match cur.next()? {
+            Tok::RParen => break,
+            Tok::Comma => {}
+            other => return Err(cur.err(format!("expected `,` or `)`, found {other:?}"))),
+        }
+    }
+    let Some(Value::Text(id_column)) = options.remove("id_column") else {
+        return Err(cur.err_at(at, "id_column must be an explicit string option"));
+    };
+    let index = if kind.eq_ignore_ascii_case("fulltext") {
+        if !options.is_empty() {
+            return Err(cur.err_at(at, "FULLTEXT only accepts id_column"));
+        }
+        RetrievalIndexKind::FullText {
+            text_columns: columns,
+        }
+    } else {
+        if columns.len() != 1 {
+            return Err(cur.err_at(at, "VECTOR requires exactly one column"));
+        }
+        let metric = match options.remove("metric") {
+            Some(Value::Text(value)) if value == "cosine" => RetrievalMetric::Cosine,
+            Some(Value::Text(value)) if value == "squared_euclidean" => {
+                RetrievalMetric::SquaredEuclidean
+            }
+            _ => return Err(cur.err_at(at, "metric must be 'cosine' or 'squared_euclidean'")),
+        };
+        let dimensions = match options.remove("dimensions") {
+            Some(Value::Int(value)) if (1..=4096).contains(&value) => value as usize,
+            _ => return Err(cur.err_at(at, "dimensions must be an integer in 1–4096")),
+        };
+        RetrievalIndexKind::Vector {
+            vector_column: columns.remove(0),
+            metric,
+            dimensions,
+        }
+    };
+    let definition = RetrievalIndexDefinition {
+        name,
+        table,
+        id_column,
+        index,
+    };
+    definition
+        .validate()
+        .map_err(|error| cur.err_at(at, error.to_string()))?;
+    Ok(Statement::CreateRetrievalIndex {
+        definition,
+        if_not_exists,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3044,103 +3143,4 @@ mod tests {
             );
         }
     }
-}
-
-fn parse_retrieval_index(cur: &mut Cursor) -> Result<Statement> {
-    use crate::persistent::{RetrievalIndexDefinition, RetrievalIndexKind, RetrievalMetric};
-    let at = cur.here();
-    let if_not_exists = if peek_kw(cur, "if") {
-        cur.next()?;
-        cur.keyword("not")?;
-        cur.keyword("exists")?;
-        true
-    } else {
-        false
-    };
-    let name = cur.ident()?;
-    cur.keyword("on")?;
-    let table = cur.ident()?;
-    cur.keyword("using")?;
-    let kind_at = cur.here();
-    let kind = cur.ident()?;
-    if !kind.eq_ignore_ascii_case("fulltext") && !kind.eq_ignore_ascii_case("vector") {
-        return Err(cur.err_at(kind_at, "expected FULLTEXT or VECTOR index kind"));
-    }
-    cur.expect(Tok::LParen)?;
-    let mut columns = Vec::new();
-    loop {
-        if columns.len() >= 16 {
-            return Err(cur.err("at most 16 retrieval columns"));
-        }
-        columns.push(cur.ident()?);
-        match cur.next()? {
-            Tok::RParen => break,
-            Tok::Comma => {}
-            other => return Err(cur.err(format!("expected `,` or `)`, found {other:?}"))),
-        }
-    }
-    cur.keyword("with")?;
-    cur.expect(Tok::LParen)?;
-    let mut options = std::collections::BTreeMap::new();
-    loop {
-        let option_at = cur.here();
-        let key = cur.ident()?.to_ascii_lowercase();
-        if !matches!(key.as_str(), "id_column" | "metric" | "dimensions") {
-            return Err(cur.err_at(option_at, format!("unknown retrieval option `{key}`")));
-        }
-        cur.expect(Tok::Eq)?;
-        let value = cur.value()?;
-        if options.insert(key.clone(), value).is_some() {
-            return Err(cur.err_at(option_at, format!("duplicate retrieval option `{key}`")));
-        }
-        match cur.next()? {
-            Tok::RParen => break,
-            Tok::Comma => {}
-            other => return Err(cur.err(format!("expected `,` or `)`, found {other:?}"))),
-        }
-    }
-    let Some(Value::Text(id_column)) = options.remove("id_column") else {
-        return Err(cur.err_at(at, "id_column must be an explicit string option"));
-    };
-    let index = if kind.eq_ignore_ascii_case("fulltext") {
-        if !options.is_empty() {
-            return Err(cur.err_at(at, "FULLTEXT only accepts id_column"));
-        }
-        RetrievalIndexKind::FullText {
-            text_columns: columns,
-        }
-    } else {
-        if columns.len() != 1 {
-            return Err(cur.err_at(at, "VECTOR requires exactly one column"));
-        }
-        let metric = match options.remove("metric") {
-            Some(Value::Text(value)) if value == "cosine" => RetrievalMetric::Cosine,
-            Some(Value::Text(value)) if value == "squared_euclidean" => {
-                RetrievalMetric::SquaredEuclidean
-            }
-            _ => return Err(cur.err_at(at, "metric must be 'cosine' or 'squared_euclidean'")),
-        };
-        let dimensions = match options.remove("dimensions") {
-            Some(Value::Int(value)) if (1..=4096).contains(&value) => value as usize,
-            _ => return Err(cur.err_at(at, "dimensions must be an integer in 1–4096")),
-        };
-        RetrievalIndexKind::Vector {
-            vector_column: columns.remove(0),
-            metric,
-            dimensions,
-        }
-    };
-    let definition = RetrievalIndexDefinition {
-        name,
-        table,
-        id_column,
-        index,
-    };
-    definition
-        .validate()
-        .map_err(|error| cur.err_at(at, error.to_string()))?;
-    Ok(Statement::CreateRetrievalIndex {
-        definition,
-        if_not_exists,
-    })
 }
