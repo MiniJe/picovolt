@@ -43,7 +43,7 @@ pub(super) fn preflight_dev(root: &Path, manifest: &Manifest) -> Result<()> {
         if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(corrupt("invalid retrieval CAS hash"));
         }
-        let metadata = fs::metadata(root.join("blobs").join(&hash[..2]).join(hash))
+        let metadata = fs::symlink_metadata(root.join("blobs").join(&hash[..2]).join(hash))
             .map_err(|error| corrupt(format!("{}: {error}", descriptor.definition.name)))?;
         if !metadata.is_file() || metadata.len() != descriptor.encoded_bytes as u64 {
             return Err(corrupt(format!(
@@ -242,6 +242,8 @@ impl Database {
         if !self.has_retrieval_indexes(table) {
             return Ok(());
         }
+        #[cfg(test)]
+        crate::persistent::crash_point("before_index_update");
         if !self.in_transaction() {
             return Err(corrupt(
                 "retrieval maintenance requires a rollback boundary",
@@ -299,6 +301,8 @@ impl Database {
         // rollback and logged-commit new-blob capture, not an external sidecar.
         for (name, bytes) in pending {
             let cas_id = self.cas.put(&bytes)?;
+            #[cfg(test)]
+            crate::persistent::crash_point("after_index_bytes");
             let entry = self
                 .retrieval_indexes
                 .get_mut(&name)
@@ -336,5 +340,92 @@ impl Database {
         self.retrieval_indexes
             .get(name)
             .ok_or_else(|| PvError::Query(format!("retrieval index `{name}` does not exist")))
+    }
+}
+
+#[cfg(all(
+    test,
+    feature = "full-text",
+    feature = "vector-search",
+    not(target_arch = "wasm32")
+))]
+mod tests {
+    use crate::Database;
+    use std::process::Command;
+
+    #[test]
+    fn publication_crash_child() {
+        let Ok(root) = std::env::var("PV23_UNIT_CRASH_ROOT") else {
+            return;
+        };
+        let mut db = Database::open_dev(root).unwrap();
+        db.begin_transaction().unwrap();
+        std::env::set_var("PV23_UNIT_CRASH_ARMED", "yes");
+        db.query("UPDATE docs SET body='changed document' WHERE id=1")
+            .unwrap();
+        db.query("UPDATE docs SET embedding='[0,1]' WHERE id=1")
+            .unwrap();
+        db.query("INSERT INTO docs VALUES (2,'changed inserted','[1,1]')")
+            .unwrap();
+        db.commit_transaction().unwrap();
+        panic!("selected publication crash point was not reached");
+    }
+
+    #[test]
+    fn publication_boundaries_restore_one_complete_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        for logged in [false, true] {
+            for point in [
+                "before_index_update",
+                "during_encoding",
+                "after_index_bytes",
+                "before_manifest",
+                "after_manifest",
+            ] {
+                let root = temp.path().join(format!("{logged}-{point}"));
+                let signal = temp.path().join(format!("signal-{logged}-{point}"));
+                let mut db = Database::open_dev(&root).unwrap();
+                db.query("CREATE TABLE docs (id,body,embedding)").unwrap();
+                db.query("INSERT INTO docs VALUES (1,'original document','[1,0]')")
+                    .unwrap();
+                if logged {
+                    db.enable_commit_log(crate::CommitLogOptions::default())
+                        .unwrap();
+                }
+                db.query("CREATE INDEX ft ON docs USING FULLTEXT (body) WITH (id_column='id')")
+                    .unwrap();
+                db.query("CREATE INDEX vx ON docs USING VECTOR (embedding) WITH (id_column='id',metric='cosine',dimensions=2)").unwrap();
+                let before = db.verification_hash().unwrap();
+                drop(db);
+                let output = Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "db::persistent::tests::publication_crash_child",
+                        "--test-threads=1",
+                    ])
+                    .env("PV23_UNIT_CRASH_ROOT", &root)
+                    .env("PV23_UNIT_CRASH_POINT", point)
+                    .env("PV23_UNIT_CRASH_SIGNAL", &signal)
+                    .output()
+                    .unwrap();
+                assert!(
+                    signal.is_file(),
+                    "{point} child did not reach crash: {} {}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert_eq!(output.status.code(), Some(88));
+                let mut db = Database::open_dev(&root).unwrap();
+                assert_eq!(db.verification_hash().unwrap(), before, "{logged} {point}");
+                assert_eq!(db.row_count("docs", None).unwrap(), 1);
+                for name in ["ft", "vx"] {
+                    db.verify_retrieval_index(name).unwrap();
+                }
+                let mut request = serde_json::json!({"kind":"full_text","sql":"SELECT * FROM docs","id_column":"id","text_columns":["body"],"query":"original","limit":10});
+                let reference = db.retrieve_json(&request.to_string()).unwrap();
+                request["index"] = serde_json::json!("ft");
+                assert_eq!(db.retrieve_json(&request.to_string()).unwrap(), reference);
+            }
+        }
     }
 }

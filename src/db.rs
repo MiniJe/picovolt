@@ -3653,9 +3653,13 @@ impl Database {
         // The manifest is on the commit path; whitespace multiplies write and
         // retained-journal bytes without adding information. CLI inspection
         // handles human-readable formatting separately.
+        #[cfg(test)]
+        crate::persistent::crash_point("before_manifest");
         let json = serde_json::to_vec(&manifest)?;
         if self.durability == Durability::Sync {
             self.write_manifest_atomic(&root, &json)?;
+            #[cfg(test)]
+            crate::persistent::crash_point("after_manifest");
             self.synced.set(true);
             Ok(())
         } else {

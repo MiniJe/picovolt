@@ -747,6 +747,8 @@ impl CatalogEntry {
         let body = self.data.body()?;
         let mut output = Encoder::new();
         output.put(MAGIC)?;
+        #[cfg(test)]
+        crash_point("during_encoding");
         output.put(&1u16.to_le_bytes())?;
         output.put(&[self.definition.tag(), 0])?;
         output.put(&self.generation.to_le_bytes())?;
@@ -861,4 +863,19 @@ fn decode_envelope(bytes: &[u8]) -> Result<DecodedEnvelope> {
 #[doc(hidden)]
 pub fn validate_retrieval_index_bytes(bytes: &[u8]) -> Result<()> {
     decode_envelope(bytes).map(|_| ())
+}
+
+// Entirely absent from ordinary library, CLI, bindings and release builds.
+#[cfg(test)]
+pub(crate) fn crash_point(point: &str) {
+    if std::env::var("PV23_UNIT_CRASH_ARMED").as_deref() != Ok("yes")
+        || std::env::var("PV23_UNIT_CRASH_POINT").as_deref() != Ok(point)
+    {
+        return;
+    }
+    let signal = std::env::var("PV23_UNIT_CRASH_SIGNAL").expect("test child signal path");
+    let mut file = std::fs::File::create(signal).expect("test child signal file");
+    std::io::Write::write_all(&mut file, point.as_bytes()).expect("test child signal write");
+    file.sync_all().expect("test child signal fsync");
+    std::process::exit(88);
 }

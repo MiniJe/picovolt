@@ -83,11 +83,35 @@ struct Selection {
     accelerate: bool,
 }
 
+struct RetrievalControl {
+    limits: QueryLimits,
+    cancellation: Option<crate::CancellationToken>,
+    pinned: Option<crate::TxId>,
+}
+
+impl RetrievalControl {
+    fn check(&self) -> crate::Result<()> {
+        if let Some(token) = &self.cancellation {
+            token.check()?;
+        }
+        if self
+            .limits
+            .deadline
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            return Err(PvError::ResourceLimit("deadline expired".into()));
+        }
+        Ok(())
+    }
+}
+
 fn snapshot(
     db: &mut Database,
     sql: &str,
     params: &[serde_json::Value],
+    control: &RetrievalControl,
 ) -> crate::Result<Selection> {
+    control.check()?;
     if sql.len() > 65536 {
         return Err(PvError::Query("Retrieval SQL exceeds 64 KiB".into()));
     }
@@ -106,6 +130,14 @@ fn snapshot(
             "Retrieval requires a single SELECT statement".into(),
         ));
     };
+    if before
+        .zip(control.pinned)
+        .is_some_and(|(requested, pinned)| requested > pinned)
+    {
+        return Err(PvError::Transaction(
+            "retrieval requested a snapshot newer than its pinned reader".into(),
+        ));
+    }
     // Never substitute current postings for historical data, or raw source
     // columns for expressions/aggregates/aliases that changed the projection.
     let accelerate = before.is_none()
@@ -113,10 +145,11 @@ fn snapshot(
         && group_by.is_empty()
         && having.is_none()
         && matches!(projection, Projection::All | Projection::Columns(_));
-    let rows = db.query_with_limits(
+    let rows = db.query_with_limits_cancellable(
         sql,
         &values,
-        QueryLimits::new(100_000, 16 * 1024 * 1024, 10_000, None),
+        control.limits,
+        control.cancellation.clone(),
     )?;
     Ok(Selection {
         rows,
@@ -271,6 +304,32 @@ impl Database {
     /// filtered corpus. Historical/transformed projections safely rebuild.
     /// IDs in JSON output are decimal strings, preserving all 64 bits in browsers.
     pub fn retrieve_json(&mut self, request: &str) -> crate::Result<String> {
+        self.retrieve_json_controlled(
+            request,
+            QueryLimits::new(100_000, 16 * 1024 * 1024, 10_000, None),
+            None,
+            None,
+        )
+    }
+
+    pub(crate) fn retrieve_json_controlled(
+        &mut self,
+        request: &str,
+        limits: QueryLimits,
+        cancellation: Option<crate::CancellationToken>,
+        pinned: Option<crate::TxId>,
+    ) -> crate::Result<String> {
+        let control = RetrievalControl {
+            limits: QueryLimits::new(
+                limits.max_rows_scanned.min(100_000),
+                limits.max_materialized_bytes.min(16 * 1024 * 1024),
+                limits.max_result_rows.min(10_000),
+                limits.deadline,
+            ),
+            cancellation,
+            pinned,
+        };
+        control.check()?;
         if request.len() > 131072 {
             return Err(PvError::Query("Retrieval request exceeds 128 KiB".into()));
         }
@@ -307,7 +366,7 @@ impl Database {
                         "Invalid hybrid search bounds or weight".into(),
                     ));
                 }
-                let selection = snapshot(self, &sql, &params)?;
+                let selection = snapshot(self, &sql, &params, &control)?;
                 let text_hits = text_hits(
                     self,
                     &selection,
@@ -366,7 +425,7 @@ impl Database {
                 {
                     return Err(PvError::Query("Invalid full-text bounds".into()));
                 }
-                let selection = snapshot(self, &sql, &params)?;
+                let selection = snapshot(self, &sql, &params, &control)?;
                 text_hits(
                     self,
                     &selection,
@@ -394,7 +453,7 @@ impl Database {
                 if limit > 100 {
                     return Err(PvError::Query("At most 100 vector results".into()));
                 }
-                let selection = snapshot(self, &sql, &params)?;
+                let selection = snapshot(self, &sql, &params, &control)?;
                 vector_hits(
                     self,
                     &selection,
@@ -410,6 +469,7 @@ impl Database {
                 .collect::<Vec<_>>()
             }
         };
+        control.check()?;
         serde_json::to_string(&hits).map_err(|error| PvError::Query(error.to_string()))
     }
 }

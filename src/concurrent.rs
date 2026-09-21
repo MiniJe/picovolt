@@ -204,6 +204,11 @@ struct ReadSessionStart {
 }
 
 enum ReadCommand {
+    #[cfg(any(feature = "full-text", feature = "vector-search"))]
+    Retrieve {
+        request: String,
+        reply: Reply<String>,
+    },
     Query {
         sql: String,
         params: Vec<Value>,
@@ -280,6 +285,15 @@ pub struct SharedDatabase {
 }
 
 impl SharedDatabase {
+    /// Retrieve from one bounded immutable committed snapshot. For repeated
+    /// queries without repeated snapshot admission, retain a ReadTransaction.
+    #[cfg(any(feature = "full-text", feature = "vector-search"))]
+    pub fn retrieve_json(&self, request: &str) -> Result<String> {
+        if request.len() > 131072 {
+            return Err(PvError::Query("Retrieval request exceeds 128 KiB".into()));
+        }
+        self.begin_read()?.retrieve_json(request)
+    }
     /// Open a fresh in-memory database with the default queue capacity.
     pub fn open_memory() -> Result<Self> {
         Self::open_memory_with_options(SharedDatabaseOptions::default())
@@ -420,8 +434,8 @@ impl SharedDatabase {
         self.begin_read_with_options(RequestOptions::default())
     }
 
-    /// Begin a snapshot-stable, read-only transaction. No writer or other read
-    /// transaction executes until this handle closes or is dropped.
+    /// Begin a snapshot-stable, read-only transaction. After its private image
+    /// is admitted, later writers and other readers may execute concurrently.
     pub fn begin_read_with_options(&self, options: RequestOptions) -> Result<ReadTransaction> {
         let handle_options = options.clone();
         let start = self.request(|reply| Command::BeginRead { options, reply })?;
@@ -545,6 +559,24 @@ pub struct ReadTransaction {
 }
 
 impl ReadTransaction {
+    /// Retrieve from this reader's pinned table/index generation. Existing
+    /// session scan/materialization/deadline/cancellation limits remain active.
+    #[cfg(any(feature = "full-text", feature = "vector-search"))]
+    pub fn retrieve_json(&mut self, request: &str) -> Result<String> {
+        self.options.check()?;
+        if request.len() > 131072 {
+            return Err(PvError::Query("Retrieval request exceeds 128 KiB".into()));
+        }
+        let (reply_sender, reply_receiver) = mpsc::sync_channel(1);
+        let sender = self.sender.as_ref().ok_or(PvError::DatabaseClosed)?;
+        sender
+            .send(ReadCommand::Retrieve {
+                request: request.to_owned(),
+                reply: reply_sender,
+            })
+            .map_err(|_| self.session_error())?;
+        reply_receiver.recv().map_err(|_| self.session_error())?
+    }
     /// The latest committed transaction visible when this read began.
     pub const fn snapshot_tx(&self) -> TxId {
         self.snapshot_tx
@@ -984,6 +1016,27 @@ fn serve_read_session(
             return None;
         }
         match receiver.recv_timeout(session_poll_timeout(options)) {
+            #[cfg(any(feature = "full-text", feature = "vector-search"))]
+            Ok(ReadCommand::Retrieve { request, reply }) => {
+                let outcome = call_database(|| {
+                    options.check()?;
+                    database.retrieve_json_controlled(
+                        &request,
+                        options.limits,
+                        Some(options.cancellation.clone()),
+                        Some(snapshot_tx),
+                    )
+                });
+                let (result, safe) = match outcome {
+                    DatabaseCall::Ok(value) => (Ok(value), true),
+                    DatabaseCall::Error(error) => (Err(error), true),
+                    DatabaseCall::Panicked(error) => (Err(error), false),
+                };
+                let _ = reply.send(result);
+                if !safe {
+                    return None;
+                }
+            }
             Ok(ReadCommand::Close { reply }) => {
                 return Some((reply, options.check()));
             }
