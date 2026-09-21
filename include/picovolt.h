@@ -1,3 +1,4 @@
+// Modified for PicoVolt 2.3 persistent retrieval; see legal/COMPONENT-SCOPE-2.3.md.
 // Modified for PicoVolt 2.2.0 encryption/hybrid retrieval; see legal/COMPONENT-SCOPE-2.2.md.
 // Modified for PicoVolt 2.1.0 retrieval, 2026-09-11. See legal/COMPONENT-SCOPE-2.1.md.
 /*

@@ -108,3 +108,27 @@ only documented private security-reporting channel.
 For non-sensitive hardening suggestions, a regular GitHub issue is fine. As this
 is a small independent project there is no formal response-time commitment, but
 reports are appreciated and addressed on a best-effort basis.
+
+
+## Persistent retrieval (2.3 candidate)
+
+Named-index definitions, manifest descriptors, CAS envelopes, text term maps and
+vector bodies are untrusted input. Format 8 validates checksums, canonical
+metadata, checked lengths/counts/arithmetic, sorted unique IDs, UTF-8 terms,
+finite vectors and dimension/metric agreement. Open also verifies decoded state
+against authoritative source rows; matching attacker-recomputed checksums alone
+do not make a stale/forged derived index healthy. All storage modes fail open on
+corruption; there is no silent repair or corrupt-result fallback.
+
+Admission limits include 16 indexes, 32 MiB/envelope, 64 MiB active payloads,
+10,000 documents/index, 100,000 retained row versions/indexed table, 1,048,576
+text term entries and 4,194,304 vector scalars. These are not total-RSS or total-
+disk bounds: source verification, snapshots, container overhead and unreachable
+older CAS blobs add costs. Query authorization remains host-owned; selected IDs
+and corpus statistics respect the authorized SELECT. Historical queries never
+reuse current postings. No model/network/telemetry capability is introduced.
+
+See [the detailed limits and recovery policy](docs/PERSISTENT_RETRIEVAL_2_3.md)
+and [binary layout](docs/FORMAT.md#format-8-persistent-retrieval). The candidate has
+corruption/model/crash tests and bounded decoder/DDL fuzzing, not an independent
+security audit or hardware power-cut certification.

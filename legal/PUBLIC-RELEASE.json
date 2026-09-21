@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": "2.2.0",
+  "version": "2.3.0",
   "distribution": "public-source-free",
   "license_id": "LicenseRef-PicoVolt-Public-Source-1.1",
   "license_file": "LICENSE",
@@ -20,7 +20,8 @@
   "covered_components": [
     "New vector, retrieval and encryption modules introduced after 2.0.0",
     "New retrieval and vault interfaces in CLI, C, WASM, Python, Go and JavaScript",
-    "New tests and documentation accompanying those proprietary additions"
+    "New tests and documentation accompanying those proprietary additions",
+    "Named persistent retrieval catalog, binary storage and related interfaces/tests introduced for 2.3"
   ],
   "preserved_licenses": [
     "Previously Apache-2.0 components and full-text implementation retain their existing notices",
@@ -28,5 +29,7 @@
   ],
   "authorization": "Owner selected public source and free registry downloads under revised proprietary terms on 2026-09-12",
   "independent_legal_review": false,
-  "independent_security_audit": false
+  "independent_security_audit": false,
+  "candidate_authority": "PV-2.3-M-001: implementation and review under unchanged existing terms; no merge, tag or publication authorized",
+  "publication_status": "pending-founder-approval"
 }

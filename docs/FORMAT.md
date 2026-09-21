@@ -1,4 +1,4 @@
-# PicoVolt on-disk format (`FORMAT_VERSION = 7`)
+# PicoVolt on-disk format (`FORMAT_VERSION = 8`)
 
 This document specifies the byte-level layout of PicoVolt's persisted data. It is
 the reference for the **0.11.0 format freeze**: from this version on, a change to
@@ -30,7 +30,10 @@ Key constants (`src/core/types.rs`):
 
 | Constant              | Value        | Meaning                                  |
 |-----------------------|--------------|------------------------------------------|
-| `FORMAT_VERSION`      | `5`          | Newest version this build can read.      |
+| `FORMAT_VERSION`      | `8`          | Newest version this build can read.      |
+| `FORMAT_VERSION_RETRIEVAL` | `8`     | Named persistent retrieval catalog.      |
+| `FORMAT_VERSION_COMMIT_ANCHOR` | `7` | Logged commit-sequence anchor.           |
+| `FORMAT_VERSION_COMMIT_LOG` | `6`    | Incremental journal capability.          |
 | `FORMAT_VERSION_COLUMNAR` | `5`      | Integrated cold-page layout.             |
 | `FORMAT_VERSION_SCHEMA` | `4`        | Literal-default / CHECK schema metadata. |
 | `FORMAT_VERSION_CONSTRAINTS` | `3`   | Uniqueness/nullability metadata.         |
@@ -482,3 +485,128 @@ the matching cursor/history as part of its own atomic publication. When upstream
 history is not retained, the checked `.pv-log/checkpoint` must equal the applied
 manifest anchor before opening the replica. The offline reconstruction test
 illustrates the representation, not a production replication protocol.
+
+
+## Format 8: persistent retrieval
+
+Format 8 adds `retrieval_indexes` descriptors to the manifest and binary retrieval
+payloads to the existing CAS. It does not change page, record, ordinary secondary
+index or physical journal framing. The catalog is optional and omitted when
+empty. Opening an index-less old database does not automatically raise its format;
+explicit `pv migrate`/`upgrade_format_to_latest` still stamps the newest version
+and does not create indexes. Dropping an index does not promise to lower a
+previously persisted/explicit version floor. Format 1–7 readers reject version 8.
+
+### Manifest and commit association
+
+Each descriptor is an object containing `definition`, `cas_id` (u64),
+`encoded_bytes` (bounded integer), `document_count` (bounded integer), `generation`
+(u64 MVCC transaction ID), and `rebuild_count` (u64). Catalog names must be unique.
+`definition` has `name`, `table`, `id_column`, and `index`; the latter is either
+`{"kind":"full_text","text_columns":[...]}` or
+`{"kind":"vector","vector_column":"...","metric":"cosine","dimensions":3}`.
+`squared_euclidean` is the other metric. Unknown definition/descriptor fields are
+rejected. Names/columns contain 1–256 non-control UTF-8 bytes; full-text columns
+are distinct and number 1–16. Canonical definition bytes use compact UTF-8 JSON,
+field order as shown, no insignificant whitespace, standard JSON escaping, and
+integer dimensions. The 8-KiB encoded-definition limit is checked separately.
+
+Catalog admission caps 16 indexes, 32 MiB/envelope, 64 MiB active payloads, and
+10,000 documents/index. A generation cannot exceed the manifest clock. Each CAS
+ID must exist; encoded length must equal the corresponding CAS-directory extent
+in a baked image and the regular blob file length in a development workspace.
+Development retrieval preflight rejects final-component symlinks and malformed
+hex hashes before generic CAS loading. Existing CAS hashes and binary extent
+bounds remain mandatory.
+
+Every format-8 manifest includes `logged_workspace`, exactly equal to whether
+`commit_sequence` is present. A logged workspace has `true` plus its acknowledged
+sequence; an unlogged workspace or independent baked image has `false` and no
+sequence. This distinguishes retrieval's format floor from the older format-7
+implication that a mutable workspace is logged. Logging marker/anchor/history
+inconsistency is corruption. Baked images omit the workspace log/anchor.
+
+Dirty envelopes are written to CAS before descriptors and table state are
+published. Their bytes are captured in the same logged physical change record;
+the existing active-journal rename is still the commit point. Recovery restores
+the previous table and manifest together, leaving new unreachable blobs harmless.
+Unlogged rollback images use the same catalog representation. There is no
+sidecar with an independently advancing generation.
+
+### Binary envelope (all integers little-endian)
+
+| Offset/order | Encoding |
+| --- | --- |
+| 0 | 8 bytes `PVRIDX\0\0` (`50 56 52 49 44 58 00 00`) |
+| 8 | u16 envelope version, currently 1 |
+| 10 | u8 kind: 1 full text, 2 vector |
+| 11 | u8 reserved, must be zero |
+| 12 | u64 last relevant MVCC generation |
+| 20 | u32 definition byte length, then canonical definition JSON |
+| next | 32-byte source digest |
+| next | u32 body byte length, then body bytes |
+| final | 32-byte BLAKE3 digest of all preceding envelope bytes |
+
+There is no padding. Every variable extent must fit, total length is 92 bytes
+minimum and 32 MiB maximum, and trailing bytes are rejected. Kind, envelope
+version, definition and descriptor must agree. Structural validation alone is
+not proof of source coherence: open also validates against authoritative rows.
+
+For each source document, compute BLAKE3 of compact JSON `[id, fields]`, where ID
+is the signed integer and fields are the declared source columns in order using
+PicoVolt's externally tagged Value JSON (`"Null"` or `{"Text":"..."}` for these
+index kinds). NULL and empty text therefore remain distinguishable in the source
+fingerprint. The corpus digest is BLAKE3 of ASCII
+`picovolt-retrieval-source-v1` followed by a zero byte, followed for each document
+in ascending signed-ID order by: i64 ID, 32-byte document fingerprint, u64 source
+byte count. Text source byte count includes one ASCII-space separator after each
+text column (NULL contributes only its separator); vector count is the original
+JSON string's UTF-8 byte count. Changing equivalent vector JSON spelling changes
+the source binding without changing vector distance semantics.
+
+### Full-text body, version 1
+
+The header is four u32 values: document count, distinct corpus-term count, total
+token count, total source bytes. In strictly increasing signed-ID order, each
+document stores i64 ID, u32 token length, u32 source bytes, u32 distinct-term count,
+then its terms in strictly increasing UTF-8/Rust string order. Each term stores
+u32 byte length, UTF-8 term bytes, and u32 positive frequency. The body stores the
+logical equivalent of postings; decoding reconstructs the posting maps without
+retokenizing source text. Corpus totals and per-document frequency sums must
+match. Duplicate/unsorted IDs or terms, invalid UTF-8 and trailing bytes fail.
+
+Caps: 10,000 documents, 65,536 corpus terms, 4,096 terms/document, 1,048,576
+(document, term) entries, 64 KiB source/document, 8 MiB source/corpus. Encoded
+normalized term length is 1–384 bytes (input tokens are at most 128 UTF-8 bytes;
+lowercasing can expand them). The decoder checks counts, sums and remaining
+slices before constructing the associated entries.
+
+### Exact vector body, version 1
+
+Header: u32 dimensions, u32 document count, u8 metric (1 cosine, 2 squared
+Euclidean), three reserved zero bytes. Then strictly increasing signed IDs,
+each i64 ID followed by exactly `dimensions` IEEE-754 f32 little-endian scalars.
+Exact body length is `12 + document_count * (8 + 4 * dimensions)`, using checked
+arithmetic. Dimensions must match the definition and be 1–4,096; document count
+is at most 10,000 and total scalars at most 4,194,304. Non-finite components and
+zero cosine vectors fail. This is an exhaustive exact representation, not an
+approximate graph. No untrusted pointer, external file path or executable
+payload is decoded.
+
+### Verification and recovery policy
+
+Open structurally validates the envelope, builds the bounded reference from the
+current authoritative table, and compares definition, generation, document
+count, source digest and canonical decoded body. Only after equality does it
+retain the decoded index. This one-time full verification is deliberate; queries
+do not redo tokenization/vector JSON parsing. All storage modes fail open on
+corruption or stale state, rather than silently repairing or returning results.
+Inspection surfaces the error. An explicit rebuild is available only on an
+already valid writable handle; restore a verified image/backup for an image that
+cannot pass open. Checksums are integrity checks, not authentication of an
+attacker's claimed source data.
+
+`tests/fixtures/format_v8.pvdb` contains three committed rows and both index kinds.
+Old golden files are retained. Mutation, rollback, crash, rehashed-corruption,
+model, filtered ranking, historical fallback, bindings and migration tests qualify
+this representation. Process termination tests do not imply power-cut testing.

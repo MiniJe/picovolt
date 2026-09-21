@@ -27,6 +27,19 @@ for atomic batches, persistence choices, log diagnostics and error recovery.
 The [standalone review prompt](docs/INDEPENDENT_REVIEW_PROMPT.md) defines an
 independent assessment and external trials deferred beyond the 2.0 release.
 
+## 2.3 implementation branch: persistent retrieval
+
+This branch prepares **2.3.0**, adding optional named persistent BM25/full-text
+and exact vector indexes. DDL, current-snapshot filtered retrieval, hybrid,
+transactional maintenance, format-8 persistence and inspection are implemented.
+Historical/transformed queries preserve correctness through the legacy fallback.
+Open performs source verification; commits may rewrite affected index envelopes
+and retain older CAS generations. Read the [2.3 guide](docs/PERSISTENT_RETRIEVAL_2_3.md)
+and [qualification ledger](docs/RELEASE_2_3.md) before evaluating this candidate.
+
+This PR does not publish 2.3 packages. The published 2.2 quick start below is
+preserved rather than presenting an unavailable registry install as verified.
+
 ## Quick start
 
 The 2.2.0 release is free to download and use within its [license](LICENSE).

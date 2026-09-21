@@ -52,6 +52,17 @@ jobs:
         run: cargo test --locked --doc
       - name: WASM retrieval compile
         run: cargo check --locked --target wasm32-unknown-unknown --features wasm --lib
+      - name: Build maintained Python C ABI
+        run: cargo build --locked --all-features --lib
+      - name: Python binding lifecycle tests
+        shell: bash
+        env:
+          PICOVOLT_LIB: ${{ github.workspace }}/target/debug/libpicovolt.so
+          PYTHONPATH: ${{ github.workspace }}/bindings/python
+        run: |
+          python3 -m venv "$RUNNER_TEMP/pv23-python"
+          "$RUNNER_TEMP/pv23-python/bin/pip" install pytest
+          "$RUNNER_TEMP/pv23-python/bin/python" -m pytest -q bindings/python/test_*.py
       - name: Workflow lint
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
 
