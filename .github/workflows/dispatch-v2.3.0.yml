@@ -1,0 +1,26 @@
+name: Dispatch PicoVolt 2.3.0 release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/dispatch-v2.3.0.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    if: github.repository == 'MiniJe/picovolt'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch exact immutable tag publication workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run python-wheels.yml             --repo "$GITHUB_REPOSITORY"             --ref v2.3.0
+          gh workflow run release.yml             --repo "$GITHUB_REPOSITORY"             --ref main             --field tag=v2.3.0
+          echo "Dispatched Python wheels at v2.3.0 and release recovery for v2.3.0"
