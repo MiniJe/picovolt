@@ -10,6 +10,10 @@ updates:
       # PicoVolt remains qualified against Rust 1.86 until an intentional MSRV bump.
       - dependency-name: wat
         versions: [">=1.259.0"]
+      # Arrow 60 raises the arrow-rs MSRV to Rust 1.88.
+      # Keep data-tools on Arrow 59 while PicoVolt qualifies Rust 1.86.
+      - dependency-name: arrow-array
+        versions: [">=60.0.0"]
     groups:
       cargo-minor-patch:
         update-types: ["minor", "patch"]
