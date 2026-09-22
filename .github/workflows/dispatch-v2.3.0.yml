@@ -1,4 +1,5 @@
 name: Resume PicoVolt 2.3.0 publication
+# Retry after crates.io credential-alias recovery and Python gate fix.
 
 on:
   push:
