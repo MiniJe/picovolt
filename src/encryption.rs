@@ -214,8 +214,7 @@ pub fn open(bytes: &[u8], secret: &Secret) -> Result<Database> {
         XChaCha20Poly1305::new_from_slice(key.as_ref()).map_err(|_| invalid("invalid key"))?;
     let mut plaintext =
         Zeroizing::new(bytes[HEADER_BYTES..HEADER_BYTES + info.plaintext_bytes].to_vec());
-    let nonce =
-        <&XNonce>::try_from(&bytes[32..56]).map_err(|_| invalid("invalid nonce length"))?;
+    let nonce = <&XNonce>::try_from(&bytes[32..56]).map_err(|_| invalid("invalid nonce length"))?;
     let tag = <&Tag>::try_from(&bytes[HEADER_BYTES + info.plaintext_bytes..])
         .map_err(|_| invalid("invalid tag length"))?;
     cipher
