@@ -31,5 +31,9 @@
   "independent_legal_review": false,
   "independent_security_audit": false,
   "candidate_authority": "Founder explicitly authorized merge, tag and public publication of PicoVolt 2.3.0 on 2026-09-21",
-  "publication_status": "authorized-for-publication"
+  "publication_status": "published",
+  "published_at": "2026-09-22T13:21:57Z",
+  "release_tag": "v2.3.0",
+  "release_commit": "089090bab62e47d5fde046d608094ebc7e8532dd",
+  "release_url": "https://github.com/MiniJe/picovolt/releases/tag/v2.3.0"
 }

@@ -1,0 +1,199 @@
+{
+  "version": "2.3.0",
+  "status": "published",
+  "verified_at": "2026-09-22T13:22:02Z",
+  "published_at": "2026-09-22T13:21:57Z",
+  "engine_commit": "089090bab62e47d5fde046d608094ebc7e8532dd",
+  "tag": "v2.3.0",
+  "annotated_tag_object": "529677f6feb6b4e23d7fbc2cf5728b215861fd49",
+  "github_release": {
+    "id": 393758925,
+    "url": "https://github.com/MiniJe/picovolt/releases/tag/v2.3.0",
+    "draft": false,
+    "prerelease": false
+  },
+  "qualification": {
+    "rust_all_target_all_feature_tests": 385,
+    "doctests": 2,
+    "python_binding_tests": 12,
+    "release_policy_tests": 32,
+    "rust_msrv": "1.86.0",
+    "independent_security_audit": false,
+    "independent_legal_review": false
+  },
+  "workflows": {
+    "final_pr_ci": 35633671626,
+    "persistent_retrieval_qualification": 35633671595,
+    "benchmark_qualification": 35632837786,
+    "python_go_publication": 35646727788,
+    "final_release": 35732450330
+  },
+  "registries": {
+    "crates_io": {
+      "version": "2.3.0",
+      "authentication": "crates.io Trusted Publishing via GitHub OIDC",
+      "publication": "passed",
+      "clean_install": "passed"
+    },
+    "npm": {
+      "version": "2.3.0",
+      "integrity": "sha512-TcqrOa5Uddyx9ilV71jHu2ciknVV6gYEfOgYomrHfp8X4Aslcy52Dp9rOHog8+Y+5Cw5Jyxwfs7h4ZpsmsTTEg==",
+      "shasum_sha1": "7eeca3d4b66f0172e44eeb256a4a754dfa77e3fa",
+      "provenance": true,
+      "clean_install": "passed"
+    },
+    "pypi": {
+      "version": "2.3.0",
+      "trusted_publishing": true,
+      "attestations": true,
+      "clean_install": "passed",
+      "files": [
+        {
+          "filename": "picovolt-2.3.0-py3-none-macosx_10_12_universal2.whl",
+          "sha256": "114c328241c4a101c0da2bb26d99c1724ef48c6d21b653ce3514cf8bec41bfd3"
+        },
+        {
+          "filename": "picovolt-2.3.0-py3-none-manylinux_2_28_x86_64.whl",
+          "sha256": "b68b00a921a3b546913dec5e6c9915c39d8ce351c8275f3e9ed200b8a42e816e"
+        },
+        {
+          "filename": "picovolt-2.3.0-py3-none-win_amd64.whl",
+          "sha256": "107fc6fd3ba189c0092b3650dce1f3db2aa019c393cef117c8b2b3d763a50f2a"
+        }
+      ]
+    },
+    "go": {
+      "version": "v2.3.0",
+      "module": "github.com/MiniJe/picovolt/bindings/go/v2",
+      "tag": "bindings/go/v2.3.0",
+      "clean_install": "passed"
+    }
+  },
+  "native_assets": [
+    {
+      "file": "LICENSE-linux-x86_64.txt",
+      "size": 8648,
+      "sha256": "fea338d875dfc9e115342e6d802742126b57ba1c5ebef7a54cde9cf26c1984ff",
+      "provenance_verified": true
+    },
+    {
+      "file": "LICENSE-macos-arm64.txt",
+      "size": 8648,
+      "sha256": "fea338d875dfc9e115342e6d802742126b57ba1c5ebef7a54cde9cf26c1984ff",
+      "provenance_verified": true
+    },
+    {
+      "file": "LICENSE-windows-x86_64.txt",
+      "size": 8648,
+      "sha256": "fea338d875dfc9e115342e6d802742126b57ba1c5ebef7a54cde9cf26c1984ff",
+      "provenance_verified": true
+    },
+    {
+      "file": "picovolt-capi-linux-x86_64.tar.gz",
+      "size": 1238117,
+      "sha256": "3d1b9beb047e975ad0c133554e32aadc354dc102fde5adb3d0ce547e9093cb97",
+      "provenance_verified": true
+    },
+    {
+      "file": "picovolt-capi-macos-arm64.tar.gz",
+      "size": 1050203,
+      "sha256": "c61ab73d097a76d784044026fec3858ad62e47db38f132f8260d6d578f762b3f",
+      "provenance_verified": true
+    },
+    {
+      "file": "picovolt-capi-windows-x86_64.tar.gz",
+      "size": 1024817,
+      "sha256": "b7edc632e918bdac70b210160e67e3f014460bc91a8c4442c4345178519b1bca",
+      "provenance_verified": true
+    },
+    {
+      "file": "picovolt-linux-x86_64.cdx.json",
+      "size": 180403,
+      "sha256": "b6369284ed478255dacfc7db1d66eab963804fe4be14170b409d2425c951a1e2",
+      "provenance_verified": true
+    },
+    {
+      "file": "picovolt-macos-arm64.cdx.json",
+      "size": 177542,
+      "sha256": "d6d6610d857acda9bd093119383664d7b52c0a8a1186c06a8e09c2ed52929d09",
+      "provenance_verified": true
+    },
+    {
+      "file": "picovolt-server-linux-x86_64",
+      "size": 3596272,
+      "sha256": "e8c3002e547cbe9443d2c1557583039e40b09a72067bcf2c9a241d6338c36c4b",
+      "provenance_verified": true
+    },
+    {
+      "file": "picovolt-server-macos-arm64",
+      "size": 2911328,
+      "sha256": "fb67744b530685a4d297516e58a6777d98be09d702fe6a941a56bf49fcf5cb66",
+      "provenance_verified": true
+    },
+    {
+      "file": "picovolt-server-windows-x86_64.exe",
+      "size": 2578944,
+      "sha256": "0ba33934b72e21b6b978d0a1c3b035dfc671360e3ff5d73e523c5e8c001ec2a8",
+      "provenance_verified": true
+    },
+    {
+      "file": "picovolt-windows-x86_64.cdx.json",
+      "size": 177276,
+      "sha256": "c4466113ec554993e66fbd12ae9f9075611f79f536e50686a9274d1424f45c6b",
+      "provenance_verified": true
+    },
+    {
+      "file": "pv-linux-x86_64",
+      "size": 16270416,
+      "sha256": "e63671a4408c8e8664e85cca4c5da772d1ab56da3865e500e3062fff709f3dba",
+      "provenance_verified": true
+    },
+    {
+      "file": "pv-macos-arm64",
+      "size": 12974960,
+      "sha256": "7589bc168abf366e5745e12b2b76b7e57e66b984ae3f5037782b47ce297506b1",
+      "provenance_verified": true
+    },
+    {
+      "file": "pv-windows-x86_64.exe",
+      "size": 12466688,
+      "sha256": "7dc54d6bbd0288f3f9a74eb5fb55e1e731cd4706c3290b9a24939845916ecc25",
+      "provenance_verified": true
+    },
+    {
+      "file": "RELEASE-linux-x86_64.json",
+      "size": 1528,
+      "sha256": "f10b84ad3aedd54e1580e9531d3c96916dd53e8864b967d11462d355d6287368",
+      "provenance_verified": true
+    },
+    {
+      "file": "RELEASE-macos-arm64.json",
+      "size": 1528,
+      "sha256": "f10b84ad3aedd54e1580e9531d3c96916dd53e8864b967d11462d355d6287368",
+      "provenance_verified": true
+    },
+    {
+      "file": "RELEASE-windows-x86_64.json",
+      "size": 1528,
+      "sha256": "f10b84ad3aedd54e1580e9531d3c96916dd53e8864b967d11462d355d6287368",
+      "provenance_verified": true
+    },
+    {
+      "file": "SHA256SUMS",
+      "size": 1685,
+      "sha256": "f56642621a769956a2c502d2260921dbf43c399a7575fd39481b479047a60491",
+      "provenance_verified": true
+    }
+  ],
+  "benchmark": {
+    "artifact": "benchmarks/persistent-retrieval-2.3-489c734.zip",
+    "artifact_sha256": "cb20312d69f8dc54b3d1a5a72996d0efa311b9a5196c12280818f16b67efd96a",
+    "json_sha256": "7091fca4990ad40554a011cd71314ee88351c17a7b8b2de154574212fab6595e"
+  },
+  "publication_notes": [
+    "The original long-lived crates.io repository token was rejected with HTTP 403.",
+    "The final release used crates.io Trusted Publishing/OIDC and automatically revoked its temporary token.",
+    "The Python/Go release gate was corrected to accept the successful exact-tag workflow_dispatch run as well as tag-push runs.",
+    "The v2.3.0 tag was not moved after public immutable registry publication began."
+  ]
+}

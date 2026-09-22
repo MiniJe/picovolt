@@ -6,7 +6,11 @@ Run `python scripts/check_public_release.py` before publishing. The gate checks
 No engine account or clickwrap service is required. Binary packages must carry
 licenses, dependency notices and the release notice; the macOS wheel metadata
 must pass `scripts/check_macos_wheel.py`. Earlier Apache grants remain intact.
-See [2.3 verification](RELEASE_2_3.md) for the current release evidence.
+crates.io publication prefers its GitHub OIDC Trusted Publisher configured for
+`.github/workflows/release.yml`; the workflow obtains and automatically revokes
+a short-lived token, with legacy repository-secret aliases retained only as a
+fail-closed fallback. See [2.3 verification](RELEASE_2_3.md) for the completed
+release evidence.
 
 # Release cadence
 

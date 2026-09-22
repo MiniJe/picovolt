@@ -5,12 +5,14 @@
 **Branch:** `codex/2.3-persistent-retrieval-m001`.
 **Runtime-qualified source:** `489c734341ee35ecd1a23e1e4505532db403e03d`.
 
-This record qualifies the 2.3.0 release candidate. The founder explicitly
-authorized merge, tag and public publication on 2026-09-21 after final-head
-qualification passed. The follow-up recording this ledger and benchmark archive
-changes no runtime, bindings, dependency, version, or workflow source. Release
-publication must still pass the tag-triggered registry, artifact, provenance and
-clean-install gates before the GitHub Release is considered complete.
+PicoVolt **2.3.0 was published on 2026-09-22** after founder authorization and
+candidate qualification. The immutable release tag `v2.3.0` resolves to
+`089090bab62e47d5fde046d608094ebc7e8532dd`. crates.io, npm, PyPI and the Go
+module passed public-registry installation gates, all native binary/SBOM jobs
+passed with provenance attestations, and GitHub Release
+[#393758925](https://github.com/MiniJe/picovolt/releases/tag/v2.3.0) was published
+at `2026-09-22T13:21:57Z`. The machine-readable closure record is
+[RELEASE_2_3_VERIFICATION.json](RELEASE_2_3_VERIFICATION.json).
 
 ## Implemented scope and semantics
 
@@ -131,24 +133,27 @@ The measured process used **196,732 KiB RSS**, **218,800 KiB peak RSS**, includi
 multiple live database copies; these figures are not per-index memory attribution.
 Full small-corpus and resource measurements remain in the retained JSON.
 
-## Candidate versions and installation boundary
+## Published versions and installation verification
 
-Cargo, Python, C-header notices and maintained starter pins are prepared for
-2.3.0. Historical release evidence and published 2.2 README installation examples
-remain intact. Starter policy verifies registry-only references, not availability
-of an unpublished version. No registry clean-install result is claimed.
+All maintained distribution surfaces are public at **2.3.0**:
 
-The isolated [candidate build 35632009358](https://github.com/MiniJe/picovolt/actions/runs/35632009358)
-built npm output with Rust 1.98.1, wasm-pack 0.15.0 and Node 24.20.0 without
-publication. Both npm starter locks use its measured archive integrity:
+- **crates.io:** published successfully with crates.io Trusted Publishing/OIDC in
+  final release run [35732450330](https://github.com/MiniJe/picovolt/actions/runs/35732450330);
+  the short-lived token was revoked automatically after publication.
+- **npm:** `picovolt@2.3.0`, with provenance and committed integrity
+  `sha512-TcqrOa5Uddyx9ilV71jHu2ciknVV6gYEfOgYomrHfp8X4Aslcy52Dp9rOHog8+Y+5Cw5Jyxwfs7h4ZpsmsTTEg==`.
+- **PyPI:** macOS universal2, manylinux x86-64 and Windows wheels published with
+  attestations in [35646727788](https://github.com/MiniJe/picovolt/actions/runs/35646727788).
+- **Go:** `github.com/MiniJe/picovolt/bindings/go/v2@v2.3.0` published from
+  `bindings/go/v2.3.0`; the public proxy clean-install gate passed.
+- **GitHub Release:** Linux/macOS/Windows CLI, server, C ABI bundles, CycloneDX
+  SBOMs, license/release records and `SHA256SUMS` are public with GitHub-recorded
+  SHA-256 digests and build-provenance attestations.
 
-```text
-sha512-Fe3Y3cGeNCPDMc5ubdjgjKDlOnNAOCMTcY6ow68PdYIMlRkvwaqTqIqCkenPpDuC84AotmWhXoYIi91nnUQ7hw==
-```
-
-The Go 2.3 module hash is source-derived (the same calculation was checked against
-the existing 2.2 sum), not fetched from a nonexistent published tag. At an authorized
-release, registry artifacts and clean installations must be verified again.
+The final release workflow re-ran the full quality suite, including the 1,000-cycle
+cross-process crash/recovery soak, before publishing. The Cargo/npm registry starter
+gate then installed and executed the exact public packages. PyPI/Go clean installs
+were independently completed by the tagged Python-wheels workflow.
 
 ## Diagnosed failures and closure boundary
 
@@ -172,8 +177,9 @@ encryption. Use a retained read transaction to amortize shared snapshot admissio
 No 50,000–100,000-document qualification, independent audit, production-at-scale
 claim, or changed license terms is asserted.
 
-The implementation passed founder review and publication was explicitly
-authorized on 2026-09-21. Tag-triggered release automation remains responsible
-for immutable registry publication, clean-install smoke tests, native artifacts,
-SBOMs, checksums, attestations and the final GitHub Release. Hub deployment
-remains out of scope.
+Publication is complete. Final release workflow
+[35732450330](https://github.com/MiniJe/picovolt/actions/runs/35732450330) concluded
+successfully; the GitHub Release, registry packages, clean-install tests, native
+artifacts, SBOMs, checksums and attestations are public. The release recovery
+dispatcher was removed after closure. No PicoVolt Hub deployment or hosted-service
+change was performed.
