@@ -1,4 +1,4 @@
-name: Finalize PicoVolt 2.3.0 publication
+name: Resume PicoVolt 2.3.0 publication
 
 on:
   push:
@@ -8,112 +8,36 @@ on:
 
 permissions:
   actions: write
-  contents: write
+  contents: read
 
 jobs:
-  finalize:
+  resume:
     if: github.repository == 'MiniJe/picovolt'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
-        with:
-          toolchain: 1.98.1
-          targets: wasm32-unknown-unknown
-      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b
-        with:
-          tool: wasm-pack@0.15.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: 24
-          package-manager-cache: false
-      - name: Verify no immutable 2.3.0 publication exists
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Verify immutable release tag
         shell: bash
         run: |
           set -euo pipefail
-          check_absent() {
-            name="$1"
-            url="$2"
-            code="$(curl --silent --show-error --location --max-time 30 \
-              --user-agent "picovolt-release-finalizer/2.3.0" \
-              --output "$RUNNER_TEMP/$name.json" --write-out '%{http_code}' "$url" || true)"
-            case "$code" in
-              404) echo "$name: absent as required" ;;
-              200) echo "::error::$name already contains PicoVolt 2.3.0; refusing to move the tag"; exit 1 ;;
-              *) echo "::error::$name availability check returned HTTP $code"; cat "$RUNNER_TEMP/$name.json" || true; exit 1 ;;
-            esac
-          }
-
-          check_absent crates-io "https://crates.io/api/v1/crates/picovolt/2.3.0"
-          check_absent npm "https://registry.npmjs.org/picovolt/2.3.0"
-          check_absent pypi "https://pypi.org/pypi/picovolt/2.3.0/json"
-
-          if gh api --silent "repos/$GITHUB_REPOSITORY/releases/tags/v2.3.0" >/dev/null 2>&1; then
-            echo "::error::GitHub Release v2.3.0 already exists; refusing to move the tag"
-            exit 1
-          fi
-          echo "GitHub Release: absent as required"
-
-          if git ls-remote --exit-code --refs origin refs/tags/bindings/go/v2.3.0 >/dev/null 2>&1; then
-            echo "::error::Go submodule tag bindings/go/v2.3.0 already exists; refusing to move the tag"
-            exit 1
-          fi
-          echo "Go submodule tag: absent as required"
-
-      - name: Verify corrected release source and npm integrity
-        shell: bash
-        run: |
-          set -euo pipefail
-          old_target="fdcd217e1826e2c945767a2989c3691005fa4877"
-          new_target="089090bab62e47d5fde046d608094ebc7e8532dd"
-          expected_integrity="sha512-TcqrOa5Uddyx9ilV71jHu2ciknVV6gYEfOgYomrHfp8X4Aslcy52Dp9rOHog8+Y+5Cw5Jyxwfs7h4ZpsmsTTEg=="
-
-          git fetch --force origin main refs/tags/v2.3.0
-          current="$(git rev-parse 'v2.3.0^{commit}')"
-          test "$current" = "$old_target"
-          git merge-base --is-ancestor "$new_target" origin/main
-
-          git checkout --detach "$new_target"
-          grep -q '^version = "2.3.0"$' Cargo.toml
-          jq -e '.version == "2.3.0" and .publication_status == "authorized-for-publication"'             legal/PUBLIC-RELEASE.json >/dev/null
-
-          rm -rf pkg
-          bash scripts/build_npm_package.sh pkg
-          (cd pkg && npm pack --json . > npm-pack.json)
-          actual="$(node -e 'console.log(require("./pkg/npm-pack.json")[0].integrity)')"
-          if [ "$actual" != "$expected_integrity" ]; then
-            echo "::error::corrected npm integrity $actual != $expected_integrity"
-            exit 1
-          fi
-          for lock in starters/node/package-lock.json starters/browser/package-lock.json; do
-            pinned="$(node -e 'const p=require("./" + process.argv[1]); console.log(p.packages["node_modules/picovolt"].integrity)' "$lock")"
-            test "$pinned" = "$actual"
-          done
-          echo "Corrected release source and npm integrity verified."
-
-      - name: Replace pre-publication tag and dispatch publication
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          new_target="089090bab62e47d5fde046d608094ebc7e8532dd"
-
-          git push origin :refs/tags/v2.3.0
-          git tag -d v2.3.0
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a v2.3.0 "$new_target"             -m "PicoVolt 2.3.0 — Persistent Retrieval (pre-publication integrity correction)"
-          git push origin refs/tags/v2.3.0
-
           git fetch --force origin +refs/tags/v2.3.0:refs/tags/v2.3.0
-          test "$(git rev-parse 'v2.3.0^{commit}')" = "$new_target"
-
-          gh workflow run python-wheels.yml             --repo "$GITHUB_REPOSITORY"             --ref v2.3.0
-          gh workflow run release.yml             --repo "$GITHUB_REPOSITORY"             --ref main             --field tag=v2.3.0
-
-          echo "Corrected v2.3.0 tag published and both release workflows dispatched."
+          target="$(git rev-parse 'v2.3.0^{commit}')"
+          expected="089090bab62e47d5fde046d608094ebc7e8532dd"
+          if [ "$target" != "$expected" ]; then
+            echo "::error::v2.3.0 points to $target, expected $expected"
+            exit 1
+          fi
+          echo "v2.3.0 immutable target verified: $target"
+      - name: Resume idempotent release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            --field tag=v2.3.0
+          echo "Release recovery dispatched for immutable v2.3.0."
