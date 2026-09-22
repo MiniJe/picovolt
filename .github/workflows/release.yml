@@ -148,24 +148,46 @@ jobs:
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#v}"
-          TOKEN="$TOKEN_CRATES_IO_TOKEN"
-          [ -n "$TOKEN" ] || TOKEN="$TOKEN_CRATES_IO"
-          [ -n "$TOKEN" ] || TOKEN="$TOKEN_CARGO_TOKEN"
-          [ -n "$TOKEN" ] || TOKEN="$TOKEN_CARGO_REGISTRY"
-          if curl --fail --silent --show-error --max-time 30 \
-            --user-agent "picovolt-release-workflow/$version" \
-            "https://crates.io/api/v1/crates/picovolt/$version" \
-            --output crate-version.json 2>/dev/null; then
-            jq -e --arg version "$version" \
-              '.version.num == $version' crate-version.json >/dev/null
+          probe_published() {
+            curl --fail --silent --show-error --max-time 30 \
+              --user-agent "picovolt-release-workflow/$version" \
+              "https://crates.io/api/v1/crates/picovolt/$version" \
+              --output crate-version.json 2>/dev/null &&
+              jq -e --arg version "$version" \
+                '.version.num == $version' crate-version.json >/dev/null
+          }
+
+          if probe_published; then
             echo "picovolt $version already exists on crates.io"
             exit 0
           fi
-          if [ -z "$TOKEN" ]; then
+
+          attempted=0
+          attempt=0
+          for TOKEN in \
+            "$TOKEN_CRATES_IO_TOKEN" \
+            "$TOKEN_CRATES_IO" \
+            "$TOKEN_CARGO_TOKEN" \
+            "$TOKEN_CARGO_REGISTRY"; do
+            [ -n "$TOKEN" ] || continue
+            attempted=1
+            attempt=$((attempt + 1))
+            echo "Trying configured crates.io credential candidate $attempt"
+            if cargo publish --locked --token "$TOKEN"; then
+              exit 0
+            fi
+            if probe_published; then
+              echo "picovolt $version became visible after publish attempt $attempt"
+              exit 0
+            fi
+          done
+
+          if [ "$attempted" -eq 0 ]; then
             echo "::error::a crates.io publishing token is required for an unpublished version"
-            exit 1
+          else
+            echo "::error::all configured crates.io publishing credential candidates were rejected"
           fi
-          cargo publish --locked --token "$TOKEN"
+          exit 1
 
   # 3. Build the wasm package and publish to npm through the package's trusted
   # publisher. OIDC avoids storing a long-lived npm credential in GitHub.
