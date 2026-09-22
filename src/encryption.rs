@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::{
-    aead::{AeadInPlace, KeyInit},
+    aead::{AeadInOut, KeyInit},
     Tag, XChaCha20Poly1305, XNonce,
 };
 use fs2::FileExt;
@@ -191,8 +191,10 @@ pub fn seal(db: &mut Database, secret: &Secret) -> Result<Vec<u8>> {
     let key = secret.derive(&header[16..32])?;
     let cipher =
         XChaCha20Poly1305::new_from_slice(key.as_ref()).map_err(|_| invalid("invalid key"))?;
+    let nonce =
+        <&XNonce>::try_from(&header[32..56]).map_err(|_| invalid("invalid nonce length"))?;
     let tag = cipher
-        .encrypt_in_place_detached(XNonce::from_slice(&header[32..56]), &header, &mut plaintext)
+        .encrypt_inout_detached(nonce, &header, (&mut plaintext[..]).into())
         .map_err(|_| invalid("encryption failed"))?;
     let mut output = Vec::with_capacity(HEADER_BYTES + plaintext.len() + TAG_BYTES);
     output.extend_from_slice(&header);
@@ -212,12 +214,16 @@ pub fn open(bytes: &[u8], secret: &Secret) -> Result<Database> {
         XChaCha20Poly1305::new_from_slice(key.as_ref()).map_err(|_| invalid("invalid key"))?;
     let mut plaintext =
         Zeroizing::new(bytes[HEADER_BYTES..HEADER_BYTES + info.plaintext_bytes].to_vec());
+    let nonce =
+        <&XNonce>::try_from(&bytes[32..56]).map_err(|_| invalid("invalid nonce length"))?;
+    let tag = <&Tag>::try_from(&bytes[HEADER_BYTES + info.plaintext_bytes..])
+        .map_err(|_| invalid("invalid tag length"))?;
     cipher
-        .decrypt_in_place_detached(
-            XNonce::from_slice(&bytes[32..56]),
+        .decrypt_inout_detached(
+            nonce,
             &bytes[..HEADER_BYTES],
-            &mut plaintext,
-            Tag::from_slice(&bytes[HEADER_BYTES + info.plaintext_bytes..]),
+            (&mut plaintext[..]).into(),
+            tag,
         )
         .map_err(|_| invalid("authentication failed"))?;
     Database::import_bytes(&plaintext)
