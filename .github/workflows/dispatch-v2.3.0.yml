@@ -31,14 +31,26 @@ jobs:
             exit 1
           fi
           echo "v2.3.0 immutable target verified: $target"
-      - name: Resume idempotent release workflow
+      - name: Replace superseded release retry with OIDC-capable recovery
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
+          stale=35731581301
+          status="$(gh run view "$stale" --repo "$GITHUB_REPOSITORY" --json status -q .status || true)"
+          case "$status" in
+            queued|in_progress|pending|waiting|requested)
+              gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$stale/force-cancel"
+              echo "Force-cancel requested for superseded release run $stale ($status)."
+              ;;
+            *)
+              echo "Superseded release run $stale is already terminal ($status)."
+              ;;
+          esac
+
           gh workflow run release.yml \
             --repo "$GITHUB_REPOSITORY" \
             --ref main \
             --field tag=v2.3.0
-          echo "Release recovery dispatched for immutable v2.3.0."
+          echo "OIDC-capable release recovery dispatched for immutable v2.3.0."
