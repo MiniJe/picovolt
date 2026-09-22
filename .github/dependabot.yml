@@ -14,6 +14,10 @@ updates:
       # Keep data-tools on Arrow 59 while PicoVolt qualifies Rust 1.86.
       - dependency-name: arrow-array
         versions: [">=60.0.0"]
+      - dependency-name: arrow-schema
+        versions: [">=60.0.0"]
+      - dependency-name: parquet
+        versions: [">=60.0.0"]
     groups:
       cargo-minor-patch:
         update-types: ["minor", "patch"]
