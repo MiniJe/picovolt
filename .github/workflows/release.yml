@@ -263,7 +263,6 @@ jobs:
             runs="$(gh run list \
               --repo "$GITHUB_REPOSITORY" \
               --workflow python-wheels.yml \
-              --event push \
               --limit 50 \
               --json databaseId,headBranch,headSha)"
             run_id="$(jq -r \
