@@ -5,6 +5,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # wat 1.259.0 raises the transitive wasm toolchain MSRV to Rust 1.88.
+      # PicoVolt remains qualified against Rust 1.86 until an intentional MSRV bump.
+      - dependency-name: wat
+        versions: [">=1.259.0"]
     groups:
       cargo-minor-patch:
         update-types: ["minor", "patch"]
