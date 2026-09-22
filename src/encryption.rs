@@ -317,9 +317,19 @@ impl Vault {
     }
     pub fn create(path: impl AsRef<Path>, secret: Secret) -> Result<Self> {
         let (path, lock) = Self::acquire(path.as_ref())?;
-        let mut db = Database::open_memory();
-        let bytes = seal(&mut db, &secret)?;
-        publish(&path, &bytes, false)?;
+        let initialized: Result<(Database, Vec<u8>)> = (|| {
+            let mut db = Database::open_memory();
+            let bytes = seal(&mut db, &secret)?;
+            publish(&path, &bytes, false)?;
+            Ok((db, bytes))
+        })();
+        let (db, bytes) = match initialized {
+            Ok(initialized) => initialized,
+            Err(error) => {
+                let _ = FileExt::unlock(&lock);
+                return Err(error);
+            }
+        };
         Ok(Self {
             db,
             secret,
@@ -331,8 +341,18 @@ impl Vault {
     }
     pub fn open(path: impl AsRef<Path>, secret: Secret) -> Result<Self> {
         let (path, lock) = Self::acquire(path.as_ref())?;
-        let bytes = read_file(&path)?;
-        let db = open(&bytes, &secret)?;
+        let loaded: Result<(Database, Vec<u8>)> = (|| {
+            let bytes = read_file(&path)?;
+            let db = open(&bytes, &secret)?;
+            Ok((db, bytes))
+        })();
+        let (db, bytes) = match loaded {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                let _ = FileExt::unlock(&lock);
+                return Err(error);
+            }
+        };
         Ok(Self {
             db,
             secret,
