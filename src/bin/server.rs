@@ -2,7 +2,7 @@
 //!
 //! The engine is single-threaded and not `Send`, so one dedicated thread owns
 //! the [`Database`] (it is created on that thread and never crosses a thread
-//! boundary). HTTP worker threads accept connections concurrently and hand each
+//! boundary). A fixed HTTP worker pool parses accepted connections and hands each
 //! request to the engine thread over a channel, receiving the result back; the
 //! engine executes statements serially. This serves concurrent clients while
 //! leaving the single-threaded core unchanged.
@@ -27,6 +27,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[path = "server/ingress.rs"]
+mod ingress;
+use ingress::{BodyError, Request};
+
 /// How long an HTTP worker waits for the engine before returning 504, so a slow
 /// statement cannot block a worker indefinitely.
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -40,7 +44,6 @@ const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 use picovolt::engine::query::{parse, Statement};
 use picovolt::{Database, QueryLimits, QueryResult, Value};
 use serde_json::json;
-use tiny_http::{Header, Method, Request, Response, Server};
 
 enum DbConfig {
     Memory,
@@ -71,11 +74,6 @@ fn main() {
     let config = parse_args();
     let addr = config.addr.clone();
     let token = config.token.map(Arc::<str>::from);
-    let workers = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
-        .clamp(2, 16);
-
     let (tx, rx) = mpsc::sync_channel::<Command>(COMMAND_QUEUE_CAPACITY);
 
     // The engine thread owns the Database: it is opened here, on this thread,
@@ -118,28 +116,9 @@ fn main() {
         }
     });
 
-    let server = Arc::new(match Server::http(&addr) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("picovolt-server: failed to bind {addr}: {e}");
-            std::process::exit(1);
-        }
-    });
-    println!("picovolt-server listening on http://{addr}");
-
-    let mut handles = Vec::new();
-    for _ in 0..workers {
-        let server = Arc::clone(&server);
-        let tx = tx.clone();
-        let token = token.clone();
-        handles.push(thread::spawn(move || {
-            for request in server.incoming_requests() {
-                handle(request, &tx, token.as_deref());
-            }
-        }));
-    }
-    for h in handles {
-        let _ = h.join();
+    if let Err(e) = ingress::serve(&addr, move |request| handle(request, &tx, token.as_deref())) {
+        eprintln!("picovolt-server: HTTP listener failed on {addr}: {e}");
+        std::process::exit(1);
     }
 }
 
@@ -215,11 +194,9 @@ fn fatal(what: &str, e: picovolt::PvError) -> ! {
 }
 
 fn handle(request: Request, engine: &SyncSender<Command>, token: Option<&str>) {
-    let method = request.method().clone();
-    let url = request.url().to_string();
-    match (&method, url.as_str()) {
-        (Method::Get, "/v1/health") => respond(request, 200, json!({ "status": "ok" })),
-        (Method::Get, "/v1/tx") => {
+    match (request.method(), request.url()) {
+        ("GET", "/v1/health") => respond(request, 200, json!({ "status": "ok" })),
+        ("GET", "/v1/tx") => {
             if !authorized(&request, token) {
                 return respond(request, 401, json!({ "error": "unauthorized" }));
             }
@@ -232,13 +209,12 @@ fn handle(request: Request, engine: &SyncSender<Command>, token: Option<&str>) {
                 Err(_) => respond(request, 503, json!({ "error": "engine unavailable" })),
             }
         }
-        (Method::Post, "/v1/query") => handle_query(request, engine, token),
+        ("POST", "/v1/query") => handle_query(request, engine, token),
         _ => respond(request, 404, json!({ "error": "not found" })),
     }
 }
 
 fn handle_query(mut request: Request, engine: &SyncSender<Command>, token: Option<&str>) {
-    use std::io::Read;
     if !authorized(&request, token) {
         return respond(request, 401, json!({ "error": "unauthorized" }));
     }
@@ -257,19 +233,19 @@ fn handle_query(mut request: Request, engine: &SyncSender<Command>, token: Optio
         );
     }
     // Cap request bodies so a huge POST cannot exhaust memory.
-    const MAX_BODY: u64 = 1 << 20; // 1 MiB
-    let mut body = String::new();
-    if request
-        .as_reader()
-        .take(MAX_BODY + 1)
-        .read_to_string(&mut body)
-        .is_err()
-    {
-        return respond(request, 400, json!({ "error": "could not read body" }));
-    }
-    if body.len() as u64 > MAX_BODY {
-        return respond(request, 413, json!({ "error": "request body too large" }));
-    }
+    const MAX_BODY: usize = 1 << 20; // 1 MiB
+    let body = match request.read_body(MAX_BODY) {
+        Ok(body) => body,
+        Err(BodyError::TooLarge) => {
+            return respond(request, 413, json!({ "error": "request body too large" }));
+        }
+        Err(BodyError::Timeout) => {
+            return respond(request, 408, json!({ "error": "request body timed out" }));
+        }
+        Err(BodyError::Invalid) => {
+            return respond(request, 400, json!({ "error": "could not read body" }));
+        }
+    };
     let parsed: serde_json::Value = match serde_json::from_str(&body) {
         Ok(v) => v,
         Err(e) => {
@@ -337,11 +313,7 @@ fn respond_queue_error(request: Request, error: TrySendError<Command>) {
 }
 
 fn header_value<'a>(request: &'a Request, name: &'static str) -> Option<&'a str> {
-    request
-        .headers()
-        .iter()
-        .find(|header| header.field.equiv(name))
-        .map(|header| header.value.as_str())
+    request.header(name)
 }
 
 fn is_json_content_type(value: &str) -> bool {
@@ -453,15 +425,7 @@ fn respond(request: Request, status: u16, body: serde_json::Value) {
         status = 413;
         text = json!({ "error": "result exceeds the server response limit" }).to_string();
     }
-    let content_type = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
-    let no_store = Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap();
-    let no_sniff = Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..]).unwrap();
-    let response = Response::from_string(text)
-        .with_status_code(status)
-        .with_header(content_type)
-        .with_header(no_store)
-        .with_header(no_sniff);
-    let _ = request.respond(response);
+    request.respond(status, &text);
 }
 
 #[cfg(test)]
