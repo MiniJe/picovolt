@@ -78,6 +78,9 @@ jobs:
         run: |
           cargo clippy --locked --features server --bin picovolt-server -- -D warnings
           cargo build --locked --features server --bin picovolt-server
+      - name: Bounded HTTP ingress under network pressure
+        if: runner.os == 'Linux'
+        run: python3 scripts/verify_http_ingress.py target/debug/picovolt-server
       - name: Doc tests
         run: cargo test --locked --doc
       - name: API documentation
