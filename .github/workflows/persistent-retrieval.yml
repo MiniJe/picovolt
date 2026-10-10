@@ -130,7 +130,7 @@ jobs:
           print('Every measured medium-corpus persistent path improved over its same-run ephemeral reference.')
           print('Magnitude and maintenance/reopen/storage tradeoffs require review of the retained measurements; these are not SLAs.')
           PY
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: persistent-retrieval-envelope-${{ github.run_id }}
